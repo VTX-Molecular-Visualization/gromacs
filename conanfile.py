@@ -8,7 +8,7 @@ from pathlib import Path
 
 class VtxGromacsRecipe(ConanFile):
     name = "gromacs"
-    version = "2024.0"
+    version = "2026.0"
     package_type = "library"
     revision_mode = "scm"
 
@@ -34,7 +34,7 @@ class VtxGromacsRecipe(ConanFile):
         cmake_layout(self)
 
     def build_requirements(self):
-        self.tool_requires("cmake/3.27.0")
+        None
 
     def build(self):
         cmake = CMake(self)
