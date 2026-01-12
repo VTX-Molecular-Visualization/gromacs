@@ -50,16 +50,14 @@
 
 #include "gromacs/ewald/pme_coordinate_receiver_gpu.h"
 #include "gromacs/gpu_utils/devicebuffer_datatype.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/gmxassert.h"
+#include "gromacs/utility/vectypes.h"
 
 class DeviceContext;
 class DeviceStream;
 class GpuEventSynchronizer;
 struct PpRanks;
-
-#if !GMX_GPU_CUDA && !GMX_GPU_SYCL
 
 namespace gmx
 {
@@ -108,7 +106,7 @@ void PmeCoordinateReceiverGpu::launchReceiveCoordinatesFromPpGpuAwareMpi(DeviceB
                "implementation.");
 }
 
-std::tuple<int, GpuEventSynchronizer*> PmeCoordinateReceiverGpu::receivePpCoordinateSendEvent(int /* pipelineStage */)
+std::tuple<int, GpuEventSynchronizer*> PmeCoordinateReceiverGpu::receivePpCoordinateSendEvent(int /* requestIndex */)
 {
     GMX_ASSERT(!impl_,
                "A CPU stub for PME-PP GPU communication was called instead of the correct "
@@ -140,7 +138,7 @@ std::tuple<int, int> PmeCoordinateReceiverGpu::ppCommAtomRange(int /* senderInde
     return std::make_tuple(0, 0);
 }
 
-int PmeCoordinateReceiverGpu::ppCommNumSenderRanks()
+int PmeCoordinateReceiverGpu::ppCommNumRanksSendingParticles()
 {
     GMX_ASSERT(!impl_,
                "A CPU stub for PME-PP GPU communication was called instead of the correct "
@@ -156,5 +154,3 @@ void PmeCoordinateReceiverGpu::insertAsDependencyIntoStream(int /*senderIndex*/,
 }
 
 } // namespace gmx
-
-#endif // !GMX_GPU_CUDA

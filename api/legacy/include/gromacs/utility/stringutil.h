@@ -45,11 +45,17 @@
 #include <cstdarg>
 #include <cstring>
 
+#include <array>
 #include <string>
 #include <vector>
 
+#include "gromacs/utility/basedefinitions.h"
+
 namespace gmx
 {
+
+template<typename>
+class ArrayRef;
 
 //! \addtogroup module_utility
 //! \{
@@ -480,6 +486,24 @@ std::string toUpperCase(const std::string& text);
  */
 std::string toLowerCase(const std::string& text);
 
+/*! \brief
+ * Formats a range of integers using taskset-style notation when possible.
+ *
+ * The function analyzes the input \p list to determine if it forms an arithmetic
+ * sequence. If so, it outputs a compact representation using a comma-separated set of
+ * \a inclusive intervals, with optional strides.
+ *
+ * Examples:
+ * \c {} -> ""
+ * \c {0} -> "0"
+ * \c {0,1,2,6} -> "0-2,6"
+ * \c {0,2,4,6,8,10} -> "0-10:2"
+ *
+ * \param[in] list Span of integers to format; should be sorted for proper results.
+ * \returns String representation using taskset notation.
+ */
+std::string prettyPrintListAsRange(ArrayRef<const int> list);
+
 
 class TextLineWrapper;
 
@@ -752,6 +776,45 @@ private:
 };
 
 //! \}
+
+// The compile time join does not work with MSVC, causes ICE. Use runtime version there
+#if !defined(_MSC_VER)
+
+//! Combines string literals at compile time to final string.
+template<std::string_view const&... inputStrings>
+struct CompileTimeStringJoin
+{
+    // Join all strings into a single std::array of chars
+    static constexpr auto impl() noexcept
+    {
+        constexpr std::size_t              bufferLength = (std::size(inputStrings) + ... + 0);
+        std::array<char, bufferLength + 1> internalStorage{};
+        auto append = [i = 0, &internalStorage](auto const& string) mutable
+        {
+            for (auto charPos : string)
+            {
+                internalStorage[i++] = charPos;
+            }
+        };
+        (append(inputStrings), ...);
+        internalStorage[bufferLength] = 0;
+        // Named return-value-optimization is not needed at compile time,
+        // perhaps this is a compiler bug.
+        CLANG_DIAGNOSTIC_IGNORE_WNRVO;
+        return internalStorage;
+        CLANG_DIAGNOSTIC_RESET_WNRVO;
+    }
+    // Give the joined string static storage
+    static constexpr auto stringArray = impl();
+    // View as a std::string_view
+    static constexpr std::string_view value{ stringArray.data(), stringArray.size() - 1 };
+};
+// Helper to get the value out
+template<std::string_view const&... inputStrings>
+static constexpr auto CompileTimeStringJoin_v = CompileTimeStringJoin<inputStrings...>::value;
+
+#endif
+
 
 } // namespace gmx
 

@@ -51,26 +51,27 @@
 #include <memory>
 #include <vector>
 
-#include "gromacs/math/vectypes.h"
 #include "gromacs/mdtypes/locality.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/real.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "pairlist.h"
 
 struct t_nrnb;
-struct t_nblist;
 
 namespace gmx
 {
-struct SearchCycleCounting;
+class AtomPairlist;
+class GridSet;
+template<typename>
+class ListOfLists;
 struct nbnxn_atomdata_t;
 struct PairlistParams;
 struct PairsearchWork;
-template<typename>
-class ListOfLists;
-class GridSet;
+struct PlainPairlist;
+struct SearchCycleCounting;
 
 /*! \internal
  * \brief An object that holds the local or non-local pairlists
@@ -79,7 +80,7 @@ class PairlistSet
 {
 public:
     //! Constructor: initializes the pairlist set as empty
-    PairlistSet(const PairlistParams& listParams);
+    PairlistSet(const PairlistParams& listParams, PinningPolicy pinPolicy);
 
     ~PairlistSet();
 
@@ -89,6 +90,7 @@ public:
                             ArrayRef<PairsearchWork> searchWork,
                             nbnxn_atomdata_t*        nbat,
                             const ListOfLists<int>&  exclusions,
+                            bool                     includeAllPairs,
                             int                      minimumIlistCountForGpuBalancing,
                             t_nrnb*                  nrnb,
                             SearchCycleCounting*     searchCycleCounting);
@@ -104,7 +106,7 @@ public:
     {
         if (!gpuLists_.empty())
         {
-            return &gpuLists_[0];
+            return gpuLists_.data();
         }
         else
         {
@@ -112,11 +114,26 @@ public:
         }
     }
 
+    //! Returns a reference to the GPU fep pairlist
+    const AtomPairlist& fepGpuList() const { return **fepLists_.data(); }
+
+    //! Returns the pair list parameters
+    const PairlistParams& params() const { return params_; }
+
     //! Returns the lists of free-energy pairlists, empty when nonbonded interactions are not perturbed
-    ArrayRef<const std::unique_ptr<t_nblist>> fepLists() const { return fepLists_; }
+    ArrayRef<const std::unique_ptr<AtomPairlist>> fepLists() const { return fepLists_; }
 
     //! Returns the number of perturbed excluded pairs that are within distance rlist
     int numPerturbedExclusionsWithinRlist() const { return numPerturbedExclusionsWithinRlist_; }
+
+    /*! \brief Appends the contents of our pairlists, except for exclusions, to \p plainPairlist
+     *
+     * The atom indices in the plain list are normal, not NBNxM order, atom indices.
+     */
+    void appendPlainPairlist(PlainPairlist*          plainPairlist,
+                             real                    range,
+                             const nbnxn_atomdata_t& nbat,
+                             ArrayRef<const int>     atomIndices);
 
 private:
     //! List of pairlists in CPU layout
@@ -132,7 +149,7 @@ private:
     //! Tells whether the lists is of CPU type, otherwise GPU type
     gmx_bool isCpuType_;
     //! Lists for perturbed interactions in simple atom-atom layout
-    std::vector<std::unique_ptr<t_nblist>> fepLists_;
+    std::vector<std::unique_ptr<AtomPairlist>> fepLists_;
     //! The number of excluded perturbed interaction within rlist
     int numPerturbedExclusionsWithinRlist_ = 0;
 

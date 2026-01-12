@@ -56,7 +56,6 @@
 #include "gromacs/hardware/hw_info.h"
 #include "gromacs/mdtypes/mdrunoptions.h"
 #include "gromacs/utility/basedefinitions.h"
-#include "gromacs/utility/iserializer.h"
 #include "gromacs/utility/real.h"
 
 #include "replicaexchange.h"
@@ -131,6 +130,7 @@ public:
                                           { efMTX, "-mtx", "nm", ffOPTWR },
                                           { efRND, "-multidir", nullptr, ffOPTRDMULT },
                                           { efXVG, "-awh", "awhinit", ffOPTRD },
+                                          { efDAT, "-plumed", "plumed", ffOPTRD },
                                           { efDAT, "-membed", "membed", ffOPTRD },
                                           { efTOP, "-mp", "membed", ffOPTRD },
                                           { efNDX, "-mn", "membed", ffOPTRD },
@@ -152,21 +152,20 @@ public:
     /*! \{ */
     rvec        realddxyz                                                           = { 0, 0, 0 };
     const char* ddrank_opt_choices[static_cast<int>(DdRankOrder::Count) + 1]        = { nullptr,
-                                                                                 "interleave",
-                                                                                 "pp_pme",
-                                                                                 "cartesian",
-                                                                                 nullptr };
-    const char* dddlb_opt_choices[static_cast<int>(DlbOption::Count) + 1]           = { nullptr,
-                                                                              "auto",
-                                                                              "no",
-                                                                              "yes",
-                                                                              nullptr };
-    const char* thread_aff_opt_choices[static_cast<int>(ThreadAffinity::Count) + 1] = { nullptr,
-                                                                                        "auto",
-                                                                                        "on",
-                                                                                        "off",
+                                                                                        "interleave",
+                                                                                        "pp_pme",
+                                                                                        "cartesian",
                                                                                         nullptr };
+    const char* dddlb_opt_choices[static_cast<int>(DlbOption::Count) + 1]           = { nullptr,
+                                                                                        "auto",
+                                                                                        "no",
+                                                                                        "yes",
+                                                                                        nullptr };
+    const char* thread_aff_opt_choices[static_cast<int>(ThreadAffinity::Count) + 1] = {
+        nullptr, "auto", "on", "inherit", "off", nullptr
+    };
     const char* nbpu_opt_choices[5]    = { nullptr, "auto", "cpu", "gpu", nullptr };
+    const char* nbfe_opt_choices[5]    = { nullptr, "auto", "cpu", "gpu", nullptr };
     const char* pme_opt_choices[5]     = { nullptr, "auto", "cpu", "gpu", nullptr };
     const char* pme_fft_opt_choices[5] = { nullptr, "auto", "cpu", "gpu", nullptr };
     const char* bonded_opt_choices[5]  = { nullptr, "auto", "cpu", "gpu", nullptr };
@@ -177,7 +176,7 @@ public:
 
     ImdOptions& imdOptions = mdrunOptions.imdOptions;
 
-    t_pargs pa[48] = {
+    t_pargs pa[49] = {
 
         { "-dd", FALSE, etRVEC, { &realddxyz }, "Domain decomposition grid, 0 is optimize" },
         { "-ddorder", FALSE, etENUM, { ddrank_opt_choices }, "DD rank order" },
@@ -285,6 +284,7 @@ public:
           "direction of the corresponding DD cells. Only effective with static "
           "load balancing." },
         { "-nb", FALSE, etENUM, { nbpu_opt_choices }, "Calculate non-bonded interactions on" },
+        { "-nbfe", FALSE, etENUM, { nbfe_opt_choices }, "Perform non-bonded FE calculations on" },
         { "-nstlist",
           FALSE,
           etINT,

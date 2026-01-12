@@ -9,14 +9,26 @@
 
 #include "colvarcomp.h"
 
-colvar::linearCombination::linearCombination(std::string const &conf): cvc(conf) {
+
+colvar::linearCombination::linearCombination()
+{
+    set_function_type("linearCombination");
+}
+
+
+int colvar::linearCombination::init(std::string const &conf)
+{
+    int error_code = cvc::init(conf);
+    if (error_code != COLVARS_OK) return error_code;
+
     // Lookup all available sub-cvcs
     for (auto it_cv_map = colvar::get_global_cvc_map().begin(); it_cv_map != colvar::get_global_cvc_map().end(); ++it_cv_map) {
         if (key_lookup(conf, it_cv_map->first.c_str())) {
             std::vector<std::string> sub_cvc_confs;
             get_key_string_multi_value(conf, it_cv_map->first.c_str(), sub_cvc_confs);
             for (auto it_sub_cvc_conf = sub_cvc_confs.begin(); it_sub_cvc_conf != sub_cvc_confs.end(); ++it_sub_cvc_conf) {
-                cv.push_back((it_cv_map->second)(*(it_sub_cvc_conf)));
+                cv.push_back((it_cv_map->second)());
+                cv.back()->init(*(it_sub_cvc_conf));
             }
         }
     }
@@ -29,9 +41,8 @@ colvar::linearCombination::linearCombination(std::string const &conf): cvc(conf)
     }
     // Show useful error messages and prevent crashes if no sub CVC is found
     if (cv.size() == 0) {
-        cvm::error("Error: the CV " + name +
-                   " expects one or more nesting components.\n");
-        return;
+       return cvm::error("Error: the CV " + name + " expects one or more nesting components.\n",
+                       COLVARS_INPUT_ERROR);
     } else {
         x.type(cv[0]->value());
         x.reset();
@@ -45,6 +56,7 @@ colvar::linearCombination::linearCombination(std::string const &conf): cvc(conf)
     if (!use_explicit_gradients) {
         disable(f_cvc_explicit_gradient);
     }
+    return error_code;
 }
 
 cvm::real colvar::linearCombination::getPolynomialFactorOfCVGradient(size_t i_cv) const {
@@ -99,7 +111,9 @@ void colvar::linearCombination::calc_gradients() {
             for (size_t j_elem = 0; j_elem < cv[i_cv]->value().size(); ++j_elem) {
                 for (size_t k_ag = 0 ; k_ag < cv[i_cv]->atom_groups.size(); ++k_ag) {
                     for (size_t l_atom = 0; l_atom < (cv[i_cv]->atom_groups)[k_ag]->size(); ++l_atom) {
-                        (*(cv[i_cv]->atom_groups)[k_ag])[l_atom].grad = factor_polynomial * (*(cv[i_cv]->atom_groups)[k_ag])[l_atom].grad;
+                        (cv[i_cv]->atom_groups)[k_ag]->grad_x(l_atom) *= factor_polynomial;
+                        (cv[i_cv]->atom_groups)[k_ag]->grad_y(l_atom) *= factor_polynomial;
+                        (cv[i_cv]->atom_groups)[k_ag]->grad_z(l_atom) *= factor_polynomial;
                     }
                 }
             }
@@ -124,8 +138,42 @@ void colvar::linearCombination::apply_force(colvarvalue const &force) {
     }
 }
 
-colvar::customColvar::customColvar(std::string const &conf): linearCombination(conf) {
-    use_custom_function = false;
+
+cvm::real colvar::linearCombination::dist2(colvarvalue const &x1, colvarvalue const &x2) const
+{
+  return x1.dist2(x2);
+}
+
+
+colvarvalue colvar::linearCombination::dist2_lgrad(colvarvalue const &x1,
+                                                   colvarvalue const &x2) const
+{
+  return x1.dist2_grad(x2);
+}
+
+
+colvarvalue colvar::linearCombination::dist2_rgrad(colvarvalue const &x1,
+                                                   colvarvalue const &x2) const
+{
+  return x2.dist2_grad(x1);
+}
+
+
+void colvar::linearCombination::wrap(colvarvalue & /* x_unwrapped */) const {}
+
+
+
+colvar::customColvar::customColvar()
+{
+    set_function_type("customColvar");
+}
+
+
+int colvar::customColvar::init(std::string const &conf)
+{
+    int error_code = linearCombination::init(conf);
+    if (error_code != COLVARS_OK) return error_code;
+
     // code swipe from colvar::init_custom_function
     std::string expr_in, expr;
     size_t pos = 0; // current position in config string
@@ -146,7 +194,7 @@ colvar::customColvar::customColvar(std::string const &conf): linearCombination(c
                 pexpr = Lepton::Parser::parse(expr);
                 pexprs.push_back(pexpr);
             } catch (...) {
-                cvm::error("Error parsing expression \"" + expr + "\".\n", COLVARS_INPUT_ERROR);
+                return cvm::error("Error parsing expression \"" + expr + "\".\n", COLVARS_INPUT_ERROR);
             }
             try {
                 value_evaluators.push_back(new Lepton::CompiledExpression(pexpr.createCompiledExpression()));
@@ -164,7 +212,7 @@ colvar::customColvar::customColvar(std::string const &conf): linearCombination(c
                     }
                 }
             } catch (...) {
-                cvm::error("Error compiling expression \"" + expr + "\".\n", COLVARS_INPUT_ERROR);
+                return cvm::error("Error compiling expression \"" + expr + "\".\n", COLVARS_INPUT_ERROR);
             }
         } while (key_lookup(conf, "customFunction", &expr_in, &pos));
         // Now define derivative with respect to each scalar sub-component
@@ -189,7 +237,7 @@ colvar::customColvar::customColvar(std::string const &conf): linearCombination(c
             }
         }
         if (value_evaluators.size() == 0) {
-            cvm::error("Error: no custom function defined.\n", COLVARS_INPUT_ERROR);
+            return cvm::error("Error: no custom function defined.\n", COLVARS_INPUT_ERROR);
         }
         if (value_evaluators.size() != 1) {
             x.type(colvarvalue::type_vector);
@@ -197,14 +245,17 @@ colvar::customColvar::customColvar(std::string const &conf): linearCombination(c
             x.type(colvarvalue::type_scalar);
         }
 #else
-        cvm::error("customFunction requires the Lepton library, but it is not enabled during compilation.\n"
-                   "Please refer to the Compilation Notes section of the Colvars manual for more information.\n",
-                    COLVARS_INPUT_ERROR);
+      return cvm::error(
+          "customFunction requires the Lepton library, but it is not enabled during compilation.\n"
+          "Please refer to the Compilation Notes section of the Colvars manual for more "
+          "information.\n",
+          COLVARS_NOT_IMPLEMENTED);
 #endif
     } else {
         cvm::log("Warning: no customFunction specified.\n");
         cvm::log("Warning: use linear combination instead.\n");
     }
+    return error_code;
 }
 
 colvar::customColvar::~customColvar() {
@@ -272,7 +323,9 @@ void colvar::customColvar::calc_gradients() {
                         const double expr_grad = gradient_evaluators[e++]->evaluate();
                         for (size_t k_ag = 0 ; k_ag < cv[i_cv]->atom_groups.size(); ++k_ag) {
                             for (size_t l_atom = 0; l_atom < (cv[i_cv]->atom_groups)[k_ag]->size(); ++l_atom) {
-                                (*(cv[i_cv]->atom_groups)[k_ag])[l_atom].grad = expr_grad * factor_polynomial * (*(cv[i_cv]->atom_groups)[k_ag])[l_atom].grad;
+                                (cv[i_cv]->atom_groups)[k_ag]->grad_x(l_atom) *= expr_grad * factor_polynomial;
+                                (cv[i_cv]->atom_groups)[k_ag]->grad_y(l_atom) *= expr_grad * factor_polynomial;
+                                (cv[i_cv]->atom_groups)[k_ag]->grad_z(l_atom) *= expr_grad * factor_polynomial;
                             }
                         }
                     }

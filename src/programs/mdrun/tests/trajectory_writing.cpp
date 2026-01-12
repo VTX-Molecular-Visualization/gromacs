@@ -49,8 +49,12 @@
 #include <gtest/gtest.h>
 
 #include "gromacs/options/filenameoption.h"
+#include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/stringutil.h"
 
+#include "testutils/cmdlinetest.h"
+#include "testutils/mpitest.h"
+#include "testutils/testasserts.h"
 #include "testutils/testfilemanager.h"
 
 #include "moduletest.h"
@@ -102,16 +106,16 @@ TEST_P(Trajectories, ThatDifferInNstxout)
     const auto nstxout = GetParam();
     theMdpFile         = gmx::formatString(
             "integrator = md\n"
-            "nsteps = 6\n"
-            "nstxout = %s\n"
-            "nstvout = 2\n"
-            "nstfout = 4\n"
-            "nstxout-compressed = 5\n"
-            "tcoupl = v-rescale\n"
-            "tc-grps = System\n"
-            "tau-t = 1\n"
-            "ref-t = 298\n"
-            "compressed-x-grps = Sol\n",
+                    "nsteps = 6\n"
+                    "nstxout = %s\n"
+                    "nstvout = 2\n"
+                    "nstfout = 4\n"
+                    "nstxout-compressed = 5\n"
+                    "tcoupl = v-rescale\n"
+                    "tc-grps = System\n"
+                    "tau-t = 1\n"
+                    "ref-t = 298\n"
+                    "compressed-x-grps = Sol\n",
             nstxout.c_str());
     runTest(0);
 }
@@ -126,17 +130,17 @@ TEST_P(NptTrajectories, WithDifferentPcoupl)
     int         maxwarn = (pcouple == "Berendsen") ? 1 : 0;
     theMdpFile          = gmx::formatString(
             "integrator = md\n"
-            "nsteps = 2\n"
-            "nstxout = 2\n"
-            "nstvout = 1\n"
-            "pcoupl = %s\n"
-            "tau-p = 1\n"
-            "ref-p = 1\n"
-            "compressibility = 4.5e-5\n"
-            "tcoupl = v-rescale\n"
-            "tc-grps = System\n"
-            "tau-t = 1\n"
-            "ref-t = 298\n",
+                     "nsteps = 2\n"
+                     "nstxout = 2\n"
+                     "nstvout = 1\n"
+                     "pcoupl = %s\n"
+                     "tau-p = 1\n"
+                     "ref-p = 1\n"
+                     "compressibility = 4.5e-5\n"
+                     "tcoupl = v-rescale\n"
+                     "tc-grps = System\n"
+                     "tau-t = 1\n"
+                     "ref-t = 298\n",
             pcouple.c_str());
     runTest(maxwarn);
 }
@@ -149,6 +153,47 @@ INSTANTIATE_TEST_SUITE_P(MdrunCanWrite,
                          NptTrajectories,
                          ::testing::Values("no", "Berendsen", "Parrinello-Rahman"));
 
-#endif
+#endif // GMX_USE_TNG
+
+#if GMX_USE_HDF5
+//! Test fixture for mdrun H5md trajectory writing
+class H5mdTrajectoryWritingTest : public gmx::test::MdrunTestFixture
+{
+public:
+    //! The file name of the MDP file
+    std::string theMdpFile;
+
+    //! Execute the trajectory writing test
+    void runTest()
+    {
+        runner_.useStringAsMdpFile(theMdpFile);
+        runner_.useTopGroAndNdxFromDatabase("spc-and-methanol");
+        EXPECT_EQ(0, runner_.callGrompp());
+
+        runner_.fullPrecisionTrajectoryFileName_ =
+                fileManager_.getTemporaryFilePath("spc-and-methanol.h5md").string();
+        // We're not yet ready for H5md compressed output
+        // runner_.reducedPrecisionTrajectoryFileName_ =
+        //         fileManager_.getTemporaryFilePath("spc-and-methanol-reduced.h5md").string();
+        ASSERT_EQ(0, runner_.callMdrun());
+        // TODO When there is a way to sense something like the
+        // output of gmx check, compare the result with that from
+        // writing .trr and .xtc and assert the behaviour is
+        // correct.
+    }
+};
+
+TEST_F(H5mdTrajectoryWritingTest, Works)
+{
+    theMdpFile =
+            "integrator = md\n"
+            "nsteps = 6\n"
+            "nstxout = 5\n"
+            "nstvout = 2\n"
+            "nstfout = 4\n";
+    runTest();
+}
+
+#endif // GMX_USE_HDF5
 
 } // namespace

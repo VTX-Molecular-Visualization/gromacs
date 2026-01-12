@@ -62,10 +62,10 @@
 #include "gromacs/fft/parallel_3dfft.h"
 #include "gromacs/gpu_utils/clfftinitializer.h"
 #include "gromacs/math/gmxcomplex.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/real.h"
+#include "gromacs/utility/vectypes.h"
 #if GMX_GPU
 #    include "gromacs/gpu_utils/devicebuffer.h"
 #endif
@@ -374,7 +374,7 @@ TEST_P(ParameterizedFFTTest3D, RunsOnHost)
     // Use std::copy to convert from double to real easily
     std::copy(inputdata, inputdata + sizeInReals, in_.begin());
     // Use memcpy to convert to t_complex easily
-    memcpy(rdata, in_.data(), sizeInBytes);
+    std::memcpy(rdata, in_.data(), sizeInBytes);
 
     // Do the forward FFT to compute the complex grid
     gmx_parallel_3dfft_execute(fft_, GMX_FFT_REAL_TO_COMPLEX, 0, nullptr);
@@ -491,7 +491,7 @@ TEST_P(ParameterizedFFTTest3D, RunsOnDevices)
 #        if GMX_GPU_FFT_VKFFT
         const FftBackend backend = FftBackend::HipVkfft;
 #        else
-        const FftBackend backend = FftBackend::Hipfft;
+        const FftBackend backend = FftBackend::HipRocfft;
 #        endif
 #    elif GMX_GPU_OPENCL
 #        if GMX_GPU_FFT_VKFFT
@@ -502,8 +502,8 @@ TEST_P(ParameterizedFFTTest3D, RunsOnDevices)
 #    elif GMX_GPU_SYCL
 #        if GMX_GPU_FFT_MKL
         const FftBackend backend = FftBackend::SyclMkl;
-#        elif GMX_GPU_FFT_ONEMKL
-        const FftBackend backend = FftBackend::SyclOneMkl;
+#        elif GMX_GPU_FFT_ONEMATH
+        const FftBackend backend = FftBackend::SyclOneMath;
 #        elif GMX_GPU_FFT_BBFFT
         const FftBackend backend = FftBackend::SyclBbfft;
 #        elif GMX_GPU_FFT_ROCFFT

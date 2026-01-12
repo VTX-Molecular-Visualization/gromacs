@@ -47,10 +47,10 @@
 #include <string>
 
 #include "gromacs/libgromacs_export.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/topology/ifunc.h"
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/real.h"
+#include "gromacs/utility/vectypes.h"
 
 struct gmx_cmap_t;
 struct t_fcdata;
@@ -113,8 +113,6 @@ void do_dih_fup(int                 i,
                 int                 t2,
                 int                 t3);
 
-/*! \brief Make a dihedral fall in the range (-pi,pi) */
-void make_dp_periodic(real* dp);
 
 /*! \brief Compute CMAP dihedral energies and forces */
 real cmap_dihs(int                 nbonds,
@@ -126,12 +124,12 @@ real cmap_dihs(int                 nbonds,
                rvec                fshift[],
                const struct t_pbc* pbc,
                real gmx_unused     lambda,
-               real gmx_unused* dvdlambda,
+               real gmx_unused*    dvdlambda,
                gmx::ArrayRef<const real> /*charge*/,
-               t_fcdata gmx_unused* fcd,
+               t_fcdata gmx_unused*     fcd,
                t_disresdata gmx_unused* disresdata,
                t_oriresdata gmx_unused* oriresdata,
-               int gmx_unused* global_atom_index);
+               int gmx_unused*          global_atom_index);
 
 /*! \brief For selecting which flavor of bonded kernel is used for simple bonded types */
 enum class BondedKernelFlavor
@@ -172,7 +170,7 @@ static constexpr bool computeEnergyOrVirial(const BondedKernelFlavor flavor)
  * All pointers should be non-null, except for pbc and g which can be nullptr.
  * \returns the energy or 0 when \p bondedKernelFlavor did not request the energy.
  */
-real calculateSimpleBond(int                       ftype,
+real calculateSimpleBond(InteractionFunction       ftype,
                          int                       numForceatoms,
                          const t_iatom             forceatoms[],
                          const t_iparams           forceparams[],
@@ -186,8 +184,8 @@ real calculateSimpleBond(int                       ftype,
                          t_fcdata*                 fcd,
                          t_disresdata*             disresdata,
                          t_oriresdata*             oriresdata,
-                         int gmx_unused*    global_atom_index,
-                         BondedKernelFlavor bondedKernelFlavor);
+                         int gmx_unused*           global_atom_index,
+                         BondedKernelFlavor        bondedKernelFlavor);
 
 //! Getter for finding the flop count for an \c ftype interaction.
 int nrnbIndex(int ftype);

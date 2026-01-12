@@ -59,6 +59,7 @@
 
 #include <gtest/gtest.h>
 
+#include "gromacs/gpu_utils/capabilities.h"
 #include "gromacs/hardware/device_management.h"
 #include "gromacs/hardware/hw_info.h"
 #include "gromacs/utility/basedefinitions.h"
@@ -171,16 +172,17 @@ std::optional<std::string> reasonsTestIsInvalid(MdpFlavor       mdpFlavor,
 #if GMX_GPU
     errorReasons.appendIf(haveAnyGpuWork && !haveCompatibleDevices,
                           "Cannot use GPU offload without a compatible GPU");
-    errorReasons.appendIf(GMX_GPU_OPENCL && updateFlavor == UpdateFlavor::Gpu,
-                          "GPU Update not supported with OpenCL");
+    errorReasons.appendIf(!gmx::GpuConfigurationCapabilities::Update && updateFlavor == UpdateFlavor::Gpu,
+                          "GPU Update not supported");
+    errorReasons.appendIf(!gmx::GpuConfigurationCapabilities::Pme && pmeFlavor == PmeFlavor::Gpu,
+                          "GPU PME not supported");
     errorReasons.appendIf(updateFlavor == UpdateFlavor::Gpu && pmeFlavor == PmeFlavor::Cpu
                                   && separatePmeRankFlavor != SeparatePmeRankFlavor::None,
                           "Can not use GPU update and CPU PME on a separate rank");
-    errorReasons.appendIf(GMX_GPU_HIP, "HIP kernels are not implemented yet");
 #endif
     errorReasons.appendIf(haveAnyGpuWork && nonbondedFlavor == NonbondedFlavor::Cpu,
                           "Cannot offload PME or Update to GPU without offloading Nonbondeds");
-    if ((getenv("GMX_GPU_PME_DECOMPOSITION")) == nullptr)
+    if ((std::getenv("GMX_GPU_PME_DECOMPOSITION")) == nullptr)
     {
         errorReasons.appendIf(
                 pmeFlavor == PmeFlavor::Gpu && separatePmeRankFlavor == SeparatePmeRankFlavor::Two,
@@ -192,8 +194,9 @@ std::optional<std::string> reasonsTestIsInvalid(MdpFlavor       mdpFlavor,
     errorReasons.appendIf(numRanks > 1 && separatePmeRankFlavor == SeparatePmeRankFlavor::None
                                   && pmeFlavor == PmeFlavor::Gpu,
                           "Cannot use GPU PME offload with multiple PME+PP ranks");
-    errorReasons.appendIf(numRanks == 2 && separatePmeRankFlavor == SeparatePmeRankFlavor::Two,
-                          "Cannot use two separate PME ranks when there are only two ranks total");
+    errorReasons.appendIf(
+            numRanks < 4 && separatePmeRankFlavor == SeparatePmeRankFlavor::Two,
+            "Cannot use two separate PME ranks when there are less than four ranks total");
     errorReasons.finishContext();
     if (errorReasons.isEmpty())
     {

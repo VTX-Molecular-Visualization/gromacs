@@ -116,9 +116,9 @@ We can again integrate the long-range contribution to the virial
 assuming :math:`g(r)` is 1 beyond :math:`r_1`:
 
 .. math:: \begin{aligned}
-          \Xi_{lr}&=&	{\frac{1}{2}}N \rho \left(
-              \int_{r_1}^{r_c}  4 \pi r^2 (\Xi -\Xi_c)  \,{{\rm d}r}+ \int_{r_c}^{\infty} 4 \pi r^2 3\,C_6\,{r_{ij}}^{-6}\,  {{\rm d}r}\right)	\nonumber\\
-                  &=&     {\frac{1}{2}}N \rho \left(
+          \Xi_{lr}&=& {\frac{1}{2}}N \rho \left(
+              \int_{r_1}^{r_c}  4 \pi r^2 (\Xi -\Xi_c)  \,{{\rm d}r}+ \int_{r_c}^{\infty} 4 \pi r^2 3\,C_6\,{r_{ij}}^{-6}\,  {{\rm d}r}\right)  \nonumber\\
+                  &=& {\frac{1}{2}}N \rho \left(
               \int_{r_1}^{r_c} 4 \pi r^2 (\Xi -\Xi_c) \, {{\rm d}r}+ 4 \pi C_6 \, r_c^{-3} \right)\end{aligned}
           :label: eqnlrljvirialcontrib
 
@@ -157,7 +157,7 @@ this case the modified Ewald equations become
           \end{aligned}
           :label: eqnljpmerealspace
 
-.. math:: \begin{aligned} 
+.. math:: \begin{aligned}
           V_{\mathrm{rec}} &=& \frac{{\pi}^{\frac{3}{2}} \beta^{3}}{2V} \sum_{m_x}\sum_{m_y}\sum_{m_{z}*}
           f(\pi | {\mathbf m} | /\beta) \times \sum_{i,j}^{N} C^{ij}_6 {\mathrm{exp}}\left[-2\pi i {\bf m}\cdot({\bf r_i}-{\bf r_j})\right] \\[0.5ex]
           V_{0} &=& -\frac{\beta^{6}}{12}\sum_{i}^{N} C^{ii}_6\end{aligned}
@@ -228,12 +228,12 @@ This potential will reduce to the expression in
 interaction is given by
 
 .. math:: \begin{aligned}
-          \nonumber V(r<r_c) &=& \underbrace{C^{\mathrm{dir}}_6 r^{-6} - C^\mathrm{recip}_6 [1 - g(\beta r)] r^{-6}}_{\mathrm{Direct \  space}} + \underbrace{C^\mathrm{recip}_6 [1 - g(\beta r)] r^{-6}}_{\mathrm{Reciprocal \  space}} \\ 
+          \nonumber V(r<r_c) &=& \underbrace{C^{\mathrm{dir}}_6 r^{-6} - C^\mathrm{recip}_6 [1 - g(\beta r)] r^{-6}}_{\mathrm{Direct \  space}} + \underbrace{C^\mathrm{recip}_6 [1 - g(\beta r)] r^{-6}}_{\mathrm{Reciprocal \  space}} \\
           &=&C^{\mathrm{dir}}_6 r^{-6}
           \end{aligned}
           :label: eqnljpmecorr2
 
-.. math:: \begin{aligned} 
+.. math:: \begin{aligned}
           V(r>r_c) &=& C^\mathrm{recip}_6 [1 - g(\beta r)] r^{-6}.\end{aligned}
           :label: eqnljpmecorr3
 

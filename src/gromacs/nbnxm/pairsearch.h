@@ -55,13 +55,14 @@
 #include <memory>
 #include <vector>
 
-#include "gromacs/math/vectypes.h"
 #include "gromacs/nbnxm/atomdata.h"
+#include "gromacs/nbnxm/nbnxm_enums.h"
 #include "gromacs/timing/cyclecounter.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/bitmask.h"
 #include "gromacs/utility/range.h"
 #include "gromacs/utility/real.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "gridset.h"
 #include "pairlist.h"
@@ -70,6 +71,7 @@ enum class PbcType : int;
 
 namespace gmx
 {
+class AtomPairlist;
 class DomdecZones;
 struct PairsearchWork;
 enum class PairlistType;
@@ -167,7 +169,7 @@ struct PairsearchWork
 
 
     //! Temporary FEP list for load balancing
-    std::unique_ptr<t_nblist> nbl_fep;
+    std::unique_ptr<AtomPairlist> nbl_fep;
 
     //! Counter for thread-local cycles
     nbnxn_cycle_t cycleCounter;
@@ -187,8 +189,8 @@ public:
                    const rvec              upperCorner,
                    const UpdateGroupsCog*  updateGroupsCog,
                    Range<int>              atomRange,
-                   int                     numGridAtoms,
-                   real                    atomDensity,
+                   const int               numAtomsWithoutFillers,
+                   const real              atomDensity,
                    ArrayRef<const int32_t> atomInfo,
                    ArrayRef<const RVec>    x,
                    const int*              move,
@@ -202,7 +204,7 @@ public:
                            upperCorner,
                            updateGroupsCog,
                            atomRange,
-                           numGridAtoms,
+                           numAtomsWithoutFillers,
                            atomDensity,
                            atomInfo,
                            x,
@@ -212,14 +214,23 @@ public:
         cycleCounting_.stop(enbsCCgrid);
     }
 
+    void setNonLocalGrid(int                                 gridIndex,
+                         int                                 zone,
+                         const GridDimensions&               gridDimensions,
+                         ArrayRef<const std::pair<int, int>> columns,
+                         ArrayRef<const int32_t>             atomInfo,
+                         ArrayRef<const RVec>                x,
+                         nbnxn_atomdata_t*                   nbat);
+
     /*! \brief Constructor
      *
      * \param[in] pbcType                  The periodic boundary conditions
      * \param[in] doTestParticleInsertion  Whether test-particle insertion is active
      * \param[in] numDDCells               The number of domain decomposition cells per dimension, without DD nullptr should be passed
      * \param[in] zones                    The domain decomposition zone setup, without DD nullptr should be passed
-     * \param[in] pairlistType             The type of tte pair list
+     * \param[in] pairlistType             The type of the pair list
      * \param[in] haveFep                  Tells whether non-bonded interactions are perturbed
+     * \param[in] localAtomOrderMatchesNbnxmOrder  Whether the local atom order should match the NBNxM order
      * \param[in] maxNumThreads            The maximum number of threads used in the search
      * \param[in] pinningPolicy            Sets the pinning policy for all buffers used on the GPU
      */
@@ -229,6 +240,7 @@ public:
                const DomdecZones* zones,
                PairlistType       pairlistType,
                bool               haveFep,
+               bool               localAtomOrderMatchesNbnxmOrder,
                int                maxNumThreads,
                PinningPolicy      pinningPolicy);
 

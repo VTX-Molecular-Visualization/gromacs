@@ -33,7 +33,6 @@
  */
 #include "gmxpre.h"
 
-#include "gromacs/math/vectypes.h"
 #include "gromacs/topology/atoms.h"
 #include "gromacs/topology/forcefieldparameters.h"
 #include "gromacs/topology/idef.h"
@@ -44,6 +43,7 @@
 #include "gromacs/utility/listoflists.h"
 #include "gromacs/utility/real.h"
 #include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/vectypes.h"
 
 /* This file is completely threadsafe - keep it that way! */
 
@@ -64,11 +64,9 @@
 
 #include "gromacs/applied_forces/awh/read_params.h"
 #include "gromacs/fileio/filetypes.h"
-#include "gromacs/fileio/gmxfio.h"
-#include "gromacs/fileio/gmxfio_xdr.h"
 #include "gromacs/fileio/tpxio.h"
+#include "gromacs/fileio/xdr_serializer.h"
 #include "gromacs/math/units.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/mdtypes/awh_history.h"
 #include "gromacs/mdtypes/awh_params.h"
 #include "gromacs/mdtypes/inputrec.h"
@@ -78,6 +76,9 @@
 #include "gromacs/mdtypes/state.h"
 #include "gromacs/pbcutil/boxutilities.h"
 #include "gromacs/pbcutil/pbc.h"
+#include "gromacs/serialization/inmemoryserializer.h"
+#include "gromacs/serialization/iserializer.h"
+#include "gromacs/serialization/keyvaluetreeserializer.h"
 #include "gromacs/topology/block.h"
 #include "gromacs/topology/ifunc.h"
 #include "gromacs/topology/mtop_atomloops.h"
@@ -90,13 +91,11 @@
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/futil.h"
 #include "gromacs/utility/gmxassert.h"
-#include "gromacs/utility/inmemoryserializer.h"
-#include "gromacs/utility/iserializer.h"
 #include "gromacs/utility/keyvaluetreebuilder.h"
-#include "gromacs/utility/keyvaluetreeserializer.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/snprintf.h"
 #include "gromacs/utility/txtdump.h"
+#include "gromacs/utility/vec.h"
 
 #define TPX_TAG_RELEASE "release"
 
@@ -196,7 +195,12 @@ enum tpxv
     tpxv_MassRepartitioning,          /**< Add mass repartitioning */
     tpxv_AwhTargetMetricScaling,      /**< Add AWH friction optimized target distribution */
     tpxv_VerletBufferPressureTol,     /**< Add Verlet buffer pressure tolerance */
-    tpxv_Count                        /**< the total number of tpxv versions */
+    tpxv_HandleMartiniBondedBStateParametersProperly, /**< Handle restraint angles, restraint dihedrals, and combined bending-torsion parameters properly */
+    tpxv_RefScaleMultipleCOMs, /**< Add multiple COM groups for refcoord-scale */
+    tpxv_InputHistogramCounts, /**< Provide input histogram counts for current expanded ensemble state */
+    tpxv_NNPotIFuncType,       /**< Add interaction function type for neural network potential */
+    tpxv_AwhHistogramTolerance, /**< Add AWH histogram tolerance */
+    tpxv_Count                  /**< the total number of tpxv versions */
 };
 
 /*! \brief Version number of the file format written to run input
@@ -236,7 +240,8 @@ enum class TpxGeneration : int
     Initial = 26, //! First version is 26
     AddSizeField, //! TPR header modified for writing as a block.
     AddVSite1,    //! ftupd changed to include VSite1 type.
-    Count         //! Number of entries.
+    AddNNPotIFuncType, //! ftupd changed to include NNPotIFuncType (bumped retrospectively for commit 152bde36).
+    Count              //! Number of entries.
 };
 
 //! Value of Current TPR generation.
@@ -251,8 +256,8 @@ static const int tpx_incompatible_version = tpxv_Pre96Version57; // GMX4.0 has v
 /* Struct used to maintain tpx compatibility when function types are added */
 typedef struct
 {
-    int fvnr;  /* file version number in which the function type first appeared */
-    int ftype; /* function type */
+    int                 fvnr;  /* file version number in which the function type first appeared */
+    InteractionFunction ftype; /* function type */
 } t_ftupd;
 
 /*
@@ -273,36 +278,38 @@ typedef struct
  * update TpxGeneration.
  */
 static const t_ftupd ftupd[] = {
-    { tpxv_Pre96Version70, F_RESTRBONDS },
-    { tpxv_RestrictedBendingAndCombinedAngleTorsionPotentials, F_RESTRANGLES },
-    { tpxv_Pre96Version76, F_LINEAR_ANGLES },
-    { tpxv_RestrictedBendingAndCombinedAngleTorsionPotentials, F_RESTRDIHS },
-    { tpxv_RestrictedBendingAndCombinedAngleTorsionPotentials, F_CBTDIHS },
-    { tpxv_Pre96Version65, F_CMAP },
-    { tpxv_Pre96Version60, F_GB12_NOLONGERUSED },
-    { tpxv_Pre96Version61, F_GB13_NOLONGERUSED },
-    { tpxv_Pre96Version61, F_GB14_NOLONGERUSED },
-    { tpxv_Pre96Version72, F_GBPOL_NOLONGERUSED },
-    { tpxv_Pre96Version72, F_NPSOLVATION_NOLONGERUSED },
-    { tpxv_Pre96Version93, F_LJ_RECIP },
-    { tpxv_Pre96Version76, F_ANHARM_POL },
-    { tpxv_Pre96Version90, F_FBPOSRES },
-    { tpxv_VSite1, F_VSITE1 },
-    { tpxv_VSite2FD, F_VSITE2FD },
-    { tpxv_GenericInternalParameters, F_DENSITYFITTING },
-    { tpxv_Pre96Version69, F_VTEMP_NOLONGERUSED },
-    { tpxv_Pre96Version66, F_PDISPCORR },
-    { tpxv_Pre96Version79, F_DVDL_COUL },
+    { tpxv_Pre96Version70, InteractionFunction::RestraintBonds },
+    { tpxv_RestrictedBendingAndCombinedAngleTorsionPotentials, InteractionFunction::RestrictedBendingPotential },
+    { tpxv_Pre96Version76, InteractionFunction::LinearAngles },
+    { tpxv_RestrictedBendingAndCombinedAngleTorsionPotentials, InteractionFunction::RestrictedTorsionPotential },
+    { tpxv_RestrictedBendingAndCombinedAngleTorsionPotentials,
+      InteractionFunction::CombinedBendingTorsionPotential },
+    { tpxv_Pre96Version65, InteractionFunction::DihedralEnergyCorrectionMap },
+    { tpxv_Pre96Version60, InteractionFunction::GeneralizedBorn12PolarizationUnused },
+    { tpxv_Pre96Version61, InteractionFunction::GeneralizedBorn13PolarizationUnused },
+    { tpxv_Pre96Version61, InteractionFunction::GeneralizedBorn14PolarizationUnused },
+    { tpxv_Pre96Version72, InteractionFunction::GeneralizedBornPolarizationUnused },
+    { tpxv_Pre96Version72, InteractionFunction::NonpolarSolvationUnused },
+    { tpxv_Pre96Version93, InteractionFunction::LennardJonesReciprocalSpace },
+    { tpxv_Pre96Version76, InteractionFunction::AnharmonicPolarization },
+    { tpxv_Pre96Version90, InteractionFunction::FlatBottomedPositionRestraints },
+    { tpxv_VSite1, InteractionFunction::VirtualSite1 },
+    { tpxv_VSite2FD, InteractionFunction::VirtualSite2FlexibleDistance },
+    { tpxv_GenericInternalParameters, InteractionFunction::DensityFitting },
+    { tpxv_NNPotIFuncType, InteractionFunction::NeuralNetworkPotentialEnergy },
+    { tpxv_Pre96Version69, InteractionFunction::VirialTemperatureUnused },
+    { tpxv_Pre96Version66, InteractionFunction::PressureDispersionCorrection },
+    { tpxv_Pre96Version79, InteractionFunction::dVCoulombdLambda },
     {
             tpxv_Pre96Version79,
-            F_DVDL_VDW,
+            InteractionFunction::dVvanderWaalsdLambda,
     },
     {
             tpxv_Pre96Version79,
-            F_DVDL_BONDED,
+            InteractionFunction::dVbondeddLambda,
     },
-    { tpxv_Pre96Version79, F_DVDL_RESTRAINT },
-    { tpxv_Pre96Version79, F_DVDL_TEMPERATURE },
+    { tpxv_Pre96Version79, InteractionFunction::dVrestraintdLambda },
+    { tpxv_Pre96Version79, InteractionFunction::dVtemperaturedLambda },
 };
 #define NFTUPD asize(ftupd)
 
@@ -313,7 +320,7 @@ static const t_ftupd ftupd[] = {
  **************************************************************/
 static void do_pullgrp_tpx_pre95(gmx::ISerializer* serializer, t_pull_group* pgrp, t_pull_coord* pcrd)
 {
-    rvec tmp;
+    gmx::RVec tmp;
 
     int numAtoms = pgrp->ind.size();
     serializer->doInt(&numAtoms);
@@ -324,7 +331,7 @@ static void do_pullgrp_tpx_pre95(gmx::ISerializer* serializer, t_pull_group* pgr
     pgrp->weight.resize(numWeights);
     serializer->doRealArray(pgrp->weight.data(), numWeights);
     serializer->doInt(&pgrp->pbcatom);
-    serializer->doRvec(&pcrd->vec.as_vec());
+    serializer->doRvec(&pcrd->vec);
     clear_rvec(pcrd->origin);
     serializer->doRvec(&tmp);
     pcrd->init = tmp[0];
@@ -435,8 +442,8 @@ static void do_pull_coord(gmx::ISerializer* serializer,
             copy_ivec(dimOld, pcrd->dim);
         }
     }
-    serializer->doRvec(&pcrd->origin.as_vec());
-    serializer->doRvec(&pcrd->vec.as_vec());
+    serializer->doRvec(&pcrd->origin);
+    serializer->doRvec(&pcrd->vec);
     if (file_version >= tpxv_PullCoordTypeGeom)
     {
         serializer->doBool(&pcrd->bStart);
@@ -463,9 +470,13 @@ static void do_expandedvals(gmx::ISerializer* serializer, t_expanded* expand, t_
     {
         if (n_lambda > 0)
         {
-            expand->init_lambda_weights.resize(n_lambda);
-            serializer->doRealArray(expand->init_lambda_weights.data(), n_lambda);
-            serializer->doBool(&expand->bInit_weights);
+            expand->initLambdaWeights.resize(n_lambda);
+            serializer->doRealArray(expand->initLambdaWeights.data(), n_lambda);
+            if (file_version < tpxv_InputHistogramCounts)
+            {
+                bool dummy;
+                serializer->doBool(&dummy); // read the former bInit_weights value
+            }
         }
 
         serializer->doInt(&expand->nstexpanded);
@@ -490,6 +501,24 @@ static void do_expandedvals(gmx::ISerializer* serializer, t_expanded* expand, t_
         serializer->doInt(&expand->equil_n_at_lam);
         serializer->doReal(&expand->equil_wl_delta);
         serializer->doReal(&expand->equil_ratio);
+    }
+    if (file_version >= tpxv_InputHistogramCounts)
+    {
+        if (n_lambda > 0)
+        {
+            expand->initLambdaCounts.resize(n_lambda);
+            serializer->doRealArray(expand->initLambdaCounts.data(), n_lambda);
+            expand->initWlHistogramCounts.resize(n_lambda);
+            serializer->doRealArray(expand->initWlHistogramCounts.data(), n_lambda);
+        }
+    }
+    else
+    {
+        if (n_lambda > 0)
+        {
+            expand->initLambdaCounts.resize(n_lambda, 0);
+            expand->initWlHistogramCounts.resize(n_lambda, 0);
+        }
     }
 }
 
@@ -879,7 +908,7 @@ static void do_rotgrp(gmx::ISerializer* serializer, t_rotgrp* rotg)
     }
     for (gmx::RVec& x : rotg->x_ref_original)
     {
-        serializer->doRvec(as_rvec_array(&x));
+        serializer->doRvec(&x);
     }
     serializer->doRvec(&rotg->inputVec);
     serializer->doRvec(&rotg->pivot);
@@ -928,14 +957,15 @@ static void do_swapgroup(gmx::ISerializer* serializer, t_swapGroup* g)
     }
 
     /* Number of atoms in the group */
-    serializer->doInt(&g->nat);
+    int numAtoms = g->ind.size();
+    serializer->doInt(&numAtoms);
 
     /* The group's atom indices */
     if (serializer->reading())
     {
-        snew(g->ind, g->nat);
+        g->ind.resize(numAtoms);
     }
-    serializer->doIntArray(g->ind, g->nat);
+    serializer->doIntArray(g->ind.data(), g->ind.size());
 
     /* Requested counts for compartments A and B */
     serializer->doIntArray(g->nmolReq.data(), static_cast<int>(Compartment::Count));
@@ -961,14 +991,15 @@ static void do_swapcoords_tpx(gmx::ISerializer* serializer, t_swapcoords* swap, 
         /* The total number of swap groups is the sum of the fixed groups
          * (split0, split1, solvent), and the user-defined groups (2+ types of ions)
          */
-        serializer->doInt(&swap->ngrp);
+        int numGroups = swap->groups.size();
+        serializer->doInt(&numGroups);
         if (serializer->reading())
         {
-            snew(swap->grp, swap->ngrp);
+            swap->groups.resize(numGroups);
         }
-        for (int ig = 0; ig < swap->ngrp; ig++)
+        for (t_swapGroup& group : swap->groups)
         {
-            do_swapgroup(serializer, &swap->grp[ig]);
+            do_swapgroup(serializer, &group);
         }
         serializer->doBool(&swap->massw_split[eChannel0]);
         serializer->doBool(&swap->massw_split[eChannel1]);
@@ -986,22 +1017,25 @@ static void do_swapcoords_tpx(gmx::ISerializer* serializer, t_swapcoords* swap, 
     {
         /*** Support reading older CompEl .tpr files ***/
 
-        /* In the original CompEl .tpr files, we always have 5 groups: */
-        swap->ngrp = 5;
-        snew(swap->grp, swap->ngrp);
+        /* In the original CompEl .tpr files, we always have two ion groups: */
+        swap->groups.resize(2 + t_swapcoords::sc_numRequiredGroups);
 
-        swap->grp[static_cast<int>(SwapGroupSplittingType::Split0)].molname = gmx_strdup("split0"); // group 0: split0
-        swap->grp[static_cast<int>(SwapGroupSplittingType::Split1)].molname = gmx_strdup("split1"); // group 1: split1
-        swap->grp[static_cast<int>(SwapGroupSplittingType::Solvent)].molname =
-                gmx_strdup("solvent");                // group 2: solvent
-        swap->grp[3].molname = gmx_strdup("anions");  // group 3: anions
-        swap->grp[4].molname = gmx_strdup("cations"); // group 4: cations
+        swap->requiredGroup(SwapGroupSplittingType::Split0).molname = "split0";   // group 0: split0
+        swap->requiredGroup(SwapGroupSplittingType::Split1).molname = "split1";   // group 1: split1
+        swap->requiredGroup(SwapGroupSplittingType::Solvent).molname = "solvent"; // group 2: solvent
+        swap->groups[3].molname = "anions";                                       // group 3: anions
+        swap->groups[4].molname = "cations"; // group 4: cations
 
-        serializer->doInt(&swap->grp[3].nat);
-        serializer->doInt(&swap->grp[static_cast<int>(SwapGroupSplittingType::Solvent)].nat);
-        serializer->doInt(&swap->grp[static_cast<int>(SwapGroupSplittingType::Split0)].nat);
+        int numAtoms;
+        serializer->doInt(&numAtoms);
+        swap->groups[3].ind.resize(numAtoms);
+        serializer->doInt(&numAtoms);
+        swap->requiredGroup(SwapGroupSplittingType::Solvent).ind.resize(numAtoms);
+        serializer->doInt(&numAtoms);
+        swap->requiredGroup(SwapGroupSplittingType::Split0).ind.resize(numAtoms);
         serializer->doBool(&swap->massw_split[eChannel0]);
-        serializer->doInt(&swap->grp[static_cast<int>(SwapGroupSplittingType::Split1)].nat);
+        serializer->doInt(&numAtoms);
+        swap->requiredGroup(SwapGroupSplittingType::Split1).ind.resize(numAtoms);
         serializer->doBool(&swap->massw_split[eChannel1]);
         serializer->doInt(&swap->nstswap);
         serializer->doInt(&swap->nAverage);
@@ -1013,26 +1047,20 @@ static void do_swapcoords_tpx(gmx::ISerializer* serializer, t_swapcoords* swap, 
         serializer->doReal(&swap->cyl1u);
         serializer->doReal(&swap->cyl1l);
 
-        // The order[] array keeps compatibility with older .tpr files
+        // Keep compatibility with older .tpr files
         // by reading in the groups in the classic order
-        {
-            const int order[4] = { 3,
-                                   static_cast<int>(SwapGroupSplittingType::Solvent),
-                                   static_cast<int>(SwapGroupSplittingType::Split0),
-                                   static_cast<int>(SwapGroupSplittingType::Split1) };
-
-            for (int ig = 0; ig < 4; ig++)
-            {
-                int g = order[ig];
-                snew(swap->grp[g].ind, swap->grp[g].nat);
-                serializer->doIntArray(swap->grp[g].ind, swap->grp[g].nat);
-            }
-        }
+        serializer->doIntArray(swap->groups[3].ind.data(), swap->groups[3].ind.size());
+        serializer->doIntArray(swap->requiredGroup(SwapGroupSplittingType::Solvent).ind.data(),
+                               swap->requiredGroup(SwapGroupSplittingType::Solvent).ind.size());
+        serializer->doIntArray(swap->requiredGroup(SwapGroupSplittingType::Split0).ind.data(),
+                               swap->requiredGroup(SwapGroupSplittingType::Split0).ind.size());
+        serializer->doIntArray(swap->requiredGroup(SwapGroupSplittingType::Split1).ind.data(),
+                               swap->requiredGroup(SwapGroupSplittingType::Split1).ind.size());
 
         for (int j = eCompA; j <= eCompB; j++)
         {
-            serializer->doInt(&swap->grp[3].nmolReq[j]); // group 3 = anions
-            serializer->doInt(&swap->grp[4].nmolReq[j]); // group 4 = cations
+            serializer->doInt(&swap->groups[3].nmolReq[j]); // group 3 = anions
+            serializer->doInt(&swap->groups[4].nmolReq[j]); // group 4 = cations
         }
     } /* End support reading older CompEl .tpr files */
 
@@ -1409,8 +1437,24 @@ static void do_inputrec(gmx::ISerializer* serializer, t_inputrec* ir, int file_v
     serializer->doRvec(&ir->pressureCouplingOptions.compress[YY]);
     serializer->doRvec(&ir->pressureCouplingOptions.compress[ZZ]);
     serializer->doEnumAsInt(&ir->pressureCouplingOptions.refcoord_scaling);
-    serializer->doRvec(&ir->posres_com);
-    serializer->doRvec(&ir->posres_comB);
+
+    auto numPosresComGroups = static_cast<int>(ir->posresCom.size());
+    if (file_version >= tpxv_RefScaleMultipleCOMs)
+    {
+        serializer->doInt(&numPosresComGroups);
+    }
+    else
+    {
+        numPosresComGroups = 1;
+    }
+
+    if (serializer->reading())
+    {
+        ir->posresCom.resize(numPosresComGroups);
+        ir->posresComB.resize(numPosresComGroups);
+    }
+    serializer->doRvecArray(ir->posresCom);
+    serializer->doRvecArray(ir->posresComB);
 
     if (file_version < tpxv_Pre96Version79)
     {
@@ -1522,20 +1566,20 @@ static void do_inputrec(gmx::ISerializer* serializer, t_inputrec* ir, int file_v
         serializer->doBool(&ir->bAdress);
         if (ir->bAdress)
         {
-            int  idum, numThermoForceGroups, numEnergyGroups;
-            real rdum;
-            rvec rvecdum;
-            serializer->doInt(&idum);
-            serializer->doReal(&rdum);
-            serializer->doReal(&rdum);
-            serializer->doReal(&rdum);
-            serializer->doInt(&idum);
-            serializer->doInt(&idum);
+            int       iDumAdress, numThermoForceGroups, numEnergyGroups;
+            real      rDumAdress;
+            gmx::RVec rvecdum;
+            serializer->doInt(&iDumAdress);
+            serializer->doReal(&rDumAdress);
+            serializer->doReal(&rDumAdress);
+            serializer->doReal(&rDumAdress);
+            serializer->doInt(&iDumAdress);
+            serializer->doInt(&iDumAdress);
             serializer->doRvec(&rvecdum);
             serializer->doInt(&numThermoForceGroups);
-            serializer->doReal(&rdum);
+            serializer->doReal(&rDumAdress);
             serializer->doInt(&numEnergyGroups);
-            serializer->doInt(&idum);
+            serializer->doInt(&iDumAdress);
 
             if (numThermoForceGroups > 0)
             {
@@ -1608,7 +1652,8 @@ static void do_inputrec(gmx::ISerializer* serializer, t_inputrec* ir, int file_v
                 ir->awhParams =
                         std::make_unique<gmx::AwhParams>(serializer,
                                                          file_version < tpxv_AwhGrowthFactor,
-                                                         file_version < tpxv_AwhTargetMetricScaling);
+                                                         file_version < tpxv_AwhTargetMetricScaling,
+                                                         file_version < tpxv_AwhHistogramTolerance);
             }
             else
             {
@@ -1671,11 +1716,16 @@ static void do_inputrec(gmx::ISerializer* serializer, t_inputrec* ir, int file_v
     if (serializer->reading() && file_version >= tpxv_RemovedConstantAcceleration
         && file_version < tpxv_ReaddedConstantAcceleration)
     {
-        ir->opts.ngacc = 0;
+        GMX_RELEASE_ASSERT(ir->opts.acceleration.empty(), "Should read into an empty ir");
     }
     else
     {
-        serializer->doInt(&ir->opts.ngacc);
+        int numAccelerationGroups = ir->opts.acceleration.size();
+        serializer->doInt(&numAccelerationGroups);
+        if (serializer->reading())
+        {
+            ir->opts.acceleration.resize(numAccelerationGroups);
+        }
     }
     serializer->doInt(&ir->opts.ngfrz);
     serializer->doInt(&ir->opts.ngener);
@@ -1690,7 +1740,6 @@ static void do_inputrec(gmx::ISerializer* serializer, t_inputrec* ir, int file_v
         snew(ir->opts.anneal_temp, ir->opts.ngtc);
         snew(ir->opts.tau_t, ir->opts.ngtc);
         snew(ir->opts.nFreeze, ir->opts.ngfrz);
-        snew(ir->opts.acceleration, ir->opts.ngacc);
         snew(ir->opts.egp_flags, ir->opts.ngener * ir->opts.ngener);
     }
     if (ir->opts.ngtc > 0)
@@ -1701,22 +1750,18 @@ static void do_inputrec(gmx::ISerializer* serializer, t_inputrec* ir, int file_v
     }
     if (ir->opts.ngfrz > 0)
     {
-        serializer->doIvecArray(ir->opts.nFreeze, ir->opts.ngfrz);
+        serializer->doIvecArray(gmx::arrayRefFromArray(
+                reinterpret_cast<gmx::IVec*>(ir->opts.nFreeze), ir->opts.ngfrz));
     }
-    if (ir->opts.ngacc > 0)
+    if (!ir->opts.acceleration.empty())
     {
-        serializer->doRvecArray(ir->opts.acceleration, ir->opts.ngacc);
+        serializer->doRvecArray(ir->opts.acceleration);
     }
     if (serializer->reading())
     {
-        ir->useConstantAcceleration = false;
-        for (int g = 0; g < ir->opts.ngacc; g++)
-        {
-            if (norm2(ir->opts.acceleration[g]) != 0)
-            {
-                ir->useConstantAcceleration = true;
-            }
-        }
+        ir->useConstantAcceleration = std::any_of(ir->opts.acceleration.begin(),
+                                                  ir->opts.acceleration.end(),
+                                                  [](const gmx::RVec& v) { return v.norm2() != 0; });
     }
     serializer->doIntArray(ir->opts.egp_flags, ir->opts.ngener * ir->opts.ngener);
 
@@ -1760,9 +1805,9 @@ static void do_inputrec(gmx::ISerializer* serializer, t_inputrec* ir, int file_v
         {
             if (serializer->reading())
             {
-                snew(ir->swap, 1);
+                ir->swap = std::make_unique<t_swapcoords>();
             }
-            do_swapcoords_tpx(serializer, ir->swap, file_version);
+            do_swapcoords_tpx(serializer, ir->swap.get(), file_version);
         }
     }
 
@@ -1771,9 +1816,9 @@ static void do_inputrec(gmx::ISerializer* serializer, t_inputrec* ir, int file_v
      */
     {
         serializer->doBool(&ir->bQMMM);
-        int qmmmScheme;
-        serializer->doInt(&qmmmScheme);
-        real unusedScalefactor;
+        int unusedQmmmScheme = -1;
+        serializer->doInt(&unusedQmmmScheme);
+        real unusedScalefactor = -1.0;
         serializer->doReal(&unusedScalefactor);
 
         // this is still used in Mimic
@@ -1877,43 +1922,57 @@ static void do_harm(gmx::ISerializer* serializer, t_iparams* iparams)
     serializer->doReal(&iparams->harmonic.krB);
 }
 
-static void do_iparams(gmx::ISerializer* serializer, t_functype ftype, t_iparams* iparams, int file_version)
+static void do_iparams(gmx::ISerializer* serializer, InteractionFunction ftype, t_iparams* iparams, int file_version)
 {
     int  idum;
     real rdum;
 
     switch (ftype)
     {
-        case F_ANGLES:
-        case F_G96ANGLES:
-        case F_BONDS:
-        case F_G96BONDS:
-        case F_HARMONIC:
-        case F_IDIHS:
+        case InteractionFunction::Angles:
+        case InteractionFunction::GROMOS96Angles:
+        case InteractionFunction::Bonds:
+        case InteractionFunction::GROMOS96Bonds:
+        case InteractionFunction::HarmonicPotential:
+        case InteractionFunction::ImproperDihedrals:
             do_harm(serializer, iparams);
-            if ((ftype == F_ANGRES || ftype == F_ANGRESZ) && serializer->reading())
+            if ((ftype == InteractionFunction::AngleRestraints || ftype == InteractionFunction::AngleZAxisRestraints)
+                && serializer->reading())
             {
                 /* Correct incorrect storage of parameters */
                 iparams->pdihs.phiB = iparams->pdihs.phiA;
                 iparams->pdihs.cpB  = iparams->pdihs.cpA;
             }
             break;
-        case F_RESTRANGLES:
+        case InteractionFunction::RestrictedBendingPotential:
             serializer->doReal(&iparams->harmonic.rA);
             serializer->doReal(&iparams->harmonic.krA);
+            if (file_version < tpxv_HandleMartiniBondedBStateParametersProperly && serializer->reading())
+            {
+                // Makes old tpr files work, because it's very likely
+                // that FEP on such interactions was never intended
+                // because such FEP is not implemented.
+                iparams->harmonic.rB  = iparams->harmonic.rA;
+                iparams->harmonic.krB = iparams->harmonic.krA;
+            }
+            else
+            {
+                serializer->doReal(&iparams->harmonic.rB);
+                serializer->doReal(&iparams->harmonic.krB);
+            }
             break;
-        case F_LINEAR_ANGLES:
+        case InteractionFunction::LinearAngles:
             serializer->doReal(&iparams->linangle.klinA);
             serializer->doReal(&iparams->linangle.aA);
             serializer->doReal(&iparams->linangle.klinB);
             serializer->doReal(&iparams->linangle.aB);
             break;
-        case F_FENEBONDS:
+        case InteractionFunction::FENEBonds:
             serializer->doReal(&iparams->fene.bm);
             serializer->doReal(&iparams->fene.kb);
             break;
 
-        case F_RESTRBONDS:
+        case InteractionFunction::RestraintBonds:
             serializer->doReal(&iparams->restraint.lowA);
             serializer->doReal(&iparams->restraint.up1A);
             serializer->doReal(&iparams->restraint.up2A);
@@ -1923,26 +1982,26 @@ static void do_iparams(gmx::ISerializer* serializer, t_functype ftype, t_iparams
             serializer->doReal(&iparams->restraint.up2B);
             serializer->doReal(&iparams->restraint.kB);
             break;
-        case F_TABBONDS:
-        case F_TABBONDSNC:
-        case F_TABANGLES:
-        case F_TABDIHS:
+        case InteractionFunction::TabulatedBonds:
+        case InteractionFunction::TabulatedBondsNoCoupling:
+        case InteractionFunction::TabulatedAngles:
+        case InteractionFunction::TabulatedDihedrals:
             serializer->doReal(&iparams->tab.kA);
             serializer->doInt(&iparams->tab.table);
             serializer->doReal(&iparams->tab.kB);
             break;
-        case F_CROSS_BOND_BONDS:
+        case InteractionFunction::CrossBondBonds:
             serializer->doReal(&iparams->cross_bb.r1e);
             serializer->doReal(&iparams->cross_bb.r2e);
             serializer->doReal(&iparams->cross_bb.krr);
             break;
-        case F_CROSS_BOND_ANGLES:
+        case InteractionFunction::CrossBondAngles:
             serializer->doReal(&iparams->cross_ba.r1e);
             serializer->doReal(&iparams->cross_ba.r2e);
             serializer->doReal(&iparams->cross_ba.r3e);
             serializer->doReal(&iparams->cross_ba.krt);
             break;
-        case F_UREY_BRADLEY:
+        case InteractionFunction::UreyBradleyPotential:
             serializer->doReal(&iparams->u_b.thetaA);
             serializer->doReal(&iparams->u_b.kthetaA);
             serializer->doReal(&iparams->u_b.r13A);
@@ -1962,16 +2021,16 @@ static void do_iparams(gmx::ISerializer* serializer, t_functype ftype, t_iparams
                 iparams->u_b.kUBB    = iparams->u_b.kUBA;
             }
             break;
-        case F_QUARTIC_ANGLES:
+        case InteractionFunction::QuarticAngles:
             serializer->doReal(&iparams->qangle.theta);
             serializer->doRealArray(iparams->qangle.c, 5);
             break;
-        case F_BHAM:
+        case InteractionFunction::BuckinghamShortRange:
             serializer->doReal(&iparams->bham.a);
             serializer->doReal(&iparams->bham.b);
             serializer->doReal(&iparams->bham.c);
             break;
-        case F_MORSE:
+        case InteractionFunction::MorsePotential:
             serializer->doReal(&iparams->morse.b0A);
             serializer->doReal(&iparams->morse.cbA);
             serializer->doReal(&iparams->morse.betaA);
@@ -1988,19 +2047,19 @@ static void do_iparams(gmx::ISerializer* serializer, t_functype ftype, t_iparams
                 iparams->morse.betaB = iparams->morse.betaA;
             }
             break;
-        case F_CUBICBONDS:
+        case InteractionFunction::CubicBonds:
             serializer->doReal(&iparams->cubic.b0);
             serializer->doReal(&iparams->cubic.kb);
             serializer->doReal(&iparams->cubic.kcub);
             break;
-        case F_CONNBONDS: break;
-        case F_POLARIZATION: serializer->doReal(&iparams->polarize.alpha); break;
-        case F_ANHARM_POL:
+        case InteractionFunction::ConnectBonds: break;
+        case InteractionFunction::Polarization: serializer->doReal(&iparams->polarize.alpha); break;
+        case InteractionFunction::AnharmonicPolarization:
             serializer->doReal(&iparams->anharm_polarize.alpha);
             serializer->doReal(&iparams->anharm_polarize.drcut);
             serializer->doReal(&iparams->anharm_polarize.khyp);
             break;
-        case F_WATER_POL:
+        case InteractionFunction::WaterPolarization:
             serializer->doReal(&iparams->wpol.al_x);
             serializer->doReal(&iparams->wpol.al_y);
             serializer->doReal(&iparams->wpol.al_z);
@@ -2008,7 +2067,7 @@ static void do_iparams(gmx::ISerializer* serializer, t_functype ftype, t_iparams
             serializer->doReal(&iparams->wpol.rHH);
             serializer->doReal(&iparams->wpol.rOD);
             break;
-        case F_THOLE_POL:
+        case InteractionFunction::TholePolarization:
             serializer->doReal(&iparams->thole.a);
             serializer->doReal(&iparams->thole.alpha1);
             serializer->doReal(&iparams->thole.alpha2);
@@ -2019,44 +2078,57 @@ static void do_iparams(gmx::ISerializer* serializer, t_functype ftype, t_iparams
             }
 
             break;
-        case F_LJ:
+        case InteractionFunction::LennardJonesShortRange:
             serializer->doReal(&iparams->lj.c6);
             serializer->doReal(&iparams->lj.c12);
             break;
-        case F_LJ14:
+        case InteractionFunction::LennardJones14:
             serializer->doReal(&iparams->lj14.c6A);
             serializer->doReal(&iparams->lj14.c12A);
             serializer->doReal(&iparams->lj14.c6B);
             serializer->doReal(&iparams->lj14.c12B);
             break;
-        case F_LJC14_Q:
+        case InteractionFunction::LennardJonesCoulomb14Q:
             serializer->doReal(&iparams->ljc14.fqq);
             serializer->doReal(&iparams->ljc14.qi);
             serializer->doReal(&iparams->ljc14.qj);
             serializer->doReal(&iparams->ljc14.c6);
             serializer->doReal(&iparams->ljc14.c12);
             break;
-        case F_LJC_PAIRS_NB:
+        case InteractionFunction::LennardJonesCoulombNonBondedPairs:
             serializer->doReal(&iparams->ljcnb.qi);
             serializer->doReal(&iparams->ljcnb.qj);
             serializer->doReal(&iparams->ljcnb.c6);
             serializer->doReal(&iparams->ljcnb.c12);
             break;
-        case F_PDIHS:
-        case F_PIDIHS:
-        case F_ANGRES:
-        case F_ANGRESZ:
+        case InteractionFunction::ProperDihedrals:
+        case InteractionFunction::PeriodicImproperDihedrals:
+        case InteractionFunction::AngleRestraints:
+        case InteractionFunction::AngleZAxisRestraints:
             serializer->doReal(&iparams->pdihs.phiA);
             serializer->doReal(&iparams->pdihs.cpA);
             serializer->doReal(&iparams->pdihs.phiB);
             serializer->doReal(&iparams->pdihs.cpB);
             serializer->doInt(&iparams->pdihs.mult);
             break;
-        case F_RESTRDIHS:
+        case InteractionFunction::RestrictedTorsionPotential:
             serializer->doReal(&iparams->pdihs.phiA);
             serializer->doReal(&iparams->pdihs.cpA);
+            if (file_version < tpxv_HandleMartiniBondedBStateParametersProperly && serializer->reading())
+            {
+                // Makes old tpr files work, because it's very likely
+                // that FEP on such interactions was never intended
+                // because such FEP is not implemented.
+                iparams->pdihs.phiB = iparams->pdihs.phiA;
+                iparams->pdihs.cpB  = iparams->pdihs.cpA;
+            }
+            else
+            {
+                serializer->doReal(&iparams->pdihs.phiB);
+                serializer->doReal(&iparams->pdihs.cpB);
+            }
             break;
-        case F_DISRES:
+        case InteractionFunction::DistanceRestraints:
             serializer->doInt(&iparams->disres.label);
             serializer->doInt(&iparams->disres.type);
             serializer->doReal(&iparams->disres.low);
@@ -2064,7 +2136,7 @@ static void do_iparams(gmx::ISerializer* serializer, t_functype ftype, t_iparams
             serializer->doReal(&iparams->disres.up2);
             serializer->doReal(&iparams->disres.kfac);
             break;
-        case F_ORIRES:
+        case InteractionFunction::OrientationRestraints:
             serializer->doInt(&iparams->orires.ex);
             serializer->doInt(&iparams->orires.label);
             serializer->doInt(&iparams->orires.power);
@@ -2072,7 +2144,7 @@ static void do_iparams(gmx::ISerializer* serializer, t_functype ftype, t_iparams
             serializer->doReal(&iparams->orires.obs);
             serializer->doReal(&iparams->orires.kfac);
             break;
-        case F_DIHRES:
+        case InteractionFunction::DihedralRestraints:
             if (file_version < tpxv_Pre96Version82)
             {
                 serializer->doInt(&idum);
@@ -2094,60 +2166,77 @@ static void do_iparams(gmx::ISerializer* serializer, t_functype ftype, t_iparams
                 iparams->dihres.kfacB = iparams->dihres.kfacA;
             }
             break;
-        case F_POSRES:
+        case InteractionFunction::PositionRestraints:
             serializer->doRvec(&iparams->posres.pos0A);
             serializer->doRvec(&iparams->posres.fcA);
             serializer->doRvec(&iparams->posres.pos0B);
             serializer->doRvec(&iparams->posres.fcB);
             break;
-        case F_FBPOSRES:
+        case InteractionFunction::FlatBottomedPositionRestraints:
             serializer->doInt(&iparams->fbposres.geom);
             serializer->doRvec(&iparams->fbposres.pos0);
             serializer->doReal(&iparams->fbposres.r);
             serializer->doReal(&iparams->fbposres.k);
             break;
-        case F_CBTDIHS: serializer->doRealArray(iparams->cbtdihs.cbtcA, NR_CBTDIHS); break;
-        case F_RBDIHS:
+        case InteractionFunction::CombinedBendingTorsionPotential:
+            serializer->doRealArray(iparams->cbtdihs.cbtcA, NR_CBTDIHS);
+            if (file_version < tpxv_HandleMartiniBondedBStateParametersProperly && serializer->reading())
+            {
+                // Makes old tpr files work, because it's very likely
+                // that FEP on such interactions was never intended
+                // because such FEP is not implemented.
+                std::copy(std::begin(iparams->cbtdihs.cbtcA),
+                          std::end(iparams->cbtdihs.cbtcA),
+                          std::begin(iparams->cbtdihs.cbtcB));
+            }
+            else
+            {
+                serializer->doRealArray(iparams->cbtdihs.cbtcB, NR_CBTDIHS);
+            }
+            break;
+        case InteractionFunction::RyckaertBellemansDihedrals:
             // Fall-through intended
-        case F_FOURDIHS:
+        case InteractionFunction::FourierDihedrals:
             /* Fourier dihedrals are internally represented
              * as Ryckaert-Bellemans since those are faster to compute.
              */
             serializer->doRealArray(iparams->rbdihs.rbcA, NR_RBDIHS);
             serializer->doRealArray(iparams->rbdihs.rbcB, NR_RBDIHS);
             break;
-        case F_CONSTR:
-        case F_CONSTRNC:
+        case InteractionFunction::Constraints:
+        case InteractionFunction::ConstraintsNoCoupling:
             serializer->doReal(&iparams->constr.dA);
             serializer->doReal(&iparams->constr.dB);
             break;
-        case F_SETTLE:
+        case InteractionFunction::SETTLE:
             serializer->doReal(&iparams->settle.doh);
             serializer->doReal(&iparams->settle.dhh);
             break;
-        case F_VSITE1: break; // VSite1 has 0 parameters
-        case F_VSITE2:
-        case F_VSITE2FD: serializer->doReal(&iparams->vsite.a); break;
-        case F_VSITE3:
-        case F_VSITE3FD:
-        case F_VSITE3FAD:
+        case InteractionFunction::VirtualSite1: break; // VSite1 has 0 parameters
+        case InteractionFunction::VirtualSite2:
+        case InteractionFunction::VirtualSite2FlexibleDistance:
+            serializer->doReal(&iparams->vsite.a);
+            break;
+        case InteractionFunction::VirtualSite3:
+        case InteractionFunction::VirtualSite3FlexibleDistance:
+        case InteractionFunction::VirtualSite3FlexibleAngleDistance:
             serializer->doReal(&iparams->vsite.a);
             serializer->doReal(&iparams->vsite.b);
             break;
-        case F_VSITE3OUT:
-        case F_VSITE4FD:
-        case F_VSITE4FDN:
+        case InteractionFunction::VirtualSite3Outside:
+        case InteractionFunction::VirtualSite4FlexibleDistance:
+        case InteractionFunction::VirtualSite4FlexibleDistanceNormalization:
             serializer->doReal(&iparams->vsite.a);
             serializer->doReal(&iparams->vsite.b);
             serializer->doReal(&iparams->vsite.c);
             break;
-        case F_VSITEN:
+        case InteractionFunction::VirtualSiteN:
             serializer->doInt(&iparams->vsiten.n);
             serializer->doReal(&iparams->vsiten.a);
             break;
-        case F_GB12_NOLONGERUSED:
-        case F_GB13_NOLONGERUSED:
-        case F_GB14_NOLONGERUSED:
+        case InteractionFunction::GeneralizedBorn12PolarizationUnused:
+        case InteractionFunction::GeneralizedBorn13PolarizationUnused:
+        case InteractionFunction::GeneralizedBorn14PolarizationUnused:
             // Implicit solvent parameters can still be read, but never used
             if (serializer->reading())
             {
@@ -2168,14 +2257,14 @@ static void do_iparams(gmx::ISerializer* serializer, t_functype ftype, t_iparams
                 }
             }
             break;
-        case F_CMAP:
+        case InteractionFunction::DihedralEnergyCorrectionMap:
             serializer->doInt(&iparams->cmap.cmapA);
             serializer->doInt(&iparams->cmap.cmapB);
             break;
         default:
             gmx_fatal(FARGS,
                       "unknown function type %d (%s) in %s line %d",
-                      ftype,
+                      static_cast<int>(ftype),
                       interaction_function[ftype].name,
                       __FILE__,
                       __LINE__);
@@ -2198,13 +2287,25 @@ static void do_ffparams(gmx::ISerializer* serializer, gmx_ffparams_t* ffparams, 
     serializer->doInt(&ffparams->atnr);
     int numTypes = ffparams->numTypes();
     serializer->doInt(&numTypes);
+    std::vector<int> serializableFuncType(numTypes);
+    if (!serializer->reading())
+    {
+        std::transform(ffparams->functype.begin(),
+                       ffparams->functype.end(),
+                       serializableFuncType.begin(),
+                       [](InteractionFunction val) { return static_cast<int>(val); });
+    }
+    /* Read/write all the function types */
+    serializer->doIntArray(serializableFuncType.data(), serializableFuncType.size());
     if (serializer->reading())
     {
         ffparams->functype.resize(numTypes);
         ffparams->iparams.resize(numTypes);
+        std::transform(serializableFuncType.begin(),
+                       serializableFuncType.end(),
+                       ffparams->functype.begin(),
+                       [](int val) { return static_cast<InteractionFunction>(val); });
     }
-    /* Read/write all the function types */
-    serializer->doIntArray(ffparams->functype.data(), ffparams->functype.size());
 
     if (file_version >= tpxv_Pre96Version66)
     {
@@ -2231,7 +2332,8 @@ static void do_ffparams(gmx::ISerializer* serializer, gmx_ffparams_t* ffparams, 
                 /* Compare the read file_version to the update table */
                 if ((file_version < ftupd[k].fvnr) && (ffparams->functype[i] >= ftupd[k].ftype))
                 {
-                    ffparams->functype[i] += 1;
+                    ffparams->functype[i] =
+                            static_cast<InteractionFunction>(static_cast<int>(ffparams->functype[i]) + 1);
                 }
             }
         }
@@ -2258,18 +2360,18 @@ static void add_settle_atoms(InteractionList* ilist)
 static void do_ilists(gmx::ISerializer* serializer, InteractionLists* ilists, int file_version)
 {
     GMX_RELEASE_ASSERT(ilists, "Need a valid ilists object");
-    GMX_RELEASE_ASSERT(ilists->size() == F_NRE,
+    GMX_RELEASE_ASSERT(ilists->size() == static_cast<int>(InteractionFunction::Count),
                        "The code needs to be in sync with InteractionLists");
 
-    for (int j = 0; j < F_NRE; j++)
+    for (const auto iftype : gmx::EnumerationWrapper<InteractionFunction>{})
     {
-        InteractionList& ilist  = (*ilists)[j];
+        InteractionList& ilist  = (*ilists)[iftype];
         gmx_bool         bClear = FALSE;
         if (serializer->reading())
         {
             for (int k = 0; k < NFTUPD; k++)
             {
-                if ((file_version < ftupd[k].fvnr) && (j == ftupd[k].ftype))
+                if ((file_version < ftupd[k].fvnr) && (iftype == ftupd[k].ftype))
                 {
                     bClear = TRUE;
                 }
@@ -2282,7 +2384,8 @@ static void do_ilists(gmx::ISerializer* serializer, InteractionLists* ilists, in
         else
         {
             do_ilist(serializer, &ilist);
-            if (file_version < tpxv_Pre96Version78 && j == F_SETTLE && !ilist.empty())
+            if (file_version < tpxv_Pre96Version78 && iftype == InteractionFunction::SETTLE
+                && !ilist.empty())
             {
                 add_settle_atoms(&ilist);
             }
@@ -2653,7 +2756,7 @@ static void do_molblock(gmx::ISerializer* serializer, gmx_molblock_t* molb, int 
         {
             molb->posres_xA.resize(numPosres_xA);
         }
-        serializer->doRvecArray(as_rvec_array(molb->posres_xA.data()), numPosres_xA);
+        serializer->doRvecArray(molb->posres_xA);
     }
     int numPosres_xB = molb->posres_xB.size();
     serializer->doInt(&numPosres_xB);
@@ -2663,7 +2766,7 @@ static void do_molblock(gmx::ISerializer* serializer, gmx_molblock_t* molb, int 
         {
             molb->posres_xB.resize(numPosres_xB);
         }
-        serializer->doRvecArray(as_rvec_array(molb->posres_xB.data()), numPosres_xB);
+        serializer->doRvecArray(molb->posres_xB);
     }
 }
 
@@ -2673,7 +2776,7 @@ static void set_disres_npair(gmx_mtop_t* mtop)
 
     for (const auto ilist : IListRange(*mtop))
     {
-        const InteractionList& il = ilist.list()[F_DISRES];
+        const InteractionList& il = ilist.list()[InteractionFunction::DistanceRestraints];
 
         if (!il.empty())
         {
@@ -2795,13 +2898,11 @@ static void do_mtop(gmx::ISerializer* serializer, gmx_mtop_t* mtop, int file_ver
  * \param[in,out] serializer The serializer used to handle header processing.
  * \param[in,out] tpx File header datastructure.
  * \param[in]     filename The name of the file being read/written
- * \param[in,out] fio File handle.
  * \param[in] TopOnlyOK If not reading \p ir is fine or not.
  */
-static void do_tpxheader(gmx::FileIOXdrSerializer*    serializer,
+static void do_tpxheader(gmx::XdrSerializer*          serializer,
                          TpxFileHeader*               tpx,
                          const std::filesystem::path& filename,
-                         t_fileio*                    fio,
                          bool                         TopOnlyOK)
 {
     int  precision;
@@ -2841,7 +2942,7 @@ static void do_tpxheader(gmx::FileIOXdrSerializer*    serializer,
                       sizeof(float),
                       sizeof(double));
         }
-        gmx_fio_setprecision(fio, tpx->isDouble);
+        serializer->setDoublePrecision(tpx->isDouble);
         fprintf(stderr,
                 "Reading file %s, %s (%s precision)\n",
                 filename.string().c_str(),
@@ -2852,7 +2953,7 @@ static void do_tpxheader(gmx::FileIOXdrSerializer*    serializer,
     {
         buf = gmx::formatString("VERSION %s", gmx_version());
         serializer->doString(&buf);
-        gmx_fio_setprecision(fio, tpx->isDouble);
+        serializer->setDoublePrecision(tpx->isDouble);
         serializer->doInt(&precision);
         fileTag = tpx_tag;
     }
@@ -2958,6 +3059,11 @@ static void do_tpxheader(gmx::FileIOXdrSerializer*    serializer,
     if ((serializer)->reading() && ((p) != nullptr) && !(b)) \
     gmx_fatal(FARGS, "No %s in input file", #p)
 
+static gmx::ArrayRef<gmx::RVec> asArrayRefRvec(matrix m, const int n)
+{
+    return gmx::arrayRefFromArray(reinterpret_cast<gmx::RVec*>(m[XX]), n);
+}
+
 /*! \brief
  * Process the first part of the TPR into the state datastructure.
  *
@@ -2983,21 +3089,21 @@ static void do_tpx_state_first(gmx::ISerializer* serializer, TpxFileHeader* tpx,
     do_test(serializer, tpx->bBox, state->box);
     if (tpx->bBox)
     {
-        serializer->doRvecArray(state->box, DIM);
+        serializer->doRvecArray(asArrayRefRvec(state->box, DIM));
         if (tpx->fileVersion >= tpxv_Pre96Version51)
         {
-            serializer->doRvecArray(state->box_rel, DIM);
+            serializer->doRvecArray(asArrayRefRvec(state->box_rel, DIM));
         }
         else
         {
             /* We initialize box_rel after reading the inputrec */
             clear_mat(state->box_rel);
         }
-        serializer->doRvecArray(state->boxv, DIM);
+        serializer->doRvecArray(asArrayRefRvec(state->boxv, DIM));
         if (tpx->fileVersion < tpxv_Pre96Version56)
         {
             matrix mdum;
-            serializer->doRvecArray(mdum, DIM);
+            serializer->doRvecArray(asArrayRefRvec(mdum, DIM));
         }
     }
 
@@ -3102,7 +3208,7 @@ static void do_tpx_state_second(gmx::ISerializer* serializer, TpxFileHeader* tpx
         {
             state->addEntry(StateEntry::X);
         }
-        serializer->doRvecArray(x, tpx->natoms);
+        serializer->doRvecArray(asArrayRefRvec(x, tpx->natoms));
     }
 
     // We cannot call do_test() with v as some "integrators" don't use v
@@ -3115,11 +3221,11 @@ static void do_tpx_state_second(gmx::ISerializer* serializer, TpxFileHeader* tpx
         if (!v)
         {
             std::vector<gmx::RVec> dummyVelocities(tpx->natoms);
-            serializer->doRvecArray(as_rvec_array(dummyVelocities.data()), tpx->natoms);
+            serializer->doRvecArray(dummyVelocities);
         }
         else
         {
-            serializer->doRvecArray(v, tpx->natoms);
+            serializer->doRvecArray(asArrayRefRvec(v, tpx->natoms));
         }
     }
     else if (v)
@@ -3136,7 +3242,7 @@ static void do_tpx_state_second(gmx::ISerializer* serializer, TpxFileHeader* tpx
     if (tpx->bF)
     {
         std::vector<gmx::RVec> dummyForces(state->numAtoms());
-        serializer->doRvecArray(as_rvec_array(dummyForces.data()), tpx->natoms);
+        serializer->doRvecArray(dummyForces);
     }
 }
 /*! \brief
@@ -3227,9 +3333,21 @@ static void do_tpx_finalize(TpxFileHeader* tpx, t_inputrec* ir, t_state* state, 
         {
             if (tpx->fileVersion < tpxv_Pre96Version57)
             {
-                ir->eDisre = !mtop->moltype[0].ilist[F_DISRES].empty()
+                ir->eDisre = !mtop->moltype[0].ilist[InteractionFunction::DistanceRestraints].empty()
                                      ? DistanceRestraintRefinement::Simple
                                      : DistanceRestraintRefinement::None;
+            }
+
+            if (tpx->fileVersion < tpxv_RefScaleMultipleCOMs
+                && ((gmx_mtop_ftype_count(*mtop, InteractionFunction::PositionRestraints) == 0
+                     && gmx_mtop_ftype_count(*mtop, InteractionFunction::FlatBottomedPositionRestraints) == 0)
+                    || ir->pressureCouplingOptions.refcoord_scaling != RefCoordScaling::Com))
+            {
+                // We do not have position restraints or we do not have COM ref-coord scaling
+                // (and with ref-coord scaling option All no COMs are used),
+                // so we do not need the position restraint COMs
+                ir->posresCom.clear();
+                ir->posresComB.clear();
             }
         }
     }
@@ -3291,16 +3409,6 @@ static PbcType do_tpx_body(gmx::ISerializer* serializer,
 static PbcType do_tpx_body(gmx::ISerializer* serializer, TpxFileHeader* tpx, t_inputrec* ir, gmx_mtop_t* mtop)
 {
     return do_tpx_body(serializer, tpx, ir, nullptr, nullptr, nullptr, mtop);
-}
-
-static t_fileio* open_tpx(const std::filesystem::path& fn, const char* mode)
-{
-    return gmx_fio_open(fn, mode);
-}
-
-static void close_tpx(t_fileio* fio)
-{
-    gmx_fio_close(fio);
 }
 
 /*! \brief
@@ -3426,14 +3534,10 @@ static PartialDeserializedTprFile readTpxBody(TpxFileHeader*    tpx,
 
 TpxFileHeader readTpxHeader(const std::filesystem::path& fileName, bool canReadTopologyOnly)
 {
-    t_fileio* fio;
-
-    fio = open_tpx(fileName, "r");
-    gmx::FileIOXdrSerializer serializer(fio);
+    gmx::XdrSerializer serializer(fileName, "r");
 
     TpxFileHeader tpx;
-    do_tpxheader(&serializer, &tpx, fileName, fio, canReadTopologyOnly);
-    close_tpx(fio);
+    do_tpxheader(&serializer, &tpx, fileName, canReadTopologyOnly);
     return tpx;
 }
 
@@ -3447,8 +3551,6 @@ void write_tpx_state(const std::filesystem::path& fn,
      * populated before we write the main body because it has some information that is
      * otherwise not available.
      */
-
-    t_fileio* fio;
 
     TpxFileHeader tpx = populateTpxHeader(*state, ir, &mtop);
     // Long-term we should move to use little endian in files to avoid extra byte swapping,
@@ -3469,12 +3571,9 @@ void write_tpx_state(const std::filesystem::path& fn,
     std::vector<char> tprBody = tprBodySerializer.finishAndGetBuffer();
     tpx.sizeOfTprBody         = tprBody.size();
 
-    fio = open_tpx(fn, "w");
-    gmx::FileIOXdrSerializer serializer(fio);
-    do_tpxheader(&serializer, &tpx, fn, fio, ir == nullptr);
+    gmx::XdrSerializer serializer(fn, "w");
+    do_tpxheader(&serializer, &tpx, fn, ir == nullptr);
     doTpxBodyBuffer(&serializer, tprBody);
-
-    close_tpx(fio);
 }
 
 PbcType completeTprDeserialization(PartialDeserializedTprFile* partialDeserializedTpr,
@@ -3505,29 +3604,23 @@ PbcType completeTprDeserialization(PartialDeserializedTprFile* partialDeserializ
 PartialDeserializedTprFile
 read_tpx_state(const std::filesystem::path& fn, t_inputrec* ir, t_state* state, gmx_mtop_t* mtop)
 {
-    t_fileio* fio;
-    fio = open_tpx(fn, "r");
-    gmx::FileIOXdrSerializer   serializer(fio);
+    gmx::XdrSerializer         serializer(fn, "r");
     PartialDeserializedTprFile partialDeserializedTpr;
-    do_tpxheader(&serializer, &partialDeserializedTpr.header, fn, fio, ir == nullptr);
+    do_tpxheader(&serializer, &partialDeserializedTpr.header, fn, ir == nullptr);
     partialDeserializedTpr =
             readTpxBody(&partialDeserializedTpr.header, &serializer, ir, state, nullptr, nullptr, mtop);
-    close_tpx(fio);
     return partialDeserializedTpr;
 }
 
 PbcType read_tpx(const std::filesystem::path& fn, t_inputrec* ir, matrix box, int* natoms, rvec* x, rvec* v, gmx_mtop_t* mtop)
 {
-    t_fileio* fio;
-    t_state   state;
+    t_state state;
 
-    TpxFileHeader tpx;
-    fio = open_tpx(fn, "r");
-    gmx::FileIOXdrSerializer serializer(fio);
-    do_tpxheader(&serializer, &tpx, fn, fio, ir == nullptr);
+    TpxFileHeader      tpx;
+    gmx::XdrSerializer serializer(fn, "r");
+    do_tpxheader(&serializer, &tpx, fn, ir == nullptr);
     PartialDeserializedTprFile partialDeserializedTpr =
             readTpxBody(&tpx, &serializer, ir, &state, x, v, mtop);
-    close_tpx(fio);
     if (mtop != nullptr && natoms != nullptr)
     {
         *natoms = mtop->natoms;

@@ -47,10 +47,10 @@
 #include <memory>
 
 #include "gromacs/gpu_utils/devicebuffer_datatype.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/timing/wallcycle.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/fixedcapacityvector.h"
+#include "gromacs/utility/vectypes.h"
 
 class GpuEventSynchronizer;
 class DeviceStream;
@@ -58,8 +58,6 @@ class DeviceContext;
 
 namespace gmx
 {
-
-#define HAVE_GPU_FORCE_REDUCTION (GMX_GPU_CUDA || GMX_GPU_SYCL)
 
 /*! \internal
  * \brief Manages the force reduction directly in GPU memory

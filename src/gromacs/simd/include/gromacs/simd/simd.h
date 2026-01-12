@@ -139,8 +139,6 @@ CLANG_DIAGNOSTIC_IGNORE("-Wundefined-reinterpret-cast")
 #    include "impl_x86_avx2_128/impl_x86_avx2_128.h"
 #elif GMX_SIMD_X86_AVX_512
 #    include "impl_x86_avx_512/impl_x86_avx_512.h"
-#elif GMX_SIMD_X86_AVX_512_KNL
-#    include "impl_x86_avx_512_knl/impl_x86_avx_512_knl.h"
 #elif GMX_SIMD_ARM_NEON_ASIMD
 #    include "impl_arm_neon_asimd/impl_arm_neon_asimd.h"
 #elif GMX_SIMD_ARM_SVE
@@ -288,7 +286,7 @@ struct alignas(GMX_SIMD_DOUBLE_WIDTH * sizeof(double)) AlignedArray<double, N> :
 #    if GMX_DOUBLE
 typedef SimdDouble SimdReal;
 #    else
-typedef SimdFloat  SimdReal;
+typedef SimdFloat SimdReal;
 #    endif
 
 
@@ -312,7 +310,7 @@ typedef SimdFloat  SimdReal;
 #    if GMX_DOUBLE
 typedef SimdDBool SimdBool;
 #    else
-typedef SimdFBool  SimdBool;
+typedef SimdFBool SimdBool;
 #    endif
 
 
@@ -371,7 +369,7 @@ typedef SimdFIBool SimdIBool;
 #    if GMX_DOUBLE
 const int c_simdBestPairAlignment = c_simdBestPairAlignmentDouble;
 #    else
-const int          c_simdBestPairAlignment = c_simdBestPairAlignmentFloat;
+const int c_simdBestPairAlignment = c_simdBestPairAlignmentFloat;
 #    endif
 
 #endif // GMX_SIMD_HAVE_REAL
@@ -765,7 +763,7 @@ using Simd4NReal = Simd4NFloat;
    GMX_SIMD_HAVE_REAL.
 
    Such code is expected to include simd.h to get those symbols
-   defined, but the actual definitions are in the implemention headers
+   defined, but the actual definitions are in the implementation headers
    included by simd.h. check-source.py is not a full preprocessor, so
    it does not see the definitions in the implementation headers as
    belonging to simd.h, thus it cannot check that simd.h is being used

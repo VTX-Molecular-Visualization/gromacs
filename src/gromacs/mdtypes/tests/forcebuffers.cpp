@@ -50,9 +50,9 @@
 
 #include "gromacs/gpu_utils/hostallocator.h"
 #include "gromacs/math/arrayrefwithpadding.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/basedefinitions.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "testutils/testasserts.h"
 
@@ -111,11 +111,11 @@ TEST(ForceBuffers, CopyWorks)
 
     forceBuffers.resize(2);
     auto  force = forceBuffers.view().force();
-    Index i     = 0;
+    Index idx   = 0;
     for (RVec& v : force)
     {
-        v = c_forces[i];
-        i++;
+        v = c_forces[idx];
+        idx++;
     }
 
     ForceBuffers forceBuffersCopy;

@@ -56,10 +56,10 @@
 #include <string>
 #include <utility>
 
-#include "gromacs/math/vec.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/real.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "selelem.h"
 #include "selvalue.h"
@@ -483,7 +483,7 @@ gmx::SelectionTreeElementPointer _gmx_sel_init_arithmetic(const gmx::SelectionTr
                                                           const gmx::SelectionTreeElementPointer& right,
                                                           char     op,
                                                           yyscan_t scanner);
-/** Creates a gmx::SelectionTreeElement for comparsion expression evaluation. */
+/** Creates a gmx::SelectionTreeElement for comparison expression evaluation. */
 gmx::SelectionTreeElementPointer _gmx_sel_init_comparison(const gmx::SelectionTreeElementPointer& left,
                                                           const gmx::SelectionTreeElementPointer& right,
                                                           const char* cmpop,

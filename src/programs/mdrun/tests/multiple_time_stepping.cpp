@@ -85,7 +85,7 @@ class MtsComparisonTest : public MdrunTestFixture, public ::testing::WithParamIn
 //! Returns set of energy terms to compare with associated tolerances
 EnergyTermsToCompare energyTermsToCompare(const real energyTol, const real virialTol)
 {
-    return EnergyTermsToCompare{ { { interaction_function[F_EPOT].longname,
+    return EnergyTermsToCompare{ { { interaction_function[InteractionFunction::PotentialEnergy].longname,
                                      relativeToleranceAsFloatingPoint(100.0, energyTol) },
                                    { "Vir-XX", relativeToleranceAsFloatingPoint(30.0, virialTol) },
                                    { "Vir-YY", relativeToleranceAsFloatingPoint(30.0, virialTol) },
@@ -107,15 +107,15 @@ TEST_P(MtsComparisonTest, WithinTolerances)
     const int numSteps         = 4;
     auto      sharedMdpOptions = gmx::formatString(
             "integrator   = md\n"
-            "dt           = 0.001\n"
-            "nsteps       = %d\n"
-            "verlet-buffer-tolerance = -1\n"
-            "rlist        = 1.0\n"
-            "coulomb-type = %s\n"
-            "vdw-type     = cut-off\n"
-            "rcoulomb     = 0.9\n"
-            "rvdw         = 0.9\n"
-            "constraints  = h-bonds\n",
+                 "dt           = 0.001\n"
+                 "nsteps       = %d\n"
+                 "verlet-buffer-tolerance = -1\n"
+                 "rlist        = 1.0\n"
+                 "coulomb-type = %s\n"
+                 "vdw-type     = cut-off\n"
+                 "rcoulomb     = 0.9\n"
+                 "rvdw         = 0.9\n"
+                 "constraints  = h-bonds\n",
             numSteps,
             isPullTest ? "reaction-field" : "PME");
 

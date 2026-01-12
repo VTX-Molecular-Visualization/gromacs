@@ -60,9 +60,9 @@ using mode = sycl::access_mode;
 constexpr static int sc_workGroupSize = 256;
 
 //! \brief Function returning the SETTLE kernel lambda.
-template<bool updateVelocities, bool computeVirial>
-auto settleKernel(sycl::handler& cgh,
-                  const int      numSettles,
+template<bool updateVelocities, bool computeVirial, typename CommandGroupHandler>
+auto settleKernel(CommandGroupHandler cgh,
+                  const int           numSettles,
                   const WaterMolecule* __restrict__ gm_settles,
                   SettleParameters pars,
                   const Float3* __restrict__ gm_x,
@@ -73,18 +73,18 @@ auto settleKernel(sycl::handler& cgh,
                   PbcAiuc pbcAiuc)
 {
     // shmem buffer for i x+q pre-loading
-    auto sm_threadVirial = [&]() {
-        if constexpr (computeVirial)
-        {
-            return sycl::local_accessor<float, 1>(sycl::range<1>(sc_workGroupSize * 6), cgh);
-        }
-        else
-        {
-            return nullptr;
-        }
-    }();
+    using ThreadVirial = StaticLocalStorage<float, sc_workGroupSize * 6, computeVirial>;
+    // These declarations must be made on the host
+    auto sm_threadVirialHostStorage = ThreadVirial::makeHostStorage(cgh);
 
-    return [=](sycl::nd_item<1> itemIdx) {
+    return [=](sycl::nd_item<1> itemIdx)
+    {
+        // These declarations work on the device.
+        typename ThreadVirial::DeviceStorage sm_threadVirialDeviceStorage;
+        // Extract the valid pointer to local storage
+        sycl::local_ptr<float> sm_threadVirial =
+                ThreadVirial::get_pointer(sm_threadVirialHostStorage, sm_threadVirialDeviceStorage);
+
         constexpr float almost_zero = real(1e-12);
         const int       settleIdx   = itemIdx.get_global_linear_id();
         const int       threadIdx = itemIdx.get_local_linear_id(); // Work-item index in work-group
@@ -104,14 +104,14 @@ auto settleKernel(sycl::handler& cgh,
             const Float3 xprime_hw3 = gm_xp[indices.hw3];
 
             Float3 dist21;
-            pbcDxAiucSycl(pbcAiuc, x_hw2, x_ow1, dist21);
+            pbcDxAiucGpu(pbcAiuc, x_hw2, x_ow1, dist21);
             Float3 dist31;
-            pbcDxAiucSycl(pbcAiuc, x_hw3, x_ow1, dist31);
+            pbcDxAiucGpu(pbcAiuc, x_hw3, x_ow1, dist31);
             Float3 doh2;
-            pbcDxAiucSycl(pbcAiuc, xprime_hw2, xprime_ow1, doh2);
+            pbcDxAiucGpu(pbcAiuc, xprime_hw2, xprime_ow1, doh2);
 
             Float3 doh3;
-            pbcDxAiucSycl(pbcAiuc, xprime_hw3, xprime_ow1, doh3);
+            pbcDxAiucGpu(pbcAiuc, xprime_hw3, xprime_ow1, doh3);
 
             Float3 a1 = (doh2 + doh3) * (-pars.wh);
 
@@ -325,7 +325,7 @@ auto settleKernel(sycl::handler& cgh,
                 }
                 else
                 {
-                    subGroupBarrier(itemIdx);
+                    sycl::group_barrier(itemIdx.get_sub_group());
                 }
             }
             // First 6 threads in the block add the 6 components of virial to the global memory address
@@ -352,11 +352,9 @@ static void launchSettleKernel(const DeviceStream& deviceStream, int numSettles,
     const sycl::nd_range<1> rangeAllSettles(numSettlesRoundedUp, sc_workGroupSize);
     sycl::queue             q = deviceStream.stream();
 
-    q.submit(GMX_SYCL_DISCARD_EVENT[&](sycl::handler & cgh) {
-        auto kernel = settleKernel<updateVelocities, computeVirial>(
-                cgh, numSettles, std::forward<Args>(args)...);
-        cgh.parallel_for<kernelNameType>(rangeAllSettles, kernel);
-    });
+    auto kernelFunctionBuilder = settleKernel<updateVelocities, computeVirial, CommandGroupHandler>;
+    syclSubmitWithoutEvent<kernelNameType>(
+            q, kernelFunctionBuilder, rangeAllSettles, numSettles, std::forward<Args>(args)...);
 }
 
 /*! \brief Select templated kernel and launch it. */

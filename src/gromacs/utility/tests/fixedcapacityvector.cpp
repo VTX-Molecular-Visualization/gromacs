@@ -68,30 +68,59 @@ TEST(FixedCapacityVectorTest, IsEmpty)
     EXPECT_TRUE(empty.empty());
 }
 
+TEST(FixedCapacityVectorTest, ConstructorWorks)
+{
+    FixedCapacityVector<int, 3> v(2);
+
+    ASSERT_EQ(2U, v.size());
+    EXPECT_EQ(0, v[0]);
+    EXPECT_EQ(0, v[1]);
+}
+
 TEST(FixedCapacityVectorTest, PushWorks)
 {
     FixedCapacityVector<int, 2> v;
 
     v.push_back(8);
-    EXPECT_EQ(1U, v.size());
+    ASSERT_EQ(1U, v.size());
     EXPECT_EQ(8, v[0]);
 
     v.push_back(5);
-    EXPECT_EQ(2U, v.size());
+    ASSERT_EQ(2U, v.size());
     EXPECT_EQ(8, v[0]);
     EXPECT_EQ(5, v[1]);
 }
 
 TEST(FixedCapacityVectorTest, PopWorks)
 {
-    FixedCapacityVector<int, 3> v;
-
-    v.push_back(8);
+    FixedCapacityVector<double*, 3> v;
+    double                          d;
+    v.push_back(&d);
     EXPECT_EQ(1U, v.size());
 
     v.pop_back();
     EXPECT_EQ(0U, v.size());
     EXPECT_TRUE(v.empty());
+}
+
+TEST(FixedCapacityVectorTest, ResizeWorks)
+{
+    FixedCapacityVector<int, 3> v;
+
+    v.push_back(8);
+    v.push_back(-1);
+    EXPECT_EQ(2U, v.size());
+
+    v.resize(1);
+    ASSERT_EQ(1U, v.size());
+    EXPECT_EQ(8, v[0]);
+
+    v.resize(3);
+    ASSERT_EQ(3U, v.size());
+    EXPECT_EQ(8, v[0]);
+    // Check that the new elements have been zero-initialized
+    EXPECT_EQ(0, v[1]);
+    EXPECT_EQ(0, v[2]);
 }
 
 TEST(FixedCapacityVectorTest, ClearWorks)
@@ -108,11 +137,10 @@ TEST(FixedCapacityVectorTest, ClearWorks)
 
 TEST(FixedCapacityVectorTest, EmplaceBackWorks)
 {
-    FixedCapacityVector<std::vector<int>, 2> v;
+    FixedCapacityVector<char, 2> v;
 
-    const auto& elem = v.emplace_back(5);
+    v.emplace_back(5);
     EXPECT_EQ(1U, v.size());
-    EXPECT_EQ(5U, elem.size());
 }
 
 TEST(FixedCapacityVectorTest, AtThrows)
@@ -142,7 +170,7 @@ TEST(FixedCapacityVectorTest, IteratorWorks)
     {
         loopResult.push_back(elem);
     }
-    EXPECT_EQ(3U, loopResult.size());
+    ASSERT_EQ(3U, loopResult.size());
     EXPECT_EQ(ref[0], loopResult[0]);
     EXPECT_EQ(ref[1], loopResult[1]);
     EXPECT_EQ(ref[2], loopResult[2]);
@@ -165,7 +193,7 @@ TEST(FixedCapacityVectorTest, ReverseIteratorWorks)
     {
         loopResult.push_back(*it);
     }
-    EXPECT_EQ(3U, loopResult.size());
+    ASSERT_EQ(3U, loopResult.size());
     EXPECT_EQ(ref[0], loopResult[2]);
     EXPECT_EQ(ref[1], loopResult[1]);
     EXPECT_EQ(ref[2], loopResult[0]);
@@ -175,7 +203,7 @@ TEST(FixedCapacityVectorTest, ZeroCapacityWorks)
 {
     FixedCapacityVector<int, 0> v;
 
-    EXPECT_EQ(0U, v.size());
+    ASSERT_EQ(0U, v.size());
     EXPECT_EQ(0U, v.capacity());
     EXPECT_EQ(0U, v.max_size());
     EXPECT_TRUE(v.empty());

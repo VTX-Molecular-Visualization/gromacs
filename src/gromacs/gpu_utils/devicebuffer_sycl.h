@@ -158,6 +158,14 @@ T* DeviceBuffer<T>::get_pointer()
     return buffer_ ? buffer_->ptr_ : nullptr;
 }
 
+//! Set the underlying device pointer
+template<typename T>
+void DeviceBuffer<T>::set_pointer(T* input)
+{
+    GMX_ASSERT(buffer_, "Trying to assign value to invalid buffer");
+    buffer_->ptr_ = input;
+}
+
 #endif // #ifndef DOXYGEN
 
 /*! \brief Check the validity of the device buffer.
@@ -262,9 +270,7 @@ void copyToDeviceBuffer(DeviceBuffer<ValueType>* buffer,
     }
     else
     {
-        deviceStream.stream().submit(GMX_SYCL_DISCARD_EVENT[&](sycl::handler & cgh) {
-            cgh.memcpy(dstPtr, hostBuffer, size);
-        });
+        gmx::syclMemcpyWithoutEvent(deviceStream.stream(), dstPtr, hostBuffer, size);
     }
 }
 
@@ -320,9 +326,7 @@ void copyFromDeviceBuffer(ValueType*               hostBuffer,
     }
     else
     {
-        deviceStream.stream().submit(GMX_SYCL_DISCARD_EVENT[&](sycl::handler & cgh) {
-            cgh.memcpy(hostBuffer, srcPtr, size);
-        });
+        gmx::syclMemcpyWithoutEvent(deviceStream.stream(), hostBuffer, srcPtr, size);
     }
 }
 
@@ -355,9 +359,7 @@ void copyBetweenDeviceBuffers(DeviceBuffer<ValueType>* destinationDeviceBuffer,
     }
     else
     {
-        deviceStream.stream().submit(GMX_SYCL_DISCARD_EVENT[&](sycl::handler & cgh) {
-            cgh.memcpy(dstPtr, srcPtr, size);
-        });
+        gmx::syclMemcpyWithoutEvent(deviceStream.stream(), dstPtr, srcPtr, size);
     }
 }
 
@@ -385,9 +387,8 @@ void clearDeviceBufferAsync(DeviceBuffer<ValueType>* buffer,
     GMX_ASSERT(checkDeviceBuffer(*buffer, startingOffset + numValues),
                "buffer too small or not initialized");
 
-    deviceStream.stream().submit(GMX_SYCL_DISCARD_EVENT[&](sycl::handler & cgh) {
-        cgh.memset(buffer->buffer_->ptr_ + startingOffset, 0, numValues * sizeof(ValueType));
-    });
+    gmx::syclMemsetWithoutEvent(
+            deviceStream.stream(), buffer->buffer_->ptr_ + startingOffset, 0, numValues * sizeof(ValueType));
 }
 
 /*! \brief Create a texture object for an array of type ValueType.
@@ -436,6 +437,12 @@ template<typename ValueType>
 ValueType* asMpiPointer(DeviceBuffer<ValueType>& buffer)
 {
     return buffer.get_pointer();
+}
+
+template<typename ValueType>
+void setMpiPointer(DeviceBuffer<ValueType>& buffer, ValueType* ptr)
+{
+    buffer.set_pointer(ptr);
 }
 
 #endif // GMX_GPU_UTILS_DEVICEBUFFER_SYCL_H

@@ -37,11 +37,11 @@
 #include <memory>
 #include <vector>
 
-#include "gromacs/math/vectypes.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/real.h"
+#include "gromacs/utility/vectypes.h"
 
 struct t_inputrec;
 
@@ -214,6 +214,8 @@ public:
     std::vector<std::unique_ptr<SystemMomentum>> systemMomentumWork;
     //! Cosine acceleration data
     t_cos_acc cosacc;
+    //! Last step at which kinetic energy terms were accumulated over the ranks
+    int64_t lastComputeGlobalsStep = -2;
 
     ~gmx_ekindata_t();
 

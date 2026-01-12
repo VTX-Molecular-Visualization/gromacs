@@ -50,9 +50,9 @@
 
 #include "gromacs/applied_forces/qmmm/qmmmtypes.h"
 #include "gromacs/math/units.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/vec.h"
 
 enum class PbcType : int;
 
@@ -277,7 +277,7 @@ std::string QMMMInputGenerator::generateQMMMSection() const
     res += "      &END\n";
     res += "    &END PERIODIC\n";
 
-    // Print indicies of QM atoms
+    // Print indices of QM atoms
     // Loop over counter of QM atom types
     for (size_t i = 0; i < num_atoms.size(); i++)
     {
@@ -304,8 +304,9 @@ std::string QMMMInputGenerator::generateQMMMSection() const
     for (size_t i = 0; i < parameters_.link_.size(); i++)
     {
         res += "    &LINK\n";
-        res += formatString("      QM_INDEX %d\n", static_cast<int>(parameters_.link_[i].qm) + 1);
-        res += formatString("      MM_INDEX %d\n", static_cast<int>(parameters_.link_[i].mm) + 1);
+        res += formatString("      QM_INDEX %d\n",
+                            static_cast<int>(parameters_.link_[i].getEmbeddedIndex()) + 1);
+        res += formatString("      MM_INDEX %d\n", static_cast<int>(parameters_.link_[i].getMMIndex()) + 1);
         res += "    &END LINK\n";
     }
 

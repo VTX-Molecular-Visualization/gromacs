@@ -49,11 +49,11 @@
 #include <vector>
 
 #include "gromacs/gmxlib/network.h"
-#include "gromacs/mdtypes/commrec.h"
 #include "gromacs/mdtypes/observablesreducer.h"
 #include "gromacs/topology/atoms.h"
 #include "gromacs/topology/idef.h"
 #include "gromacs/topology/ifunc.h"
+#include "gromacs/topology/mtop_lookup.h"
 #include "gromacs/topology/mtop_util.h"
 #include "gromacs/topology/topology.h"
 #include "gromacs/utility/arrayref.h"
@@ -61,6 +61,9 @@
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/listoflists.h"
+#include "gromacs/utility/mpicomm.h"
+
+struct gmx_domdec_t;
 
 /*! \brief Data to help check local topology construction
  *
@@ -75,15 +78,16 @@ class ExclusionChecker::Impl
 {
 public:
     //! Constructor
-    Impl(const t_commrec* cr, const gmx_mtop_t& mtop);
+    Impl(const gmx::MpiComm& MpiComm, const gmx_mtop_t& mtop);
 
     //! Checks the count passed with the expected number and exits with a fatal error at mismatch
     void check(int numTotalPerturbedExclusionsFound);
 
     //! Object used when reporting that exclusions are missing
     //! {
-    //! Communication record
-    const t_commrec* cr_;
+    //! Communication object for my group
+    const gmx::MpiComm& mpiComm_;
+    //!
     //! }
 
     /*! \brief View used for computing the global number of bonded interactions.
@@ -135,20 +139,53 @@ static int computeNumGlobalPerturbedExclusions(const gmx_mtop_t& mtop)
         numPerturbedExclusions += molblock.nmol * numPerturbedExclusionsInMol;
     }
 
+    // Check all atom pairs in the inter-molecular exclusion group
+    gmx::ArrayRef<const int> group = mtop.intermolecularExclusionGroup;
+    for (const int globalAtomI : group)
+    {
+        int moleculeBlockI = 0;
+        int moleculeIndexI;
+        int atomIndexInMoleculeI;
+        mtopGetMolblockIndex(mtop, globalAtomI, &moleculeBlockI, &moleculeIndexI, &atomIndexInMoleculeI);
+        const gmx_moltype_t& moltypeI = mtop.moltype[mtop.molblock[moleculeBlockI].type];
+        const bool atomIIsPerturbed   = PERTURBED(moltypeI.atoms.atom[atomIndexInMoleculeI]);
+        const gmx::ArrayRef<const int> exclsI = moltypeI.excls[atomIndexInMoleculeI];
+
+        int moleculeBlockJ = moleculeBlockI;
+        for (const int globalAtomJ : group)
+        {
+            if (globalAtomJ <= globalAtomI)
+            {
+                continue;
+            }
+
+            // We count this exclusion when this is not also a "normal" intra-molecular exclusion
+            int moleculeIndexJ;
+            int atomIndexInMoleculeJ;
+            mtopGetMolblockIndex(mtop, globalAtomJ, &moleculeBlockJ, &moleculeIndexJ, &atomIndexInMoleculeJ);
+            if ((atomIIsPerturbed || PERTURBED(moltypeI.atoms.atom[atomIndexInMoleculeJ]))
+                && !(moleculeBlockJ == moleculeBlockI && moleculeIndexJ == moleculeIndexI
+                     && std::find(exclsI.begin(), exclsI.end(), atomIndexInMoleculeJ) != exclsI.end()))
+            {
+                numPerturbedExclusions++;
+            }
+        }
+    }
+
     return numPerturbedExclusions;
 }
 
-ExclusionChecker::Impl::Impl(const t_commrec* cr, const gmx_mtop_t& mtop) :
-    cr_(cr), expectedNumGlobalPerturbedExclusions_(computeNumGlobalPerturbedExclusions(mtop))
+ExclusionChecker::Impl::Impl(const gmx::MpiComm& mpiComm, const gmx_mtop_t& mtop) :
+    mpiComm_(mpiComm), expectedNumGlobalPerturbedExclusions_(computeNumGlobalPerturbedExclusions(mtop))
 {
 }
 
-ExclusionChecker::ExclusionChecker(const t_commrec*                cr,
+ExclusionChecker::ExclusionChecker(const gmx::MpiComm&             mpiComm,
                                    const gmx_mtop_t&               mtop,
                                    gmx::ObservablesReducerBuilder* observablesReducerBuilder) :
-    impl_(std::make_unique<Impl>(cr, mtop))
+    impl_(std::make_unique<Impl>(mpiComm, mtop))
 {
-    if (cr == nullptr || !havePPDomainDecomposition(cr))
+    if (mpiComm.isSerial())
     {
         // No reduction required
         return;
@@ -159,13 +196,15 @@ ExclusionChecker::ExclusionChecker(const t_commrec*                cr,
 
     Impl*                                               impl = impl_.get();
     gmx::ObservablesReducerBuilder::CallbackFromBuilder callbackFromBuilder =
-            [impl](gmx::ObservablesReducerBuilder::CallbackToRequireReduction c, gmx::ArrayRef<double> v) {
-                impl->callbackToRequireReduction_ = std::move(c);
-                impl->reductionBuffer_            = v;
-            };
+            [impl](gmx::ObservablesReducerBuilder::CallbackToRequireReduction c, gmx::ArrayRef<double> v)
+    {
+        impl->callbackToRequireReduction_ = std::move(c);
+        impl->reductionBuffer_            = v;
+    };
 
     // Make the callback that runs afer reduction.
-    gmx::ObservablesReducerBuilder::CallbackAfterReduction callbackAfterReduction = [impl](gmx::Step /*step*/) {
+    gmx::ObservablesReducerBuilder::CallbackAfterReduction callbackAfterReduction = [impl](gmx::Step /*step*/)
+    {
         // Pass the total after reduction to the check
         impl->check(impl->reductionBuffer_[0]);
     };
@@ -191,8 +230,8 @@ void ExclusionChecker::Impl::check(const int numTotalPerturbedExclusionsFound)
         // Give error and exit
         gmx_fatal_collective(
                 FARGS,
-                cr_->mpi_comm_mygroup,
-                MAIN(cr_),
+                mpiComm_.comm(),
+                mpiComm_.isMainRank(),
                 "There are %d perturbed, excluded non-bonded pair interactions beyond the "
                 "pair-list "
                 "cut-off, which is not supported. This can happen because the system is "
@@ -209,7 +248,7 @@ void ExclusionChecker::scheduleCheckOfExclusions(const int numPerturbedExclusion
 {
     // When we have a single domain, we don't need to reduce and we algorithmically can not miss
     // any interactions, so we can assert here.
-    if (!havePPDomainDecomposition(impl_->cr_))
+    if (impl_->mpiComm_.isSerial())
     {
         impl_->check(numPerturbedExclusionsToReduce);
     }

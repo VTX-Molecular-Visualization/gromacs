@@ -48,13 +48,13 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
-#include "gromacs/math/vectypes.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/topology/idef.h"
 #include "gromacs/topology/ifunc.h"
 #include "gromacs/topology/topology.h"
 #include "gromacs/utility/gmxassert.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "testutils/testasserts.h"
 #include "testutils/testmatchers.h"
@@ -78,9 +78,9 @@ gmx_moltype_t moleculeType()
 {
     gmx_moltype_t moltype = {};
 
-    moltype.atoms.nr               = 5;
-    moltype.ilist[F_CONSTR].iatoms = { 0, 1, 2 };
-    moltype.ilist[F_ANGLES].iatoms = { 1, 2, 1, 3 };
+    moltype.atoms.nr                                       = 5;
+    moltype.ilist[InteractionFunction::Constraints].iatoms = { 0, 1, 2 };
+    moltype.ilist[InteractionFunction::Angles].iatoms      = { 1, 2, 1, 3 };
 
     return moltype;
 }

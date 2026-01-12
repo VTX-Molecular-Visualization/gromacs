@@ -46,8 +46,7 @@
 
 #include <cstdlib>
 
-#include "gromacs/mdtypes/nblist.h"
-
+#include "atompairlist.h"
 #include "pairlist.h"
 
 enum class PbcType : int;
@@ -83,7 +82,7 @@ void SearchCycleCounting::printCycles(FILE* fp, ArrayRef<const PairsearchWork> w
 #ifndef DOXYGEN
 
 PairsearchWork::PairsearchWork() :
-    cp0({ { 0 } }), ndistc(0), nbl_fep(std::make_unique<t_nblist>()), cp1({ { 0 } })
+    cp0({ { 0 } }), ndistc(0), nbl_fep(std::make_unique<AtomPairlist>()), cp1({ { 0 } })
 {
 }
 
@@ -97,12 +96,32 @@ PairSearch::PairSearch(const PbcType      pbcType,
                        const DomdecZones* ddZones,
                        const PairlistType pairlistType,
                        const bool         haveFep,
+                       const bool         localAtomOrderMatchesNbnxmOrder,
                        const int          maxNumThreads,
                        PinningPolicy      pinningPolicy) :
-    gridSet_(pbcType, doTestParticleInsertion, numDDCells, ddZones, pairlistType, haveFep, maxNumThreads, pinningPolicy),
+    gridSet_(pbcType,
+             doTestParticleInsertion,
+             numDDCells,
+             ddZones,
+             pairlistType,
+             haveFep,
+             localAtomOrderMatchesNbnxmOrder,
+             maxNumThreads,
+             pinningPolicy),
     work_(maxNumThreads)
 {
-    cycleCounting_.recordCycles_ = (getenv("GMX_NBNXN_CYCLE") != nullptr);
+    cycleCounting_.recordCycles_ = (std::getenv("GMX_NBNXN_CYCLE") != nullptr);
+}
+
+void PairSearch::setNonLocalGrid(const int                           gridIndex,
+                                 const int                           ddZone,
+                                 const GridDimensions&               gridDimensions,
+                                 ArrayRef<const std::pair<int, int>> columns,
+                                 ArrayRef<const int32_t>             atomInfo,
+                                 ArrayRef<const RVec>                x,
+                                 nbnxn_atomdata_t*                   nbat)
+{
+    gridSet_.setNonLocalGrid(gridIndex, ddZone, gridDimensions, columns, atomInfo, x, nbat);
 }
 
 } // namespace gmx

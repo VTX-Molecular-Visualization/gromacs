@@ -83,21 +83,13 @@ except ImportError:
     )
 
 
-def shlex_join(split_command):
-    """Return a shell-escaped string from *split_command*.
-
-    Copied from Python 3.8.
-    Can be replaced with shlex.join once we don't need to support Python 3.7.
-    """
-    return " ".join(shlex.quote(arg) for arg in split_command)
-
-
 # Basic packages for all final images.
 _common_packages = [
     "build-essential",
     "ca-certificates",
     "ccache",
     "cmake",
+    "gdb",
     "git",
     "gnupg",
     "gpg-agent",
@@ -108,6 +100,7 @@ _common_packages = [
     "libx11-dev",
     "moreutils",
     "ninja-build",
+    "python3",
     "rsync",
     "valgrind",
     "vim",
@@ -159,8 +152,6 @@ _cp2k_extra_packages = [
     "nano",
     "patch",
     "pkg-config",
-    "python",
-    "python-numpy",
     "python3",
     "unzip",
     "xxd",
@@ -223,6 +214,35 @@ _docs_extra_packages = [
     "texlive-fonts-extra",
     "tex-gyre",
 ]
+
+
+def get_oneapi_repository(args) -> "hpccm.building_blocks.base":
+    if args.ubuntu is None:
+        raise RuntimeError("oneAPI only supported on Ubuntu")
+    return hpccm.building_blocks.packages(
+        apt_keys=[
+            "https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB"
+        ],
+        apt_repositories=[
+            "deb [signed-by=/usr/share/keyrings/GPG-PUB-KEY-INTEL-SW-PRODUCTS.gpg arch=amd64] https://apt.repos.intel.com/oneapi all main"
+        ],
+    )
+
+
+def get_impi_version(oneapi_version) -> str:
+    # Map oneAPI version numbers to the version numbers of
+    # Intel MPI that they contain.
+    version_map = {
+        "2025.3": "2021.17",
+        "2025.2": "2021.16",
+        "2025.1": "2021.15",
+        "2025.0": "2021.14",
+        "2024.2": "2021.13",
+        "2024.1": "2021.12",
+        "2024.0": "2021.11",
+    }
+    return version_map[oneapi_version]
+
 
 # Parse command line arguments
 parser = argparse.ArgumentParser(
@@ -298,6 +318,10 @@ def get_llvm_packages(args) -> typing.Iterable[str]:
         packages = [
             f"libomp-{args.llvm}-dev",
             f"libomp5-{args.llvm}",
+            f"libc++-{args.llvm}-dev",
+            f"libc++1-{args.llvm}",
+            f"libc++abi-{args.llvm}-dev",
+            f"libc++abi1-{args.llvm}",
             "clang-format-" + str(args.llvm),
             "clang-tidy-" + str(args.llvm),
         ]
@@ -357,7 +381,7 @@ def get_rocm_repository(args) -> "hpccm.building_blocks.base":
     return hpccm.building_blocks.packages(
         apt_keys=["http://repo.radeon.com/rocm/rocm.gpg.key"],
         apt_repositories=[
-            f"deb [arch=amd64] http://repo.radeon.com/rocm/apt/{args.rocm}/ {dist_string} main"
+            f"deb [arch=amd64 signed-by=/usr/share/keyrings/rocm.gpg.gpg] http://repo.radeon.com/rocm/apt/{args.rocm}/ {dist_string} main"
         ],
     )
 
@@ -451,16 +475,17 @@ def get_ucx(args, compiler, gdrcopy):
             # We disable `-Werror`, since there are some unknown pragmas and unused variables which upset clang
             toolchain = copy.copy(compiler.toolchain)
             toolchain.CFLAGS = "-Wno-error"
+            toolchain.CXXFLAGS = "-Wno-error"
             configure_opts = []
             if args.rocm is not None:
                 configure_opts.append("--with-rocm=/opt/rocm")
-            if args.cuda is not None:
-                configure_opts.append("--with-cuda=/usr/local/cuda")
+            use_cuda = args.cuda is not None
             # Version last updated August 15, 2024
             return hpccm.building_blocks.ucx(
                 toolchain=toolchain,
                 gdrcopy=use_gdrcopy,
-                version="1.17.0",
+                version="1.19.1",
+                cuda=use_cuda,
                 configure_opts=configure_opts,
             )
         else:
@@ -477,14 +502,18 @@ def get_mpi(args, compiler, ucx):
                 if args.oneapi is not None:
                     raise RuntimeError("oneAPI building OpenMPI is not supported")
                 use_cuda = args.cuda is not None
+                configure_opts = []
+                if args.rocm is not None:
+                    configure_opts.append("--with-rocm=/opt/rocm")
                 use_ucx = ucx is not None
-                # Version last updated October 7, 2022
+                # Version last updated April 17, 2025
                 return hpccm.building_blocks.openmpi(
                     toolchain=compiler.toolchain,
-                    version="4.1.4",
+                    version="5.0.8",
                     cuda=use_cuda,
                     ucx=use_ucx,
                     infiniband=False,
+                    configure_opts=configure_opts,
                 )
             else:
                 raise RuntimeError("compiler is not an HPCCM compiler building block!")
@@ -516,13 +545,20 @@ def get_mpi(args, compiler, ucx):
             else:
                 raise RuntimeError("compiler is not an HPCCM compiler building block!")
         elif args.mpi == "impi":
-            # TODO Intel MPI from the oneAPI repo is not working reliably,
-            # reasons are unclear. When solved, add packagages called:
-            # 'intel-oneapi-mpi', 'intel-oneapi-mpi-devel'
-            # during the compiler stage.
-            # TODO also consider hpccm's intel_mpi package if that doesn't need
-            # a license to run.
-            raise RuntimeError("Intel MPI recipe not implemented yet.")
+            if args.oneapi is None:
+                # Note IMPI works with all compilers, but GROMACS doesn't test that in CI
+                raise RuntimeError("IMPI build requires oneAPI")
+            impi_version = get_impi_version(args.oneapi)
+            impi_stage = hpccm.Stage()
+            impi_stage += get_oneapi_repository(args)
+            impi_stage += hpccm.building_blocks.packages(
+                # Add minimal packages (not the whole HPC toolkit!)
+                ospackages=[
+                    f"intel-oneapi-mpi-{impi_version}",
+                    f"intel-oneapi-mpi-devel-{impi_version}",
+                ],
+            )
+            return impi_stage
         else:
             raise RuntimeError("Requested unknown MPI implementation.")
     else:
@@ -530,32 +566,40 @@ def get_mpi(args, compiler, ucx):
 
 
 def get_oneapi_plugins(args):
-    # To get this token, register at https://developer.codeplay.com/ and generate new API token on the "Setting" page.
-    # Then place the toke in this environment variable when building the container.
-    token = os.getenv("CODEPLAY_API_TOKEN")
     blocks = []
 
     def _add_plugin(variant):
         if args.oneapi is None:
             raise RuntimeError("Cannot install oneAPI plugins without oneAPI.")
-        if token is None:
-            raise RuntimeError(
-                "Need CODEPLAY_API_TOKEN env. variable to install oneAPI plugins"
-            )
         backend_version = {"nvidia": args.cuda, "amd": args.rocm}[variant]
         if backend_version.count(".") == 2:
             backend_version = ".".join(backend_version.split(".")[:2])  # 12.0.1 -> 12.0
         oneapi_version = args.oneapi
-        url = f"https://developer.codeplay.com/api/v1/products/download?product=oneapi&version={oneapi_version}&variant={variant}&filters[]=linux&filters[]={backend_version}&aat={token}"
         outfile = f"/tmp/oneapi_plugin_{variant}.sh"
-        blocks.append(
-            hpccm.primitives.shell(
-                commands=[
-                    f"wget --content-disposition '{url}' --output-document '{outfile}'",
-                    f"bash '{outfile}' --yes",
-                ]
+        if packaging.version.Version(args.oneapi) >= packaging.version.Version(
+            "2025.1"
+        ):
+            url = f"https://developer.codeplay.com/api/v1/products/download?product=oneapi&version={oneapi_version}&variant={variant}&filters[]=linux"
+            blocks.append(
+                hpccm.primitives.shell(
+                    commands=[
+                        f"wget --content-disposition '{url}' --output-document '{outfile}'",
+                        # Work around unilateral assumption made in installer
+                        f"mkdir -p /opt/intel/oneapi/{args.oneapi}/lib",
+                        f"bash {outfile} --backend-version {backend_version} --yes",
+                    ]
+                )
             )
-        )
+        else:
+            url = f"https://developer.codeplay.com/api/v1/products/download?product=oneapi&version={oneapi_version}&variant={variant}&filters[]=linux&filters[]={backend_version}"
+            blocks.append(
+                hpccm.primitives.shell(
+                    commands=[
+                        f"wget --content-disposition '{url}' --output-document '{outfile}'",
+                        f"bash '{outfile}' --yes",
+                    ]
+                )
+            )
 
     if args.oneapi_plugin_nvidia:
         _add_plugin("nvidia")
@@ -588,19 +632,53 @@ def get_clfft(args):
 
 def get_heffte(args):
     if args.heffte is not None:
+        opts = [
+            "-D CMAKE_BUILD_TYPE=Release",
+            "-D Heffte_ENABLE_FFTW=OFF",
+            "-D BUILD_SHARED_LIBS=ON",
+        ]
+        if args.cuda is not None:
+            opts.append("-D Heffte_ENABLE_CUDA=ON")
+        if args.rocm is not None:
+            opts.append("-D Heffte_ENABLE_ROCM=ON")
+            opts.append("-D CMAKE_HIP_ARCHITECTURES=gfx1034,gfx906")
+
         return hpccm.building_blocks.generic_cmake(
-            cmake_opts=[
-                "-D CMAKE_BUILD_TYPE=Release",
-                "-D CUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda",
-                "-D Heffte_ENABLE_CUDA=ON",
-                "-D Heffte_ENABLE_FFTW=OFF",
-                "-D BUILD_SHARED_LIBS=ON",
-            ],
-            repository="https://bitbucket.org/icl/heffte.git",
+            cmake_opts=opts,
+            repository="https://github.com/icl-utk-edu/heffte",
             prefix="/usr/local",
             recursive=True,
             commit=args.heffte,
             directory="heffte",
+        )
+    else:
+        return None
+
+
+def get_plumed(args):
+    if args.plumed is not None:
+        return hpccm.building_blocks.generic_autotools(
+            url="https://github.com/plumed/plumed2/releases/download/v2.9.2/plumed-src-2.9.2.tgz",
+            prefix="/usr/local",
+            runtime_environment={"PLUMED_KERNEL": "/usr/local/lib/libplumedKernel.so"},
+            directory="plumed-2.9.2",
+        )
+    else:
+        return None
+
+
+def get_libtorch(args):
+    if args.libtorch is not None:
+        lt_version = args.libtorch
+        cuda_version = args.cuda.replace(".", "")
+        assert cuda_version[:-1] == "130", "Use CUDA 13.0 for libtorch"
+        return hpccm.primitives.shell(
+            commands=[
+                "mkdir -p /var/tmp",
+                f"wget -q -nc --no-check-certificate -O /var/tmp/libtorch.zip https://download.pytorch.org/libtorch/cu130/libtorch-shared-with-deps-{lt_version}%2Bcu130.zip",
+                "unzip -q /var/tmp/libtorch.zip -d /usr/local/libtorch",
+                "rm -f /var/tmp/libtorch.zip",
+            ]
         )
     else:
         return None
@@ -638,7 +716,10 @@ def get_adaptivecpp(args):
             "-DCMAKE_CXX_COMPILER=clang++-{}".format(args.llvm),
             "-DLLVM_DIR=/usr/lib/llvm-{}/cmake/".format(args.llvm),
         ]
-        if int(args.llvm) >= 18:  # and args.adaptivecpp <= 24.06:
+        acpp_major, acpp_minor, _ = map(int, args.adaptivecpp.split("."))
+        if int(args.llvm) >= 18 and (
+            acpp_major < 24 or acpp_major == 24 and acpp_minor <= 6
+        ):
             preconfigure.append(
                 "ln -s /usr/lib/llvm-{0}/lib/libLLVM-{0}.so /usr/lib/llvm-{0}/lib/libLLVM.so".format(
                     args.llvm
@@ -661,24 +742,18 @@ def get_adaptivecpp(args):
 
     if args.cuda is not None:
         cmake_opts += [
-            "-DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda",
+            "-DCUDAToolkit_ROOT=/usr/local/cuda",
             "-DWITH_CUDA_BACKEND=ON",
         ]
 
-    adaptivecpp_version_opts = {}
-    if "." in args.adaptivecpp:
-        adaptivecpp_version_opts["branch"] = "v" + args.adaptivecpp
-    else:
-        adaptivecpp_version_opts["commit"] = args.adaptivecpp
-
     return hpccm.building_blocks.generic_cmake(
         repository="https://github.com/AdaptiveCpp/AdaptiveCpp.git",
+        branch=f"v{args.adaptivecpp}",
         directory="/var/tmp/AdaptiveCpp",
         prefix="/usr/local",
         recursive=True,
         preconfigure=preconfigure,
         cmake_opts=["-DCMAKE_BUILD_TYPE=Release", *cmake_opts],
-        **adaptivecpp_version_opts,
     )
 
 
@@ -825,11 +900,8 @@ def add_oneapi_compiler_build_stage(
     oneapi_stage += hpccm.building_blocks.packages(
         ospackages=["wget", "gnupg2", "ca-certificates", "lsb-release"]
     )
+    oneapi_stage += get_oneapi_repository(args)
     oneapi_stage += hpccm.building_blocks.packages(
-        apt_keys=[
-            "https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS-2023.PUB"
-        ],
-        apt_repositories=["deb https://apt.repos.intel.com/oneapi all main"],
         # Add minimal packages (not the whole HPC toolkit!)
         ospackages=[
             f"intel-oneapi-dpcpp-cpp-{version}",
@@ -931,12 +1003,12 @@ def add_intel_llvm_compiler_build_stage(
         directory="llvm/llvm",
         build=[
             "mkdir -p /var/tmp/llvm/llvm/build",
-            shlex_join(
+            shlex.join(
                 ["python3", "/var/tmp/llvm/buildbot/configure.py", *buildbot_flags]
             ),
             "cd /var/tmp/llvm/llvm/build",
             # Must be called after the configure.py
-            shlex_join(
+            shlex.join(
                 [
                     "cmake",
                     "/var/tmp/llvm/llvm",
@@ -978,18 +1050,17 @@ def prepare_venv(version: packaging.version.Version) -> typing.Sequence[str]:
             'black' \
             'breathe' \
             'build' \
-            'cmake>=3.18.4' \
+            'cmake>=3.28' \
             'flake8>=3.7.7' \
             'furo' \
             'gcovr>=4.2' \
             'importlib-resources;python_version<"3.10"' \
-            'mpi4py>=3.0.3' \
             'mypy' \
             'networkx>=2.0' \
             'numpy>1.7' \
             'packaging' \
             'pip>=10.1' \
-            'pybind11>2.6' \
+            'pybind11>=2.12' \
             'Pygments>=2.2.0' \
             'pytest>=4.6' \
             'python-gitlab' \
@@ -1124,10 +1195,24 @@ def add_documentation_dependencies(
     """Add appropriate layers according to doxygen input arguments."""
     if input_args.doxygen is None:
         return
+    # In recent python, it's a warning to install via pip into the
+    # system environment, so we use pipx (as recommended).
+    output_stages["main"] += hpccm.building_blocks.packages(ospackages=["pipx"])
     # Always clone the same version of linkchecker (latest release at June 1, 2021)
-    output_stages["main"] += hpccm.building_blocks.pip(
-        pip="pip3",
-        packages=["git+https://github.com/linkchecker/linkchecker.git@v10.0.1"],
+    output_stages["main"] += hpccm.primitives.shell(
+        commands=[
+            # Default linkchecker detects when it is run as root and
+            # unilaterally de-elevates privileges, which means it
+            # can't search its own installation path for files it
+            # needs. Since we are using an ephemeral container, it's
+            # fine to run as root, so we use a version of 10.0.1
+            # hacked to avoid the call to drop_privileges().
+            "pipx install git+https://github.com/mabraham/linkchecker.git@avoid-drop-privileges"
+        ]
+    )
+    # Add the path to which pipx installs binaries to the PATH
+    output_stages["main"] += hpccm.primitives.environment(
+        variables={"PATH": "${PATH}:/root/.local/bin"}
     )
     output_stages["main"] += hpccm.primitives.shell(
         commands=[
@@ -1205,6 +1290,79 @@ def add_base_stage(
             output_stages[name] += bb
 
 
+def get_cross_compilation_packages(args):
+    """Get packages needed for cross-compilation."""
+    if args.cross is None:
+        return []
+
+    arch_triplet = f"{args.cross}-linux-gnu"
+    packages = [
+        "qemu-user",
+        "qemu-user-static",
+        "binfmt-support",
+        "libtool",
+        f"crossbuild-essential-{args.cross}",
+        f"gcc-{args.gcc}-{arch_triplet}",
+        f"g++-{args.gcc}-{arch_triplet}",
+    ]
+    return packages
+
+
+def add_cross_compilation_support(
+    args, output_stages: typing.MutableMapping[str, "hpccm.Stage"]
+):
+    """Configure cross-compilation toolchain and QEMU support."""
+    if args.cross is None:
+        return
+
+    arch_triplet = f"{args.cross}-linux-gnu"
+
+    # Determine compiler settings based on which compiler is specified
+    if args.llvm is not None:
+        c_compiler = f"clang-{args.llvm}"
+        cxx_compiler = f"clang++-{args.llvm}"
+        # Add additional compiler flags needed for cross-compiling with LLVM
+        compiler_flags = f"--target={arch_triplet}"
+    else:
+        # Default to GCC
+        c_compiler = f"{arch_triplet}-gcc-{args.gcc}"
+        cxx_compiler = f"{arch_triplet}-g++-{args.gcc}"
+        compiler_flags = ""
+        qemu_flags = ""
+
+    if args.cross == "riscv64" and args.llvm is not None:
+        # QEmu support VLen up to 1024 bits
+        compiler_flags += " -march=rv64gcv_zvl1024b"
+        qemu_flags += " -cpu rv64,v=true,vext_spec=v1.0,vlen=1024"
+
+    # Add host architecture environment for CMake cross-compilation
+    output_stages["main"] += hpccm.primitives.shell(
+        commands=[
+            # Create a CMake toolchain file for cross-compilation
+            f"mkdir -p /opt/cross",
+            f"echo 'set(CMAKE_SYSTEM_NAME Linux)' > /opt/cross/{args.cross}-toolchain.cmake",
+            f"echo 'set(CMAKE_SYSTEM_PROCESSOR {args.cross})' >> /opt/cross/{args.cross}-toolchain.cmake",
+            f"echo 'set(CMAKE_C_COMPILER {c_compiler})' >> /opt/cross/{args.cross}-toolchain.cmake",
+            f"echo 'set(CMAKE_CXX_COMPILER {cxx_compiler})' >> /opt/cross/{args.cross}-toolchain.cmake",
+            f"echo 'set(CMAKE_C_FLAGS_INIT \"{compiler_flags}\")' >> /opt/cross/{args.cross}-toolchain.cmake",
+            f"echo 'set(CMAKE_CXX_FLAGS_INIT \"{compiler_flags}\")' >> /opt/cross/{args.cross}-toolchain.cmake",
+            f"echo 'set(CMAKE_FIND_ROOT_PATH /usr/{arch_triplet})' >> /opt/cross/{args.cross}-toolchain.cmake",
+            f"echo 'set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)' >> /opt/cross/{args.cross}-toolchain.cmake",
+            f"echo 'set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)' >> /opt/cross/{args.cross}-toolchain.cmake",
+            f"echo 'set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)' >> /opt/cross/{args.cross}-toolchain.cmake",
+            f"echo 'set(CMAKE_CROSSCOMPILING_EMULATOR /usr/local/bin/run-{args.cross})' >> /opt/cross/{args.cross}-toolchain.cmake",
+            # Configure QEMU for this architecture
+            f"echo '#!/bin/bash' > /usr/local/bin/run-{args.cross}",
+            f"echo 'export QEMU_LD_PREFIX=/usr/{arch_triplet}' >> /usr/local/bin/run-{args.cross}",
+            f"echo 'qemu-{args.cross} {qemu_flags} \"$@\"' >> /usr/local/bin/run-{args.cross}",
+            f"chmod +x /usr/local/bin/run-{args.cross}",
+        ]
+    )
+
+    # Set environment variables for cross-compilation
+    output_stages["main"] += hpccm.primitives.environment(variables=env_vars)
+
+
 def build_stages(args) -> typing.Iterable["hpccm.Stage"]:
     """Define and sequence the stages for the recipe corresponding to *args*."""
 
@@ -1243,25 +1401,46 @@ def build_stages(args) -> typing.Iterable["hpccm.Stage"]:
         list(get_llvm_packages(args))
         + get_opencl_packages(args)
         + get_cp2k_packages(args)
+        + get_cross_compilation_packages(args)
     )
     if args.doxygen is not None:
         os_packages += _docs_extra_packages
     if args.oneapi is not None:
         os_packages += ["lsb-release"]
     if args.adaptivecpp is not None:
-        os_packages += ["libboost-fiber-dev"]
+        acpp_major, acpp_minor, _ = map(int, args.adaptivecpp.split("."))
+        if acpp_major < 25 or (acpp_major == 25 and acpp_minor < 10):
+            os_packages += ["libboost-fiber-dev"]
+    if args.hdf5:
+        os_packages += ["libhdf5-dev"]
+    if args.libtorch is not None:
+        os_packages += ["unzip"]
     building_blocks["extra_packages"] = []
     if args.intel_compute_runtime:
-        repo = {
-            "24.04": "deb [arch=amd64] https://repositories.intel.com/graphics/ubuntu noble arc",
-            "22.04": "deb [arch=amd64] https://repositories.intel.com/graphics/ubuntu jammy arc",
-            "20.04": "deb [arch=amd64] https://repositories.intel.com/graphics/ubuntu focal main",
-        }
-        building_blocks["extra_packages"] += hpccm.building_blocks.packages(
-            apt_keys=["https://repositories.intel.com/graphics/intel-graphics.key"],
-            apt_repositories=[repo[args.ubuntu]],
-        )
-        os_packages += _intel_compute_runtime_extra_packages
+        if args.ubuntu == "24.04":
+            # Per https://dgpu-docs.intel.com/driver/client/overview.html#ubuntu-latest
+            building_blocks["extra_packages"] += hpccm.building_blocks.packages(
+                apt_ppas=["ppa:kobuk-team/intel-graphics"]
+            )
+            os_packages += [
+                "libze-intel-gpu1",
+                "libze1",
+                "intel-metrics-discovery",
+                "intel-opencl-icd",
+                "clinfo",
+                "intel-gsc",
+            ]
+
+        else:
+            repo = {
+                "22.04": "deb [signed-by=/usr/share/keyrings/intel-graphics.gpg arch=amd64] https://repositories.intel.com/gpu/ubuntu jammy client",
+                "20.04": "deb [signed-by=/usr/share/keyrings/intel-graphics.gpg arch=amd64] https://repositories.intel.com/graphics/ubuntu focal main",
+            }
+            building_blocks["extra_packages"] += hpccm.building_blocks.packages(
+                apt_keys=["https://repositories.intel.com/gpu/intel-graphics.key"],
+                apt_repositories=[repo[args.ubuntu]],
+            )
+            os_packages += _intel_compute_runtime_extra_packages
 
     if args.ubuntu is not None and args.ubuntu == "20.04":
         building_blocks["extra_packages"] += hpccm.building_blocks.packages(
@@ -1298,6 +1477,10 @@ def build_stages(args) -> typing.Iterable["hpccm.Stage"]:
 
     building_blocks["heffte"] = get_heffte(args)
 
+    building_blocks["plumed"] = get_plumed(args)
+
+    building_blocks["libtorch"] = get_libtorch(args)
+
     building_blocks["nvhpcsdk"] = get_nvhpcsdk(args)
     if building_blocks["nvhpcsdk"] is not None:
         nvshmem_lib_path = (
@@ -1313,7 +1496,7 @@ def build_stages(args) -> typing.Iterable["hpccm.Stage"]:
 
     # Add Python environments to MPI images, only, so we don't have to worry
     # about whether to install mpi4py.
-    if args.mpi is not None and len(args.venvs) > 0:
+    if (args.mpi is not None) and len(args.venvs) > 0:
         add_python_stages(base="build_base", input_args=args, output_stages=stages)
 
     cmake_stages = get_cmake_stages(input_args=args, base="build_base")
@@ -1330,7 +1513,9 @@ def build_stages(args) -> typing.Iterable["hpccm.Stage"]:
             stages["main"] += bb
 
     # We always add Python3 and Pip
-    stages["main"] += hpccm.building_blocks.python(python3=True, python2=False)
+    stages["main"] += hpccm.building_blocks.python(
+        python3=True, python2=False, devel=False if args.libtorch is None else True
+    )
 
     # Add documentation requirements (doxygen and sphinx + misc).
     if args.doxygen is not None:
@@ -1364,6 +1549,10 @@ def build_stages(args) -> typing.Iterable["hpccm.Stage"]:
             "/usr/bin/python --version"
         ]
     )
+
+    # Add cross-compilation support if requested
+    if args.cross is not None:
+        add_cross_compilation_support(args, stages)
 
     # Note that the list of stages should be sorted in dependency order.
     for build_stage in stages.values():

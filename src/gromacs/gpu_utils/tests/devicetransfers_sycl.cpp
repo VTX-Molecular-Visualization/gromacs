@@ -59,13 +59,13 @@ void doDeviceTransfers(const DeviceContext& deviceContext, ArrayRef<const char> 
     try
     {
         const sycl::device& device = deviceContext.deviceInfo().syclDevice;
-        sycl::queue         syclQueue(deviceContext.context(), device);
+        sycl::queue syclQueue(deviceContext.context(), device, { sycl::property::queue::in_order{} });
 
         sycl::global_ptr<char> d_buf = sycl::malloc_device<char>(input.size(), syclQueue);
 
-        syclQueue.memcpy(d_buf, input.data(), input.size()).wait_and_throw();
-
-        syclQueue.memcpy(output.data(), d_buf, input.size()).wait_and_throw();
+        syclMemcpyWithoutEvent(syclQueue, d_buf, input.data(), input.size() * sizeof(input[0]));
+        syclMemcpyWithoutEvent(syclQueue, output.data(), d_buf, output.size() * sizeof(output[0]));
+        syclQueue.wait_and_throw();
 
         sycl::free(d_buf, syclQueue);
     }

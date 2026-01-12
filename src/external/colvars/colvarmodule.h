@@ -12,11 +12,16 @@
 
 #include <cstdint>
 
-#include "colvars_version.h"
-
 #ifndef COLVARS_DEBUG
 #define COLVARS_DEBUG false
 #endif
+
+#if defined(__FAST_MATH__)
+// NOTE: This is used for fixing https://github.com/Colvars/colvars/issues/767
+#define COLVARS_BOUNDED_INV_TRIGONOMETRIC_FUNC
+#endif
+
+#define COLVARS_USE_SOA
 
 /*! \mainpage Main page
 This is the Developer's documentation for the Collective Variables module (Colvars).
@@ -40,6 +45,18 @@ Please note that this documentation is only supported for the master branch, and
 #include <string>
 #include <vector>
 
+#if defined(COLVARS_CUDA)
+#include <cuda_runtime.h>
+#endif
+
+#if defined(COLVARS_HIP)
+#include <hip/hip_runtime.h>
+#define cudaHostAllocMapped hipHostMallocMapped
+#define cudaHostAlloc hipHostMalloc
+#define cudaFreeHost hipHostFree
+#define cudaSuccess hipSuccess
+#endif
+
 class colvarparse;
 class colvar;
 class colvarbias;
@@ -61,34 +78,59 @@ class colvarmodule {
 public:
 
   /// Get the version string (YYYY-MM-DD format)
-  std::string version() const
-  {
-    return std::string(COLVARS_VERSION);
-  }
+  std::string version() const;
 
   /// Get the version number (higher = more recent)
-  int version_number() const
-  {
-    return version_int;
-  }
+  int version_number() const;
 
-  /// Get the patch version number (non-zero in patch releases of other packages)
-  int patch_version_number() const
-  {
-    return patch_version_int;
-  }
+  /// Get the patch version number (non-zero only in the patch releases of other packages)
+  int patch_version_number() const;
+
+#if ( defined(COLVARS_CUDA) || defined(COLVARS_HIP) )
+  template <typename T>
+  class CudaHostAllocator {
+  public:
+    using value_type = T;
+
+    CudaHostAllocator() = default;
+
+    template<typename U>
+    constexpr CudaHostAllocator(const CudaHostAllocator<U>&) noexcept {}
+
+    friend bool operator==(const CudaHostAllocator&, const CudaHostAllocator&) { return true; }
+    friend bool operator!=(const CudaHostAllocator&, const CudaHostAllocator&) { return false; }
+
+    T* allocate(size_t n) {
+      T* ptr;
+      if (cudaHostAlloc(&ptr, n * sizeof(T), cudaHostAllocMapped) != cudaSuccess) {
+        throw std::bad_alloc();
+      }
+      return ptr;
+    }
+    void deallocate(T* ptr, size_t n) noexcept {
+      cudaFreeHost(ptr);
+    }
+    template<typename U, typename... Args>
+    void construct(U* p, Args&&... args) {
+        new(p) U(std::forward<Args>(args)...);
+    }
+
+    template<typename U>
+    void destroy(U* p) noexcept {
+        p->~U();
+    }
+  };
+#endif
 
 private:
 
-  /// Integer representing the version string (allows comparisons)
+  /// Integer representing the version string; value will be set in colvarmodule.cpp
   int version_int = 0;
 
-  /// Patch version number (non-zero in patch releases of other packages)
-  int patch_version_int = 2;
+  /// Patch version number; value will be set in colvarmodule.cpp
+  int patch_version_int = 0;
 
 public:
-
-  friend class colvarproxy;
 
   /// Use a 64-bit integer to store the step number
   typedef long long step_number;
@@ -149,17 +191,44 @@ public:
     return ::cos(static_cast<double>(x));
   }
 
-  /// Reimplemented to work around MS compiler issues
-  static inline real asin(real const &x)
-  {
-    return ::asin(static_cast<double>(x));
-  }
+#ifndef PI
+#define PI   3.14159265358979323846
+#endif
+#ifndef PI_2
+#define PI_2 1.57079632679489661923
+#endif
 
-  /// Reimplemented to work around MS compiler issues
-  static inline real acos(real const &x)
-  {
+/// Reimplemented to work around compiler issues; return hard-coded values for boundary conditions
+static inline real asin(real const &x)
+{
+#ifdef COLVARS_BOUNDED_INV_TRIGONOMETRIC_FUNC
+    if (x <= -1.0) {
+        return -PI_2;
+    } else if (x >= 1.0) {
+        return PI_2;
+    } else {
+        return ::asin(static_cast<double>(x));
+    }
+#else
+    return ::asin(static_cast<double>(x));
+#endif
+}
+
+/// Reimplemented to work around compiler issues; return hard-coded values for boundary conditions
+static inline real acos(real const &x)
+{
+#ifdef COLVARS_BOUNDED_INV_TRIGONOMETRIC_FUNC
+    if (x <= -1.0) {
+        return PI;
+    } else if (x >= 1.0) {
+        return 0.0;
+    } else {
+        return ::acos(static_cast<double>(x));
+    }
+#else
     return ::acos(static_cast<double>(x));
-  }
+#endif
+}
 
   /// Reimplemented to work around MS compiler issues
   static inline real atan2(real const &x, real const &y)
@@ -204,8 +273,6 @@ public:
   // allow these classes to access protected data
   class atom;
   class atom_group;
-  friend class atom;
-  friend class atom_group;
   typedef std::vector<atom>::iterator       atom_iter;
   typedef std::vector<atom>::const_iterator atom_const_iter;
 
@@ -281,13 +348,12 @@ private:
   std::vector<int> colvars_smp_items;
 
   /// Array of named atom groups
-  std::vector<atom_group *> named_atom_groups;
-public:
-  /// Register a named atom group into named_atom_groups
-  void register_named_atom_group(atom_group *ag);
+  std::vector<atom_group *> named_atom_groups_soa;
 
-  /// Remove a named atom group from named_atom_groups
-  void unregister_named_atom_group(atom_group *ag);
+public:
+
+  void register_named_atom_group_soa(atom_group *ag);
+  void unregister_named_atom_group_soa(atom_group *ag);
 
   /// Array of collective variables
   std::vector<colvar *> *variables();
@@ -310,6 +376,9 @@ public:
 
   /// Indexes of the items to calculate for each colvar
   std::vector<int> *variables_active_smp_items();
+
+  /// Calculate the value of the specified component (to be called in a SMP loop)
+  int calc_component_smp(int i);
 
   /// Array of collective variable biases
   std::vector<colvarbias *> biases;
@@ -538,7 +607,7 @@ public:
   static colvar * colvar_by_name(std::string const &name);
 
   /// Look up a named atom group by name; returns NULL if not found
-  static atom_group * atom_group_by_name(std::string const &name);
+  static atom_group * atom_group_soa_by_name(std::string const& name);
 
   /// Load new configuration for the given bias -
   /// currently works for harmonic (force constant and/or centers)
@@ -657,6 +726,13 @@ public:
   static std::string to_str(std::vector<std::string> const &x,
                             size_t width = 0, size_t prec = 0);
 
+#if ( defined(COLVARS_CUDA) || defined(COLVARS_HIP) )
+  static std::string to_str(std::vector<rvector, CudaHostAllocator<rvector>> const &x,
+                            size_t width = 0, size_t prec = 0);
+  static std::string to_str(std::vector<real, CudaHostAllocator<real>> const &x,
+                            size_t width = 0, size_t prec = 0);
+#endif
+
 
   /// Reduce the number of characters in a string
   static std::string wrap_string(std::string const &s,
@@ -761,17 +837,6 @@ public:
   /// Clear the index groups loaded so far
   int reset_index_groups();
 
-  /// \brief Select atom IDs from a file (usually PDB) \param filename name of
-  /// the file \param atoms array into which atoms read from "filename" will be
-  /// appended \param pdb_field (optional) if the file is a PDB and this
-  /// string is non-empty, select atoms for which this field is non-zero
-  /// \param pdb_field_value (optional) if non-zero, select only atoms whose
-  /// pdb_field equals this
-  static int load_atoms(char const *filename,
-                        atom_group &atoms,
-                        std::string const &pdb_field,
-                        double pdb_field_value = 0.0);
-
   /// \brief Load coordinates for a group of atoms from a file (PDB or XYZ);
   /// if "pos" is already allocated, the number of its elements must match the
   /// number of entries in "filename" \param filename name of the file \param
@@ -832,6 +897,10 @@ protected:
   /// Track usage of Colvars features
   usage *usage_;
 
+  /// Records the maximum gradient discrepancy evaluated by debugGradients
+  /// see cvc::debug_gradients()
+  real max_gradient_error = 0.;
+
 public:
 
   /// Version of the most recent state file read
@@ -868,6 +937,17 @@ public:
 
   /// Calculate the energy and forces of scripted biases
   int calc_scripted_forces();
+
+  /// Update the maximum gradient discrepancy evaluated by debugGradients
+  /// in this instance of colvarmodule
+  /// see cvc::debug_gradients()
+  void record_gradient_error(real error) {
+    if (error > max_gradient_error) max_gradient_error = error;
+  }
+
+  real get_max_gradient_error() {
+    return max_gradient_error;
+  }
 
   /// \brief Pointer to the proxy object, used to retrieve atomic data
   /// from the hosting program; it is static in order to be accessible

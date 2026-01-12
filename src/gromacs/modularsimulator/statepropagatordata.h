@@ -53,19 +53,19 @@
 #include "gromacs/gpu_utils/hostallocator.h"
 #include "gromacs/math/arrayrefwithpadding.h"
 #include "gromacs/math/paddedvector.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/mdtypes/checkpointdata.h"
 #include "gromacs/mdtypes/forcebuffers.h"
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/keyvaluetree.h"
 #include "gromacs/utility/real.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "modularsimulatorinterfaces.h"
 #include "topologyholder.h"
 
+struct gmx_domdec_t;
 struct gmx_mdoutf;
 enum class PbcType : int;
-struct t_commrec;
 struct t_inputrec;
 class t_state;
 struct t_mdatoms;
@@ -79,6 +79,7 @@ enum class ConstraintVariable;
 class EnergyData;
 class FreeEnergyPerturbationData;
 class GlobalCommunicationHelper;
+class MpiComm;
 class LegacySimulatorData;
 class ModularSimulatorAlgorithmBuilderHelper;
 class ObservablesReducer;
@@ -233,7 +234,7 @@ private:
 
     //! Helper function to read from / write to CheckpointData
     template<CheckpointDataOperation operation>
-    void doCheckpointData(CheckpointData<operation>* checkpointData);
+    void doCheckpointData(CheckpointData<operation>* checkpointData, bool usingDd);
 
     // Access to legacy state
     //! Give ownership of local state resources in legacy format
@@ -347,9 +348,13 @@ public:
     void setFreeEnergyPerturbationData(FreeEnergyPerturbationData* freeEnergyPerturbationData);
 
     //! ICheckpointHelperClient write checkpoint implementation
-    void saveCheckpointState(std::optional<WriteCheckpointData> checkpointData, const t_commrec* cr) override;
+    void saveCheckpointState(std::optional<WriteCheckpointData> checkpointData,
+                             const MpiComm&                     mpiComm,
+                             gmx_domdec_t*                      dd) override;
     //! ICheckpointHelperClient read checkpoint implementation
-    void restoreCheckpointState(std::optional<ReadCheckpointData> checkpointData, const t_commrec* cr) override;
+    void restoreCheckpointState(std::optional<ReadCheckpointData> checkpointData,
+                                const MpiComm&                    mpiComm,
+                                gmx_domdec_t*                     dd) override;
     //! ICheckpointHelperClient key implementation
     const std::string& clientID() override;
 
@@ -367,11 +372,11 @@ public:
      */
     static ISimulatorElement* getElementPointerImpl(LegacySimulatorData* legacySimulatorData,
                                                     ModularSimulatorAlgorithmBuilderHelper* builderHelper,
-                                                    StatePropagatorData*        statePropagatorData,
-                                                    EnergyData*                 energyData,
+                                                    StatePropagatorData* statePropagatorData,
+                                                    EnergyData*          energyData,
                                                     FreeEnergyPerturbationData* freeEnergyPerturbationData,
                                                     GlobalCommunicationHelper* globalCommunicationHelper,
-                                                    ObservablesReducer*        observablesReducer);
+                                                    ObservablesReducer* observablesReducer);
 
 private:
     //! Pointer to the associated StatePropagatorData

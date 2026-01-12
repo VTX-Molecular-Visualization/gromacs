@@ -43,7 +43,6 @@
 #include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
 #include "gromacs/math/utilities.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/mdtypes/commrec.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
@@ -58,6 +57,7 @@
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/listoflists.h"
 #include "gromacs/utility/real.h"
+#include "gromacs/utility/vec.h"
 
 /* Computational cost of bonded, non-bonded and PME calculations.
  * This will be machine dependent.
@@ -149,7 +149,7 @@ static double simd_cycle_factor(gmx_bool bUseSIMD)
         gmx_incons("gmx_cycle_factor() compiled without SIMD called with bUseSIMD=TRUE");
     }
     /* No SIMD, no speedup */
-    speedup                        = 1.0;
+    speedup = 1.0;
 #endif
 
     /* Return speed compared to the reference (Haswell).
@@ -164,12 +164,11 @@ void count_bonded_distances(const gmx_mtop_t& mtop, const t_inputrec& ir, double
 {
     gmx_bool bExcl;
     double   nonsimd_step_frac;
-    int      ftype;
     double   ndtot_c, ndtot_simd;
 #if GMX_SIMD_HAVE_REAL
     gmx_bool bSimdBondeds = TRUE;
 #else
-    gmx_bool   bSimdBondeds        = FALSE;
+    gmx_bool bSimdBondeds = FALSE;
 #endif
 
     bExcl = (ir.cutoff_scheme == CutoffScheme::Group && inputrecExclForces(&ir)
@@ -207,7 +206,7 @@ void count_bonded_distances(const gmx_mtop_t& mtop, const t_inputrec& ir, double
     for (const gmx_molblock_t& molb : mtop.molblock)
     {
         const gmx_moltype_t* molt = &mtop.moltype[molb.type];
-        for (ftype = 0; ftype < F_NRE; ftype++)
+        for (const auto ftype : gmx::EnumerationWrapper<InteractionFunction>{})
         {
             int nbonds;
 
@@ -222,14 +221,14 @@ void count_bonded_distances(const gmx_mtop_t& mtop, const t_inputrec& ir, double
                  */
                 switch (ftype)
                 {
-                    case F_POSRES:
-                    case F_FBPOSRES: nd_c = 1; break;
-                    case F_CONNBONDS: break;
+                    case InteractionFunction::PositionRestraints:
+                    case InteractionFunction::FlatBottomedPositionRestraints: nd_c = 1; break;
+                    case InteractionFunction::ConnectBonds: break;
                     /* These bonded potentially use SIMD */
-                    case F_ANGLES:
-                    case F_PDIHS:
-                    case F_RBDIHS:
-                    case F_LJ14:
+                    case InteractionFunction::Angles:
+                    case InteractionFunction::ProperDihedrals:
+                    case InteractionFunction::RyckaertBellemansDihedrals:
+                    case InteractionFunction::LennardJones14:
                         nd_c    = nonsimd_step_frac * (NRAL(ftype) - 1);
                         nd_simd = (1 - nonsimd_step_frac) * (NRAL(ftype) - 1);
                         break;

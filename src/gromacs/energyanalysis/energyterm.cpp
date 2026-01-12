@@ -54,13 +54,13 @@
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/fileio/xvgr.h"
 #include "gromacs/math/functions.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/statistics/statistics.h"
 #include "gromacs/topology/ifunc.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/vec.h"
 
 namespace gmx
 {
@@ -75,7 +75,9 @@ EnergyTerm::EnergyTerm(unsigned int       indexWithinEnergyFile,
     storeData_(bStoreData)
 {
 
-    for (int j = 0; (j <= F_ETOT); j++)
+    for (int j = static_cast<int>(InteractionFunction::Bonds);
+         (j <= static_cast<int>(InteractionFunction::TotalEnergy));
+         j++)
     {
         termIsEnergy_ = termIsEnergy_ || equalIgnoreDash(interaction_function[j].longname, energyTerm);
     }

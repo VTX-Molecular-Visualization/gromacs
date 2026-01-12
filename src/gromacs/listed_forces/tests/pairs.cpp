@@ -67,15 +67,12 @@
 #include "gromacs/listed_forces/listed_forces.h"
 #include "gromacs/math/paddedvector.h"
 #include "gromacs/math/units.h"
-#include "gromacs/math/vec.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/mdtypes/enerdata.h"
 #include "gromacs/mdtypes/forcerec.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/interaction_const.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/mdtypes/mdatom.h"
-#include "gromacs/mdtypes/nblist.h"
 #include "gromacs/mdtypes/simulation_workload.h"
 #include "gromacs/pbcutil/ishift.h"
 #include "gromacs/pbcutil/pbc.h"
@@ -90,6 +87,8 @@
 #include "gromacs/utility/strconvert.h"
 #include "gromacs/utility/stringstream.h"
 #include "gromacs/utility/textwriter.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "testutils/refdata.h"
 #include "testutils/testasserts.h"
@@ -131,29 +130,30 @@ struct OutputQuantities
  * \param[in] bondedKernelFlavor  Flavor for determining what output to check
  * \param[in] functionType type of the interaction
  */
-void checkOutput(TestReferenceChecker*    checker,
-                 const OutputQuantities&  output,
-                 const BondedKernelFlavor bondedKernelFlavor,
-                 const int                functionType)
+void checkOutput(TestReferenceChecker*     checker,
+                 const OutputQuantities&   output,
+                 const BondedKernelFlavor  bondedKernelFlavor,
+                 const InteractionFunction functionType)
 {
     if (computeEnergy(bondedKernelFlavor))
     {
         switch (functionType)
         {
-            case F_LJ14:
-            case F_LJC14_Q:
+            case InteractionFunction::LennardJones14:
+            case InteractionFunction::LennardJonesCoulomb14Q:
                 checker->checkReal(output.energy.energyGroupPairTerms[NonBondedEnergyTerms::Coulomb14][0],
                                    "Epot Coulomb14");
                 checker->checkReal(output.energy.energyGroupPairTerms[NonBondedEnergyTerms::LJ14][0],
                                    "Epot LJ14");
                 break;
-            case F_LJC_PAIRS_NB:
+            case InteractionFunction::LennardJonesCoulombNonBondedPairs:
                 checker->checkReal(output.energy.energyGroupPairTerms[NonBondedEnergyTerms::CoulombSR][0],
                                    "Epot Coulomb14");
                 checker->checkReal(output.energy.energyGroupPairTerms[NonBondedEnergyTerms::LJSR][0],
                                    "Epot LJ14");
                 break;
-            default: gmx_fatal(FARGS, "Unknown function type %d in do_nonbonded14", functionType);
+            default:
+                gmx_fatal(FARGS, "Unknown function type %d in do_nonbonded14", static_cast<int>(functionType));
         }
         checker->checkReal(output.dvdLambda[static_cast<int>(FreeEnergyPerturbationCouplingType::Coul)],
                            "dVdlCoul ");
@@ -189,9 +189,9 @@ public:
 
         // set data in fr
         real tableRange = 2.9;
-        fr_.pairsTable = make_tables(nullptr, fr_.ic.get(), nullptr, tableRange, GMX_MAKETABLES_14ONLY);
-        fr_.efep       = haveFep_;
-        fr_.fudgeQQ          = 0.5;
+        fr_.pairsTable  = make_tables(nullptr, *fr_.ic, nullptr, tableRange, GMX_MAKETABLES_14ONLY);
+        fr_.efep        = haveFep_;
+        fr_.fudgeQQ     = 0.5;
         fr_.use_simd_kernels = useSimd_;
         fr_.bMolPBC          = haveMolPBC_;
     }
@@ -216,7 +216,7 @@ struct ListInput
 {
 public:
     //! Function type
-    int fType = -1;
+    std::optional<InteractionFunction> fType;
     //! do fep
     bool fep = false;
     //! Tolerance for float evaluation
@@ -251,7 +251,7 @@ public:
      */
     ListInput setLj14Interaction(real c6A, real c12A, real c6B, real c12B)
     {
-        fType             = F_LJ14;
+        fType             = InteractionFunction::LennardJones14;
         fep               = (c6A != c6B || c12A != c12B);
         iparams.lj14.c6A  = c6A;
         iparams.lj14.c12A = c12A;
@@ -271,7 +271,7 @@ public:
      */
     ListInput setLjc14Interaction(real qi, real qj, real c6, real c12, real fudgeQ)
     {
-        fType             = F_LJC14_Q;
+        fType             = InteractionFunction::LennardJonesCoulomb14Q;
         iparams.ljc14.qi  = qi;
         iparams.ljc14.qj  = qj;
         iparams.ljc14.c6  = c6;
@@ -290,7 +290,7 @@ public:
      */
     ListInput setLjcnbInteraction(real qi, real qj, real c6, real c12)
     {
-        fType             = F_LJC_PAIRS_NB;
+        fType             = InteractionFunction::LennardJonesCoulombNonBondedPairs;
         iparams.ljcnb.qi  = qi;
         iparams.ljcnb.qj  = qj;
         iparams.ljcnb.c6  = c6;
@@ -383,7 +383,7 @@ protected:
             OutputQuantities  output(numEnergyTerms);
             std::vector<real> lambdas(numFepCouplingTerms, lambda);
 
-            do_pairs(input_.fType,
+            do_pairs(input_.fType.value(),
                      iatoms.size(),
                      iatoms.data(),
                      &input_.iparams,
@@ -404,7 +404,7 @@ protected:
                      &output.energy,
                      ddgatindex.data());
 
-            checkOutput(checker, output, flavor, input_.fType);
+            checkOutput(checker, output, flavor, input_.fType.value());
             auto shiftForcesChecker = checker->checkCompound("Shift-Forces", "Shift-forces");
 
             if (computeVirial(flavor))
@@ -422,8 +422,9 @@ protected:
 
     void testIfunc()
     {
+        EXPECT_TRUE(input_.fType.has_value() && input_.fType < InteractionFunction::Count);
         TestReferenceChecker thisChecker =
-                checker_.checkCompound("FunctionType", interaction_function[input_.fType].name)
+                checker_.checkCompound("FunctionType", interaction_function[input_.fType.value()].name)
                         .checkCompound("FEP", (input_.fep ? "Yes" : "No"));
 
         if (input_.fep)

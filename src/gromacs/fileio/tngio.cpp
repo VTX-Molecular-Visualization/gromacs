@@ -60,6 +60,7 @@
 
 #include "gromacs/math/units.h"
 #include "gromacs/math/utilities.h"
+#include "gromacs/mdrun/binary_information.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/topology/ifunc.h"
 #include "gromacs/topology/topology.h"
@@ -297,7 +298,6 @@ static void addTngMoleculeFromTopology(gmx_tng_trajectory_t gmx_tng,
 
 void gmx_tng_add_mtop(gmx_tng_trajectory_t gmx_tng, const gmx_mtop_t* mtop)
 {
-    int               i;
     int               j;
     std::vector<real> atomCharges;
     std::vector<real> atomMasses;
@@ -315,7 +315,7 @@ void gmx_tng_add_mtop(gmx_tng_trajectory_t gmx_tng, const gmx_mtop_t* mtop)
 #    if GMX_DOUBLE
     datatype = TNG_DOUBLE_DATA;
 #    else
-    datatype                                               = TNG_FLOAT_DATA;
+    datatype = TNG_FLOAT_DATA;
 #    endif
 
     atomCharges.reserve(mtop->natoms);
@@ -333,7 +333,7 @@ void gmx_tng_add_mtop(gmx_tng_trajectory_t gmx_tng, const gmx_mtop_t* mtop)
         /* Bonds have to be deduced from interactions (constraints etc). Different
          * interactions have different sets of parameters. */
         /* Constraints are specified using two atoms */
-        for (i = 0; i < F_NRE; i++)
+        for (const auto i : gmx::EnumerationWrapper<InteractionFunction>{})
         {
             if (IS_CHEMBOND(i))
             {
@@ -347,7 +347,7 @@ void gmx_tng_add_mtop(gmx_tng_trajectory_t gmx_tng, const gmx_mtop_t* mtop)
             }
         }
         /* Settle is described using three atoms */
-        const InteractionList& ilist = molType->ilist[F_SETTLE];
+        const InteractionList& ilist = molType->ilist[InteractionFunction::SETTLE];
         j                            = 1;
         while (j < ilist.size())
         {
@@ -709,7 +709,7 @@ static void add_selection_groups(gmx_tng_trajectory_t gmx_tng, const gmx_mtop_t*
             /* Add bonds. */
             if (bAtomsAdded)
             {
-                for (int k = 0; k < F_NRE; k++)
+                for (const auto k : gmx::EnumerationWrapper<InteractionFunction>{})
                 {
                     if (IS_CHEMBOND(k))
                     {
@@ -731,7 +731,7 @@ static void add_selection_groups(gmx_tng_trajectory_t gmx_tng, const gmx_mtop_t*
                     }
                 }
                 /* Settle is described using three atoms */
-                const InteractionList& ilist = molType.ilist[F_SETTLE];
+                const InteractionList& ilist = molType.ilist[InteractionFunction::SETTLE];
                 for (int l = 1; l < ilist.size(); l += 4)
                 {
                     int atom1, atom2, atom3;
@@ -822,7 +822,7 @@ void gmx_fwrite_tng(gmx_tng_trajectory_t gmx_tng,
 #    if GMX_DOUBLE
     static write_data_func_pointer write_data = tng_util_generic_with_time_double_write;
 #    else
-    static write_data_func_pointer    write_data           = tng_util_generic_with_time_write;
+    static write_data_func_pointer write_data = tng_util_generic_with_time_write;
 #    endif
     double  elapsedSeconds = elapsedPicoSeconds * gmx::c_pico;
     int64_t nParticles;
@@ -1228,7 +1228,7 @@ void convert_array_to_real_array(void*       from,
             {
                 if (fact == 1)
                 {
-                    memcpy(to, from, nValues * sizeof(real) * nAtoms);
+                    std::memcpy(to, from, nValues * sizeof(real) * nAtoms);
                 }
                 else
                 {
@@ -1266,7 +1266,7 @@ void convert_array_to_real_array(void*       from,
             {
                 if (fact == 1)
                 {
-                    memcpy(to, from, nValues * sizeof(real) * nAtoms);
+                    std::memcpy(to, from, nValues * sizeof(real) * nAtoms);
                 }
                 else
                 {
@@ -1519,10 +1519,10 @@ gmx_bool gmx_read_next_tng_frame(gmx_tng_trajectory_t gmx_tng_input,
                     case TNG_DOUBLE_DATA: size = sizeof(double); break;
                     default: gmx_incons("Illegal datatype of box shape values!");
                 }
-                for (int i = 0; i < DIM; i++)
+                for (int d = 0; d < DIM; d++)
                 {
-                    convert_array_to_real_array(reinterpret_cast<char*>(values) + size * i * DIM,
-                                                reinterpret_cast<real*>(fr->box[i]),
+                    convert_array_to_real_array(reinterpret_cast<char*>(values) + size * d * DIM,
+                                                reinterpret_cast<real*>(fr->box[d]),
                                                 getDistanceScaleFactor(gmx_tng_input),
                                                 1,
                                                 DIM,
@@ -1925,3 +1925,13 @@ int gmx_tng_get_lambda_output_interval(gmx_tng_trajectory_t gmx_tng)
     return -1;
 #endif
 }
+
+namespace gmx
+{
+
+std::string tngDescription()
+{
+    return GMX_USE_TNG ? "enabled" : "disabled";
+}
+
+} // namespace gmx

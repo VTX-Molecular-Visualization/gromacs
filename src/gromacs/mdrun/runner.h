@@ -51,7 +51,6 @@
 #include "gromacs/compat/pointers.h"
 #include "gromacs/domdec/options.h"
 #include "gromacs/hardware/hw_info.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/mdrun/mdmodules.h"
 #include "gromacs/mdrun/simulationinputhandle.h"
 #include "gromacs/mdrunutility/handlerestart.h"
@@ -62,6 +61,7 @@
 #include "gromacs/utility/gmxmpi.h"
 #include "gromacs/utility/real.h"
 #include "gromacs/utility/unique_cptr.h"
+#include "gromacs/utility/vec.h"
 
 #include "replicaexchange.h"
 
@@ -134,7 +134,7 @@ public:
      *
      * \{
      */
-    Mdrunner(const Mdrunner&) = delete;
+    Mdrunner(const Mdrunner&)            = delete;
     Mdrunner& operator=(const Mdrunner&) = delete;
     /* \} */
 
@@ -222,6 +222,13 @@ private:
      * \todo replace with string or enum class and initialize with sensible value.
      */
     const char* nbpu_opt = nullptr;
+
+    /*! \brief Target nonbonded fe interactions for "cpu", "gpu", or "auto". Default is "auto".
+     *
+     * \internal
+     * \todo replace with string or enum class and initialize with sensible value.
+     */
+    const char* nbfe_opt = nullptr;
 
     /*! \brief Target long-range interactions for "cpu", "gpu", or "auto". Default is "auto".
      *
@@ -379,8 +386,8 @@ public:
                              compat::not_null<SimulationContext*> context);
 
     //! \cond
-    MdrunnerBuilder()                       = delete;
-    MdrunnerBuilder(const MdrunnerBuilder&) = delete;
+    MdrunnerBuilder()                                  = delete;
+    MdrunnerBuilder(const MdrunnerBuilder&)            = delete;
     MdrunnerBuilder& operator=(const MdrunnerBuilder&) = delete;
     //! \endcond
 
@@ -434,6 +441,23 @@ public:
      * \todo Either the Builder or modular Director code should provide sensible defaults.
      */
     MdrunnerBuilder& addNonBonded(const char* nbpu_opt);
+
+    /*!
+     * \brief Set up nonbonded fe force calculations.
+     *
+     * Required. Director code must provide valid options for the non-bonded fe
+     * interaction code. The builder does not apply any defaults.
+     *
+     * \param nbfe_opt Target nonbonded fe interactions for "cpu", "gpu", or "auto".
+     *
+     * Calling must guarantee that the pointed-to C string is valid through
+     * simulation launch.
+     *
+     * \internal
+     * \todo Replace with string or enum that we can have sensible defaults for.
+     * \todo Either the Builder or modular Director code should provide sensible defaults.
+     */
+    MdrunnerBuilder& addNonBondedFETaskAssignment(const char* nbfe_opt);
 
     /*!
      * \brief Set up long-range electrostatics calculations.

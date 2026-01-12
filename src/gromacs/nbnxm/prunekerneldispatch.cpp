@@ -41,7 +41,6 @@
 
 #include "kernels_reference/kernel_ref_prune.h"
 
-#include "gromacs/math/vectypes.h"
 #include "gromacs/mdlib/gmx_omp_nthreads.h"
 #include "gromacs/mdtypes/locality.h"
 #include "gromacs/nbnxm/atomdata.h"
@@ -53,6 +52,7 @@
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/real.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "clusterdistancekerneltype.h"
 #include "nbnxm_gpu.h"
@@ -98,8 +98,11 @@ void PairlistSet::dispatchPruneKernel(const nbnxn_atomdata_t* nbat, ArrayRef<con
                 nbnxmSimdPruneKernel<KernelLayout::r2xMM>(nbl, *nbat, shift_vec, rlistInner);
                 break;
 #endif
-            case ClusterDistanceKernelType::CpuPlainC:
-                nbnxn_kernel_prune_ref(nbl, nbat, shift_vec, rlistInner);
+            case ClusterDistanceKernelType::CpuPlainC_4x4:
+                nbnxmRefPruneKernel<NbnxmKernelType::Cpu4x4_PlainC>(nbl, nbat, shift_vec, rlistInner);
+                break;
+            case ClusterDistanceKernelType::CpuPlainC_1x1:
+                nbnxmRefPruneKernel<NbnxmKernelType::Cpu1x1_PlainC>(nbl, nbat, shift_vec, rlistInner);
                 break;
             default: GMX_RELEASE_ASSERT(false, "kernel type not handled (yet)");
         }

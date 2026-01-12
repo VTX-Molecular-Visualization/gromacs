@@ -49,16 +49,11 @@
 
 #include <string>
 
-#include "gromacs/math/vec.h"
+#include "gromacs/utility/vec.h"
 
 #include "testutils/test_device.h"
 
 #include "leapfrogtestdata.h"
-
-/*
- * LeapFrog is available with CUDA and SYCL.
- */
-#define GPU_LEAPFROG_SUPPORTED (GMX_GPU_CUDA || GMX_GPU_SYCL)
 
 namespace gmx
 {

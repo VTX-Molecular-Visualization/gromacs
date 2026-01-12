@@ -47,9 +47,9 @@
 #include <cstdint>
 
 #include "gromacs/gpu_utils/devicebuffer_datatype.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/gmxassert.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "gpuforcereduction.h"
 
@@ -57,8 +57,6 @@ class DeviceContext;
 class DeviceStream;
 class GpuEventSynchronizer;
 struct gmx_wallcycle;
-
-#if !HAVE_GPU_FORCE_REDUCTION
 
 namespace gmx
 {
@@ -119,5 +117,3 @@ void GpuForceReduction::execute()
 GpuForceReduction::~GpuForceReduction() = default;
 
 } // namespace gmx
-
-#endif /* !HAVE_GPU_FORCE_REDUCTION */

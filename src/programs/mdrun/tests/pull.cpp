@@ -202,6 +202,13 @@ TEST_P(PullIntegrationTest, WithinTolerances)
                 reportNumbersOfPpRanksSupported(simulationName).c_str());
         return;
     }
+
+    if (isTransformationPullSetup(pullSetup) && !HAVE_MUPARSER)
+    {
+        GTEST_SKIP()
+                << "GROMACS is built without muParser, cannot use transformation pull coordinates";
+    }
+
     auto mdpFieldValues = prepareMdpFieldValues(simulationName.c_str(), "md", "no", "no");
     addBasicMdpValues(&mdpFieldValues);
 
@@ -236,10 +243,11 @@ TEST_P(PullIntegrationTest, WithinTolerances)
         CommandLine mdrunCaller;
         ASSERT_EQ(0, runner_.callMdrun(mdrunCaller));
         EnergyTermsToCompare energyTermsToCompare{ {
-                { interaction_function[F_COM_PULL].longname, relativeEnergyTolerance },
-                { interaction_function[F_EPOT].longname, relativeEnergyTolerance },
-                { interaction_function[F_EKIN].longname, relativeEnergyTolerance },
-                { interaction_function[F_PRES].longname, relativePressureTolerance },
+                { interaction_function[InteractionFunction::CenterOfMassPullingEnergy].longname,
+                  relativeEnergyTolerance },
+                { interaction_function[InteractionFunction::PotentialEnergy].longname, relativeEnergyTolerance },
+                { interaction_function[InteractionFunction::KineticEnergy].longname, relativeEnergyTolerance },
+                { interaction_function[InteractionFunction::Pressure].longname, relativePressureTolerance },
         } };
         TestReferenceData    refData;
         auto                 checker = refData.rootChecker()

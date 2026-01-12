@@ -44,7 +44,7 @@
 #ifndef GMX_NBXNM_KERNEL_COMMON_H
 #define GMX_NBXNM_KERNEL_COMMON_H
 
-#include "gromacs/math/vectypes.h"
+#include "gromacs/utility/vectypes.h"
 /* nbnxn_atomdata_t and nbnxn_pairlist_t could be forward declared, but that requires modifications in all SIMD kernel files */
 #include "gromacs/nbnxm/atomdata.h"
 #include "gromacs/utility/real.h"
@@ -64,16 +64,17 @@ enum class EwaldExclusionType : int;
 
 /*! \brief Pair-interaction kernel type that also calculates energies.
  */
-typedef void(NbnxmKernelFunc)(const NbnxnPairlistCpu*    nbl,
-                              const nbnxn_atomdata_t*    nbat,
-                              const interaction_const_t* ic,
+typedef void(NbnxmKernelFunc)(const NbnxnPairlistCpu&    nbl,
+                              const nbnxn_atomdata_t&    nbat,
+                              const interaction_const_t& ic,
                               const rvec*                shift_vec,
                               nbnxn_atomdata_output_t*   out);
 
 //! \brief Lookup function for Coulomb kernel type
 CoulombKernelType getCoulombKernelType(EwaldExclusionType     ewaldExclusionType,
                                        CoulombInteractionType coulombInteractionType,
-                                       bool                   haveEqualCoulombVwdRadii);
+                                       bool                   haveEqualCoulombVwdRadii,
+                                       bool                   nbnxmIsDirectCoulombProvider);
 
 /*! \brief Kinds of Van der Waals treatments in NBNxM SIMD kernels
  *

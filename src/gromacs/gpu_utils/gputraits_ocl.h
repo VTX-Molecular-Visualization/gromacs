@@ -45,7 +45,16 @@
  */
 
 #include "gromacs/gpu_utils/gmxopencl.h"
-#include "gromacs/math/vectypes.h"
+#include "gromacs/utility/vectypes.h"
+
+#define GMX_HOST_ATTRIBUTE
+#define GMX_DEVICE_ATTRIBUTE
+#define GMX_HOSTDEVICE_ATTRIBUTE GMX_HOST_ATTRIBUTE GMX_DEVICE_ATTRIBUTE
+#if !defined(NDEBUG)
+#    define GMX_DEVICE_ASSERT(condition) assert(condition)
+#else
+#    define GMX_DEVICE_ASSERT(condition)
+#endif
 
 using DeviceTexture = void*;
 
@@ -60,6 +69,9 @@ using Float3 = gmx::RVec;
 
 //! Convenience alias for 4-wide float.
 using Float4 = cl_float4;
+
+//! Convenience alias for 4-wide int.
+using Int4 = cl_int4;
 
 /*! \internal \brief
  * GPU kernels scheduling description. This is same in OpenCL/CUDA.
@@ -79,6 +91,6 @@ struct KernelLaunchConfig
 /*! \brief Sets whether device code can use arrays that are embedded in structs.
  * Note that OpenCL 2.x might be able to do this, but we use 1.2.
  */
-#define c_canEmbedBuffers false
+static constexpr bool c_canEmbedBuffers = false;
 
 #endif

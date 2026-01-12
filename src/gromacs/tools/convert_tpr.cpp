@@ -54,8 +54,6 @@
 #include "gromacs/fileio/trrio.h"
 #include "gromacs/gmxpreprocess/gen_maxwell_velocities.h"
 #include "gromacs/math/functions.h"
-#include "gromacs/math/vec.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/mdtypes/state.h"
@@ -81,6 +79,8 @@
 #include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
 
 namespace gmx
 {
@@ -268,7 +268,7 @@ static void reduce_topology_x(int gnx, int index[], gmx_mtop_t* mtop, t_state* s
     }
     reduce_atom(gnx, index, atoms.atom, atoms.atomname, &(atoms.nres), atoms.resinfo);
 
-    for (int i = 0; (i < F_NRE); i++)
+    for (const auto i : gmx::EnumerationWrapper<InteractionFunction>{})
     {
         reduce_ilist(invindex,
                      bKeep,
@@ -283,7 +283,7 @@ static void reduce_topology_x(int gnx, int index[], gmx_mtop_t* mtop, t_state* s
     mtop->moltype[0].name  = mtop->name;
     mtop->moltype[0].atoms = atoms;
     mtop->moltype[0].excls = reduce_listoflists(invindex, bKeep, top.excls, "excls");
-    for (int i = 0; i < F_NRE; i++)
+    for (const auto i : gmx::EnumerationWrapper<InteractionFunction>{})
     {
         mtop->moltype[0].ilist[i] = std::move(top.idef.il[i]);
     }

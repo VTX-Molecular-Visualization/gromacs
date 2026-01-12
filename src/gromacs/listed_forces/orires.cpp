@@ -52,7 +52,6 @@
 #include "gromacs/math/do_fit.h"
 #include "gromacs/math/functions.h"
 #include "gromacs/math/nrjac.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/mdrunutility/multisim.h"
 #include "gromacs/mdtypes/commrec.h"
 #include "gromacs/mdtypes/fcdata.h"
@@ -76,6 +75,7 @@
 #include "gromacs/utility/pleasecite.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/vec.h"
 
 using gmx::ArrayRef;
 using gmx::RVec;
@@ -88,7 +88,7 @@ void extendStateWithOriresHistory(const gmx_mtop_t& mtop, const t_inputrec& ir, 
     GMX_RELEASE_ASSERT(globalState != nullptr,
                        "We need a valid global state in extendStateWithOriresHistory()");
 
-    const int numRestraints = gmx_mtop_ftype_count(mtop, F_ORIRES);
+    const int numRestraints = gmx_mtop_ftype_count(mtop, InteractionFunction::OrientationRestraints);
     if (numRestraints > 0 && ir.orires_tau > 0)
     {
         /* Extend the state with the orires history */
@@ -126,7 +126,7 @@ t_oriresdata::t_oriresdata(FILE*                     fplog,
                            const gmx_multisim_t*     ms,
                            t_state*                  globalState,
                            gmx::LocalAtomSetManager* localAtomSetManager) :
-    numRestraints(gmx_mtop_ftype_count(mtop, F_ORIRES)),
+    numRestraints(gmx_mtop_ftype_count(mtop, InteractionFunction::OrientationRestraints)),
     fitLocalAtomSet_(localAtomSetManager->add(fitGlobalAtomIndices(mtop)))
 {
     GMX_RELEASE_ASSERT(numRestraints > 0,
@@ -164,7 +164,7 @@ t_oriresdata::t_oriresdata(FILE*                     fplog,
     int typeMax = 0;
     for (const auto il : IListRange(mtop))
     {
-        const int numOrires = il.list()[F_ORIRES].size();
+        const int numOrires = il.list()[InteractionFunction::OrientationRestraints].size();
         if (il.nmol() > 1 && numOrires > 0)
         {
             const std::string mesg = gmx::formatString(
@@ -177,7 +177,7 @@ t_oriresdata::t_oriresdata(FILE*                     fplog,
 
         for (int i = 0; i < numOrires; i += 3)
         {
-            int type = il.list()[F_ORIRES].iatoms[i];
+            int type = il.list()[InteractionFunction::OrientationRestraints].iatoms[i];
             int ex   = mtop.ffparams.iparams[type].orires.ex;
             if (ex >= numExperiments)
             {
@@ -310,10 +310,10 @@ t_oriresdata::t_oriresdata(FILE*                     fplog,
                     ms->numSimulations_);
         }
 
-        check_multi_int(fplog, ms, numRestraints, "the number of orientation restraints", FALSE);
+        check_multi_int(fplog, *ms, numRestraints, "the number of orientation restraints", FALSE);
         check_multi_int(
-                fplog, ms, numFitAtoms, "the number of fit atoms for orientation restraining", FALSE);
-        check_multi_int(fplog, ms, ir.nsteps, "nsteps", FALSE);
+                fplog, *ms, numFitAtoms, "the number of fit atoms for orientation restraining", FALSE);
+        check_multi_int(fplog, *ms, ir.nsteps, "nsteps", FALSE);
         /* Copy the reference coordinates from the main to the other nodes */
         gmx_sum_sim(DIM * referenceCoordinates_.size(), as_rvec_array(referenceCoordinates_.data())[0], ms);
     }
@@ -664,20 +664,20 @@ real calc_orires_dev(const gmx_multisim_t* ms,
     /* Approx. 120*nfa/3 flops */
 }
 
-real orires(int             nfa,
-            const t_iatom   forceatoms[],
-            const t_iparams ip[],
-            const rvec      x[],
-            rvec4           f[],
-            rvec            fshift[],
-            const t_pbc*    pbc,
-            real gmx_unused lambda,
+real orires(int              nfa,
+            const t_iatom    forceatoms[],
+            const t_iparams  ip[],
+            const rvec       x[],
+            rvec4            f[],
+            rvec             fshift[],
+            const t_pbc*     pbc,
+            real gmx_unused  lambda,
             real gmx_unused* dvdlambda,
             gmx::ArrayRef<const real> /*charge*/,
-            t_fcdata gmx_unused* fcd,
+            t_fcdata gmx_unused*     fcd,
             t_disresdata gmx_unused* disresdata,
             t_oriresdata*            oriresdata,
-            int gmx_unused* global_atom_index)
+            int gmx_unused*          global_atom_index)
 {
     int      ex, power, ki = gmx::c_centralShiftIndex;
     real     r2, invr, invr2, fc, smooth_fc, dev, devins, pfac;

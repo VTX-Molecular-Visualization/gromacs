@@ -129,7 +129,7 @@ static constexpr t_interaction_function def_nofc(const char* str, const char* ls
  * terminating '\0'). So please abbreviate accordingly,
  * e.g. "Conserved En."
  */
-const t_interaction_function interaction_function[F_NRE] = {
+const gmx::EnumerationArray<InteractionFunction, t_interaction_function> interaction_function = {
     def_bond("BONDS", "Bond", 2, 2, 2),
     def_bond("G96BONDS", "G96Bond", 2, 2, 2),
     def_bond("MORSE", "Morse", 2, 3, 3),
@@ -157,7 +157,7 @@ const t_interaction_function interaction_function[F_NRE] = {
     def_dihedral("IDIHS", "Improper Dih.", 4, 2, 2),
     def_dihedral("PIDIHS", "Per. Imp. Dih.", 4, 3, 3),
     def_dihedral_tabulated("TABDIHS", "Tab. Dih.", 4, 2, 2),
-    def_dihedral("CMAP", "CMAP Dih.", 5, -1, -1),
+    def_dihedral("CMAP", "CMAP Dih.", 5, 1, 1),
     def_nofc("GB12", "GB 1-2 Pol."),          /* unused */
     def_nofc("GB13", "GB 1-3 Pol."),          /* unused */
     def_nofc("GB14", "GB 1-4 Pol."),          /* unused */
@@ -208,6 +208,7 @@ const t_interaction_function interaction_function[F_NRE] = {
     def_nofc("COM_PULL", "COM Pull En."),
     def_nofc("DENSITYFIT", "Dens. fitting"),
     def_nofc("EQM", "Quantum En."),
+    def_nofc("ENNPOT", "NN Potential"),
     def_nofc("EPOT", "Potential"),
     def_nofc("EKIN", "Kinetic En."),
     def_nofc("ETOT", "Total Energy"),

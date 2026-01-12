@@ -49,8 +49,6 @@
 #include "gromacs/fileio/gmxfio_xdr.h"
 #include "gromacs/fileio/xdrf.h"
 #include "gromacs/math/functions.h"
-#include "gromacs/math/vec.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/mdtypes/state.h"
@@ -65,6 +63,8 @@
 #include "gromacs/utility/futil.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/smalloc.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
 
 /* The source code in this file should be thread-safe.
          Please keep it that way. */
@@ -107,7 +107,7 @@ static void enxsubblock_init(t_enxsubblock* sb)
 #if GMX_DOUBLE
     sb->type = XdrDataType::Double;
 #else
-    sb->type                = XdrDataType::Float;
+    sb->type = XdrDataType::Float;
 #endif
     sb->fval       = nullptr;
     sb->dval       = nullptr;
@@ -335,7 +335,7 @@ void add_subblocks_enxblock(t_enxblock* eb, int n)
 
 static void enx_warning(const char* msg)
 {
-    if (getenv("GMX_ENX_NO_FATAL") != nullptr)
+    if (std::getenv("GMX_ENX_NO_FATAL") != nullptr)
     {
         gmx_warning("%s", msg);
     }
@@ -802,8 +802,8 @@ static gmx_bool empty_file(const std::filesystem::path& fn)
     gmx_bool bEmpty;
 
     fp     = gmx_fio_fopen(fn, "r");
-    ret    = fread(&dum, sizeof(dum), 1, fp);
-    bEmpty = (feof(fp) != 0);
+    ret    = std::fread(&dum, sizeof(dum), 1, fp);
+    bEmpty = (std::feof(fp) != 0);
     gmx_fio_fclose(fp);
 
     // bEmpty==TRUE but ret!=0 would likely be some strange I/O error, but at
@@ -968,7 +968,7 @@ static void convert_full_sums(ener_old_t* ener_old, t_enxframe* fr)
 gmx_bool do_enx(ener_file_t ef, t_enxframe* fr)
 {
     int      file_version = -1;
-    int      i, b;
+    int      b;
     gmx_bool bRead, bOK, bOK1, bSane;
     real     tmp1, tmp2, rdum;
     /*int       d_size;*/
@@ -986,7 +986,7 @@ gmx_bool do_enx(ener_file_t ef, t_enxframe* fr)
         if (bRead)
         {
             fprintf(stderr, "\rLast energy frame read %d time %8.3f         ", ef->framenr - 1, ef->frametime);
-            fflush(stderr);
+            std::fflush(stderr);
 
             if (!bOK)
             {
@@ -1030,7 +1030,7 @@ gmx_bool do_enx(ener_file_t ef, t_enxframe* fr)
     if (bRead && fr->nre > fr->e_alloc)
     {
         srenew(fr->ener, fr->nre);
-        for (i = fr->e_alloc; (i < fr->nre); i++)
+        for (int i = fr->e_alloc; (i < fr->nre); i++)
         {
             fr->ener[i].e    = 0;
             fr->ener[i].eav  = 0;
@@ -1039,7 +1039,7 @@ gmx_bool do_enx(ener_file_t ef, t_enxframe* fr)
         fr->e_alloc = fr->nre;
     }
 
-    for (i = 0; i < fr->nre; i++)
+    for (int i = 0; i < fr->nre; i++)
     {
         bOK = bOK && gmx_fio_do_real(ef->fio, fr->ener[i].e);
 
@@ -1085,9 +1085,8 @@ gmx_bool do_enx(ener_file_t ef, t_enxframe* fr)
     {
         /* now read the subblocks. */
         int nsub = fr->block[b].nsub; /* shortcut */
-        int i;
 
-        for (i = 0; i < nsub; i++)
+        for (int i = 0; i < nsub; i++)
         {
             t_enxsubblock* sub = &(fr->block[b].sub[i]); /* shortcut */
 

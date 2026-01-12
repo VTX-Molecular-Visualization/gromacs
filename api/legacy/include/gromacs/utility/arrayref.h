@@ -70,8 +70,7 @@ struct ArrayRefIter :
     // This default constructor does not initialize it_
     constexpr ArrayRefIter() noexcept {}
     constexpr explicit ArrayRefIter(T* it) noexcept : it_(it) {}
-    // TODO: Use std::is_const_v when CUDA 11 is a requirement.
-    template<class T2 = T, class = std::enable_if_t<std::is_const<T2>::value>>
+    template<class T2 = T, class = std::enable_if_t<std::is_const_v<T2>>>
     constexpr ArrayRefIter(ArrayRefIter<std::remove_const_t<T2>> it) noexcept : it_(&*it)
     {
     }
@@ -97,7 +96,7 @@ private:
  * following main differences:
  *  - This class does not have its own storage.  Instead, it references an
  *    existing array of values (either a C-style array or part of an existing
- *    std::vector<T, A> or std::array<T>).
+ *    \c std::vector<T, A> or \c std::array<T>).
  *  - It is only possible to modify the values themselves through ArrayRef;
  *    it is not possible to add or remove values.
  *  - Copying objects of this type is cheap, and the copies behave identically
@@ -112,13 +111,13 @@ private:
  * Note that due to a Doxygen limitation, the constructor that takes a C array
  * whose size is known at compile time does not appear in the documentation.
  *
- * To refer to const data of type T, ArrayRef<const T> is used. For both const
- * and non-const std::vector and std::array an ArrayRef view can be created.
+ * To refer to const data of type T, \c ArrayRef<const T> is used. For both const
+ * and non-const \c std::vector and \c std::array an ArrayRef view can be created.
  * Attempting to create a non-const ArrayRef of a const vector/array will result
  * in a compiler error in the respective constructor.
  *
  * For SIMD types there is template specialization available
- * (e.g. ArrayRef<SimdReal>) in gromacs/simd/simd_memory.h which should have
+ * (e.g. \c ArrayRef<SimdReal>) in gromacs/simd/simd_memory.h which should have
  * the same functionality as much as possible.
  *
  * \todo
@@ -173,10 +172,8 @@ public:
      *
      * This constructor is not explicit to allow directly passing
      * a container to a method that takes ArrayRef.
-     *
-     * \todo Use std::is_convertible_v when CUDA 11 is a requirement.
      */
-    template<typename U, typename = std::enable_if_t<std::is_convertible<typename std::remove_reference_t<U>::pointer, pointer>::value>>
+    template<typename U, typename = std::enable_if_t<std::is_convertible_v<typename std::remove_reference_t<U>::pointer, pointer>>>
     ArrayRef(U&& o) : begin_(o.data()), end_(o.data() + o.size())
     {
     }
@@ -323,11 +320,9 @@ ArrayRef<const T> constArrayRefFromArray(const T* begin, size_t size)
  * Create ArrayRef from container with type deduction
  *
  * \see ArrayRef
- *
- * \todo Use std::is_const_v when CUDA 11 is a requirement.
  */
 template<typename T>
-ArrayRef<std::conditional_t<std::is_const<T>::value, const typename T::value_type, typename T::value_type>>
+ArrayRef<std::conditional_t<std::is_const_v<T>, const typename T::value_type, typename T::value_type>>
 makeArrayRef(T& c)
 {
     return c;

@@ -49,13 +49,13 @@
 #include <gtest/gtest.h>
 
 #include "gromacs/math/functions.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/topology/topology.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/real.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "testutils/testasserts.h"
 #include "testutils/topologyhelpers.h"
@@ -73,9 +73,9 @@ namespace
 TEST(EffectiveAtomDensity, VolumeIndependence)
 {
     const std::vector<RVec> coordinates      = { { 1, 1, 1 }, { 1, 1, 1 }, { 1, 3, 1 }, { 1, 3, 1 },
-                                            { 3, 1, 1 }, { 3, 1, 1 }, { 3, 3, 1 }, { 3, 3, 1 },
-                                            { 1, 1, 3 }, { 1, 1, 3 }, { 1, 3, 3 }, { 1, 3, 3 },
-                                            { 3, 1, 3 }, { 3, 1, 3 }, { 3, 3, 3 }, { 3, 3, 3 } };
+                                                 { 3, 1, 1 }, { 3, 1, 1 }, { 3, 3, 1 }, { 3, 3, 1 },
+                                                 { 1, 1, 3 }, { 1, 1, 3 }, { 1, 3, 3 }, { 1, 3, 3 },
+                                                 { 3, 1, 3 }, { 3, 1, 3 }, { 3, 3, 3 }, { 3, 3, 3 } };
     const matrix            tightBox         = { { 4, 0, 0 }, { 0, 4, 0 }, { 0, 0, 4 } };
     const matrix            largeBox         = { { 40, 0, 0 }, { 0, 40, 0 }, { 0, 0, 4 } };
     const real              cutoff           = 2;

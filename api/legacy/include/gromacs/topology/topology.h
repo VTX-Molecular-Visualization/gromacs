@@ -38,7 +38,6 @@
 
 #include <vector>
 
-#include "gromacs/math/vectypes.h"
 #include "gromacs/topology/atoms.h"
 #include "gromacs/topology/block.h"
 #include "gromacs/topology/forcefieldparameters.h"
@@ -48,6 +47,7 @@
 #include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/listoflists.h"
 #include "gromacs/utility/unique_cptr.h"
+#include "gromacs/utility/vectypes.h"
 
 /*! \brief Molecules type data: atoms, interactions and exclusions */
 struct gmx_moltype_t
@@ -150,7 +150,7 @@ struct gmx_mtop_t //NOLINT(clang-analyzer-optin.performance.Padding)
     bool bIntermolecularInteractions = false;
     /* \brief
      * List of intermolecular interactions using system wide
-     * atom indices, either NULL or size F_NRE
+     * atom indices, either NULL or size InteractionFunction::Count
      */
     std::unique_ptr<InteractionLists> intermolecular_ilist = nullptr;
     //! Number of global atoms.

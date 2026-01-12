@@ -51,13 +51,13 @@
 #include <memory>
 #include <vector>
 
-#include "gromacs/math/vectypes.h"
 #include "gromacs/mdtypes/enerdata.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/topology/ifunc.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/real.h"
+#include "gromacs/utility/vectypes.h"
 
 class energyhistory_t;
 struct ener_file;
@@ -321,10 +321,10 @@ private:
     TemperatureCoupling etc_ = TemperatureCoupling::No;
 
     //! Which of the main energy terms should be printed
-    bool bEner_[F_NRE] = { false };
+    gmx::EnumerationArray<InteractionFunction, bool> bEner_ = { false };
     //! Index for main energy terms
     int ie_ = 0;
-    //! Number of energy terms from F_NRE list to be saved (i.e. number of 'true' in bEner)
+    //! Number of energy terms from InteractionFunction::Count list to be saved (i.e. number of 'true' in bEner)
     int f_nre_ = 0;
 
     //! Index for constraints RMSD

@@ -108,18 +108,28 @@ GridSet::GridSet(const PbcType      pbcType,
                  const DomdecZones* ddZones,
                  const PairlistType pairlistType,
                  const bool         haveFep,
+                 const bool         localAtomOrderMatchesNbnxmOrder,
                  const int          numThreads,
                  PinningPolicy      pinningPolicy) :
     domainSetup_(pbcType, doTestParticleInsertion, numDDCells, ddZones),
-    grids_(numGrids(domainSetup_), Grid(pairlistType, haveFep_, pinningPolicy)),
+    pairlistType_(pairlistType),
     haveFep_(haveFep),
-    numRealAtomsLocal_(0),
-    numRealAtomsTotal_(0),
+    localAtomOrderMatchesNbnxmOrder_(localAtomOrderMatchesNbnxmOrder),
+    pinningPolicy_(pinningPolicy),
     gridWork_(numThreads)
 {
     clear_mat(box_);
     changePinningPolicy(&gridSetData_.cells, pinningPolicy);
     changePinningPolicy(&gridSetData_.atomIndices, pinningPolicy);
+
+    grids_.reserve(numGrids(domainSetup_));
+    for (int i = 0; i < numGrids(domainSetup_); i++)
+    {
+        grids_.emplace_back(pairlistType, i, haveFep_, pinningPolicy);
+    }
+
+    // For normal MD we add non-local grids during (re)partitioning, so only count the local grid here
+    numGridsInUse_ = (doTestParticleInsertion ? numGrids(domainSetup_) : 1);
 }
 
 void GridSet::setLocalAtomOrder()
@@ -127,17 +137,33 @@ void GridSet::setLocalAtomOrder()
     /* Set the atom order for the home cell (index 0) */
     const Grid& grid = grids_[0];
 
-    int atomIndex = 0;
-    for (int cxy = 0; cxy < grid.numColumns(); cxy++)
+    if (localAtomOrderMatchesNbnxmOrder_)
     {
-        const int numAtoms  = grid.numAtomsInColumn(cxy);
-        int       cellIndex = grid.firstCellInColumn(cxy) * grid.geometry().numAtomsPerCell;
-        for (int i = 0; i < numAtoms; i++)
+        const int gmx_unused numThreads = gmx_omp_nthreads_get(ModuleMultiThread::Pairsearch);
+
+        // Set the identity mapping
+        gridSetData_.cells.resize(grid.numCells() * grid.numAtomsPerCell());
+#pragma omp parallel for num_threads(numThreads) schedule(static)
+        for (int i = 0; i < grid.numCells() * grid.numAtomsPerCell(); i++)
         {
-            gridSetData_.atomIndices[cellIndex] = atomIndex;
-            gridSetData_.cells[atomIndex]       = cellIndex;
-            atomIndex++;
-            cellIndex++;
+            gridSetData_.atomIndices[i] = i;
+            gridSetData_.cells[i]       = i;
+        }
+    }
+    else
+    {
+        int atomIndex = 0;
+        for (int cxy = 0; cxy < grid.numColumns(); cxy++)
+        {
+            const int numAtoms  = grid.numAtomsInColumn(cxy);
+            int       cellIndex = grid.firstCellInColumn(cxy) * grid.geometry().numAtomsPerCell_;
+            for (int i = 0; i < numAtoms; i++)
+            {
+                gridSetData_.atomIndices[cellIndex] = atomIndex;
+                gridSetData_.cells[atomIndex]       = cellIndex;
+                atomIndex++;
+                cellIndex++;
+            }
         }
     }
 }
@@ -151,7 +177,7 @@ static int getGridOffset(ArrayRef<const Grid> grids, int gridIndex)
     else
     {
         const Grid& previousGrid = grids[gridIndex - 1];
-        return previousGrid.atomIndexEnd() / previousGrid.geometry().numAtomsPerCell;
+        return previousGrid.atomIndexEnd() / previousGrid.geometry().numAtomsPerCell_;
     }
 }
 
@@ -161,13 +187,22 @@ void GridSet::putOnGrid(const matrix            box,
                         const rvec              upperCorner,
                         const UpdateGroupsCog*  updateGroupsCog,
                         const Range<int>        atomRange,
-                        const int               numGridAtoms,
+                        const int               numAtomsWithoutFillers,
                         real                    atomDensity,
                         ArrayRef<const int32_t> atomInfo,
                         ArrayRef<const RVec>    x,
                         const int*              move,
                         nbnxn_atomdata_t*       nbat)
 {
+    GMX_RELEASE_ASSERT(
+            !localAtomOrderMatchesNbnxmOrder_ || gridIndex == 0 || domainSetup_.doTestParticleInsertion_,
+            "Without NBNxM order or TPI, this function should only be called for gridIndex==0");
+
+    GMX_RELEASE_ASSERT(domainSetup_.doTestParticleInsertion_ || gridIndex == 0 || gridIndex == numGridsInUse_,
+                       "Non-local grids need to be set in order");
+
+    numGridsInUse_ = gridIndex + 1;
+
     Grid&     grid               = grids_[gridIndex];
     const int cellOffset         = getGridOffset(grids_, gridIndex);
     real      maxAtomGroupRadius = NAN;
@@ -176,26 +211,26 @@ void GridSet::putOnGrid(const matrix            box,
     {
         copy_mat(box, box_);
 
-        numRealAtomsLocal_ = numGridAtoms;
+        maxAtomGroupRadius = (updateGroupsCog ? updateGroupsCog->maxUpdateGroupRadius() : 0);
+
+        numRealAtomsLocal_ = numAtomsWithoutFillers;
         /* We assume that nbnxn_put_on_grid is called first
          * for the local atoms (gridIndex=0).
          */
-        numRealAtomsTotal_ = numGridAtoms;
-
-        maxAtomGroupRadius = (updateGroupsCog ? updateGroupsCog->maxUpdateGroupRadius() : 0);
+        numRealAtomsTotal_ = numAtomsWithoutFillers;
 
         if (debug)
         {
-            fprintf(debug, "natoms_local = %5d atom_density = %5.1f\n", numRealAtomsLocal_, atomDensity);
+            fprintf(debug, "num atoms %d, atom_density = %5.1f\n", atomRange.size(), atomDensity);
         }
     }
     else
     {
-        const Grid::Dimensions& dimsGrid0 = grids_[0].dimensions();
-        atomDensity                       = dimsGrid0.atomDensity;
-        maxAtomGroupRadius                = dimsGrid0.maxAtomGroupRadius;
+        const GridDimensions& dimsGrid0 = grids_[0].dimensions();
+        atomDensity                     = dimsGrid0.atomDensity;
+        maxAtomGroupRadius              = dimsGrid0.maxAtomGroupRadius;
 
-        numRealAtomsTotal_ = std::max(numRealAtomsTotal_, *atomRange.end());
+        numRealAtomsTotal_ = std::max(numRealAtomsTotal_, numAtomsWithoutFillers);
     }
 
     /* We always use the home zone (grid[0]) for setting the cell size,
@@ -213,7 +248,7 @@ void GridSet::putOnGrid(const matrix            box,
      * based on the newly computed density.
      */
     const real c_gridDensityRatioThreshold = 1.5_real;
-    const bool optimizeDensity             = (ddZone == 0 && !atomRange.empty());
+    const bool optimizeDensity             = (ddZone == 0 && numAtomsWithoutFillers > 0);
     real       gridDensityRatio            = 0;
     int        iteration                   = 0;
 
@@ -241,7 +276,7 @@ void GridSet::putOnGrid(const matrix            box,
                                                  upperCorner,
                                                  updateGroupsCog,
                                                  atomRange,
-                                                 numGridAtoms,
+                                                 numAtomsWithoutFillers,
                                                  &atomDensity,
                                                  maxAtomGroupRadius,
                                                  x,
@@ -253,10 +288,9 @@ void GridSet::putOnGrid(const matrix            box,
     }
 
     /* Copy the already computed cell indices to the grid and sort, when needed */
-    grid.setCellIndices(
-            ddZone, cellOffset, &gridSetData_, gridWork_, atomRange, numGridAtoms, atomInfo, x, nbat);
+    grid.setCellIndices(ddZone, cellOffset, &gridSetData_, gridWork_, atomRange, atomInfo, x, nbat);
 
-    if (gridIndex == gmx::ssize(grids_) - 1)
+    if (gridIndex == numGridsInUse_ - 1)
     {
         /* We are done setting up all grids, we can resize the force buffers */
         nbat->resizeForceBuffers();
@@ -268,6 +302,27 @@ void GridSet::putOnGrid(const matrix            box,
         maxNumColumns = std::max(maxNumColumns, grids_[i].numColumns());
     }
     setNumColumnsMax(maxNumColumns);
+}
+
+ArrayRef<const int> GridSet::getLocalGridNumAtomsPerColumn() const
+{
+    const Grid& grid = grids_[0];
+
+    if (localAtomOrderMatchesNbnxmOrder_)
+    {
+        localGridNumAtomsPerColumn_.resize(grid.numColumns());
+
+        for (int column = 0; column < grid.numColumns(); column++)
+        {
+            localGridNumAtomsPerColumn_[column] = grid.numCellsInColumn(column) * grid.numAtomsPerCell();
+        }
+
+        return localGridNumAtomsPerColumn_;
+    }
+    else
+    {
+        return grid.cxy_na();
+    }
 }
 
 } // namespace gmx

@@ -52,11 +52,11 @@
 #include <gtest/gtest-spi.h>
 #include <gtest/gtest.h>
 
-#include "gromacs/math/vectypes.h"
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/trajectory/trajectoryframe.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/strconvert.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "testutils/refdata.h"
 #include "testutils/testasserts.h"
@@ -414,20 +414,19 @@ void TrajectoryComparison::operator()(const TrajectoryFrame& frame, TestReferenc
     checkForcesAgainstReference(frame, matchSettings_, tolerances_, checker);
 }
 
-void checkTrajectoryAgainstReferenceData(const std::string&          trajectoryFilename,
-                                         const TrajectoryComparison& trajectoryComparison,
-                                         TestReferenceChecker*       checker)
+void checkTrajectoryAgainstReferenceData(const std::filesystem::path& trajectoryFilename,
+                                         const TrajectoryComparison&  trajectoryComparison,
+                                         TestReferenceChecker*        checker)
 {
     checkTrajectoryAgainstReferenceData(
             trajectoryFilename, trajectoryComparison, checker, MaxNumFrames::compareAllFrames());
 }
 
-void checkTrajectoryAgainstReferenceData(const std::string&          trajectoryFilename,
-                                         const TrajectoryComparison& trajectoryComparison,
-                                         TestReferenceChecker*       checker,
-                                         MaxNumFrames                maxNumFrames)
+void checkTrajectoryAgainstReferenceData(const std::filesystem::path& trajectoryFilename,
+                                         const TrajectoryComparison&  trajectoryComparison,
+                                         TestReferenceChecker*        checker,
+                                         MaxNumFrames                 maxNumFrames)
 {
-    ;
     TrajectoryFrameReader reader(trajectoryFilename);
     unsigned int          counter = 0;
     for (counter = 0; counter < maxNumFrames && reader.readNextFrame(); counter++)

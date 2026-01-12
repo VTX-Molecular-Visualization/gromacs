@@ -52,7 +52,6 @@
 
 #include <gtest/gtest.h>
 
-#include "gromacs/math/vectypes.h"
 #include "gromacs/options/filenameoption.h"
 #include "gromacs/topology/idef.h"
 #include "gromacs/topology/ifunc.h"
@@ -62,6 +61,7 @@
 #include "gromacs/utility/filestream.h"
 #include "gromacs/utility/strconvert.h"
 #include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "testutils/cmdlinetest.h"
 #include "testutils/mpitest.h"
@@ -147,9 +147,12 @@ TEST_P(SimpleMdrunTest, WithinTolerances)
         CommandLine mdrunCaller;
         ASSERT_EQ(0, runner_.callMdrun(mdrunCaller));
         EnergyTermsToCompare energyTermsToCompare{ {
-                { interaction_function[F_EPOT].longname, energyToleranceForSystem_g.at(simulationName) },
-                { interaction_function[F_EKIN].longname, energyToleranceForSystem_g.at(simulationName) },
-                { interaction_function[F_PRES].longname, pressureToleranceForSystem_g.at(simulationName) },
+                { interaction_function[InteractionFunction::PotentialEnergy].longname,
+                  energyToleranceForSystem_g.at(simulationName) },
+                { interaction_function[InteractionFunction::KineticEnergy].longname,
+                  energyToleranceForSystem_g.at(simulationName) },
+                { interaction_function[InteractionFunction::Pressure].longname,
+                  pressureToleranceForSystem_g.at(simulationName) },
         } };
         TestReferenceData    refData;
         auto                 checker = refData.rootChecker()

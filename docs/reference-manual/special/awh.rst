@@ -515,7 +515,10 @@ decorrelated and distributed approximately according to the target
 distribution before starting to refine the free energy. This can be
 achieved e.g. by “equilibrating” the shared weight histogram before
 letting it grow; for instance, :math:`W(\lambda)/N\approx \rho(\lambda)`
-with some tolerance.
+with some tolerance. Such a check is turned on by default
+(mdp parameter :mdp:`awh1-equilibrate-histogram`). The tolerance is set
+by :mdp:`awh1-histogram-tolerance`, the default value of 0.3 is expected
+to work well in all cases, both with single and multiple walkers.
 
 Furthermore, the “covering” or transition criterion of the initial stage
 should to be generalized to detect when the sampling interval has been
@@ -675,7 +678,7 @@ estimate used by AWH to initialize :math:`N` in terms of more meaningful
 quantities
 
 .. math:: \frac{1}{N_0} = \frac{1}{N_0(\varepsilon_0, D)} = \Delta
-	  t_\mathrm{sample} \max_d \frac{2D_d}{L_d^2} \varepsilon_0^2
+      t_\mathrm{sample} \max_d \frac{2D_d}{L_d^2} \varepsilon_0^2
           :label: eqawhn0
 
 where :math:`L_d` is the length of the interval and :math:`D_d` is

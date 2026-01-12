@@ -50,8 +50,6 @@
 #include "gromacs/ewald/pme.h"
 #include "gromacs/gmxlib/network.h"
 #include "gromacs/gmxlib/nrnb.h"
-#include "gromacs/math/vec.h"
-#include "gromacs/math/vecdump.h"
 #include "gromacs/mdlib/gmx_omp_nthreads.h"
 #include "gromacs/mdtypes/commrec.h"
 #include "gromacs/mdtypes/enerdata.h"
@@ -69,6 +67,8 @@
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/gmxassert.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vecdump.h"
 
 using gmx::ArrayRef;
 using gmx::RVec;
@@ -164,7 +164,7 @@ void CpuPpLongRangeNonbondeds::calculate(gmx_pme_t*                     pmedata,
                                          const DDBalanceRegionHandler&  ddBalanceRegionHandler)
 {
     const bool computePmeOnCpu = (usingPme(coulombInteractionType_) || usingLJPme(vanDerWaalsType_))
-                                 && thisRankHasDuty(commrec, DUTY_PME)
+                                 && thisRankHasPmeDuty(commrec->dd)
                                  && (pme_run_mode(pmedata) == PmeRunMode::CPU);
 
     /* Do long-range electrostatics and/or LJ-PME
@@ -207,7 +207,7 @@ void CpuPpLongRangeNonbondeds::calculate(gmx_pme_t*                     pmedata,
                          */
                         ewald_LRcorrection(
                                 homenr_,
-                                commrec,
+                                commrec->commMyGroup,
                                 nthreads,
                                 t,
                                 epsilonR_,
@@ -241,7 +241,7 @@ void CpuPpLongRangeNonbondeds::calculate(gmx_pme_t*                     pmedata,
                 /* This is not in a subcounter because it takes a
                    negligible and constant-sized amount of time */
                 ewaldOutput.Vcorr_q += ewald_charge_correction(
-                        commrec,
+                        commrec->dd,
                         epsilonR_,
                         ewaldCoeffQ_,
                         chargeC6Sum_,
@@ -275,7 +275,6 @@ void CpuPpLongRangeNonbondeds::calculate(gmx_pme_t*                     pmedata,
                             sigmaA_,
                             sigmaB_,
                             box,
-                            commrec,
                             haveDDAtomOrdering(*commrec) ? dd_pme_maxshift_x(*commrec->dd) : 0,
                             haveDDAtomOrdering(*commrec) ? dd_pme_maxshift_y(*commrec->dd) : 0,
                             nrnb_,
@@ -327,7 +326,7 @@ void CpuPpLongRangeNonbondeds::calculate(gmx_pme_t*                     pmedata,
                              chargeA_,
                              chargeB_,
                              box,
-                             commrec,
+                             commrec->dd,
                              homenr_,
                              ewaldOutput.vir_q,
                              ewaldCoeffQ_,
@@ -345,8 +344,8 @@ void CpuPpLongRangeNonbondeds::calculate(gmx_pme_t*                     pmedata,
                 ewaldOutput.dvdl[FreeEnergyPerturbationCouplingType::Coul];
         enerd->dvdl_lin[FreeEnergyPerturbationCouplingType::Vdw] +=
                 ewaldOutput.dvdl[FreeEnergyPerturbationCouplingType::Vdw];
-        enerd->term[F_COUL_RECIP] = Vlr_q + ewaldOutput.Vcorr_q;
-        enerd->term[F_LJ_RECIP]   = Vlr_lj + ewaldOutput.Vcorr_lj;
+        enerd->term[InteractionFunction::CoulombReciprocalSpace] = Vlr_q + ewaldOutput.Vcorr_q;
+        enerd->term[InteractionFunction::LennardJonesReciprocalSpace] = Vlr_lj + ewaldOutput.Vcorr_lj;
 
         if (debug)
         {
@@ -354,13 +353,13 @@ void CpuPpLongRangeNonbondeds::calculate(gmx_pme_t*                     pmedata,
                     "Vlr_q = %g, Vcorr_q = %g, Vlr_corr_q = %g\n",
                     Vlr_q,
                     ewaldOutput.Vcorr_q,
-                    enerd->term[F_COUL_RECIP]);
+                    enerd->term[InteractionFunction::CoulombReciprocalSpace]);
             pr_rvecs(debug, 0, "vir_el_recip after corr", ewaldOutput.vir_q, DIM);
             fprintf(debug,
                     "Vlr_lj: %g, Vcorr_lj = %g, Vlr_corr_lj = %g\n",
                     Vlr_lj,
                     ewaldOutput.Vcorr_lj,
-                    enerd->term[F_LJ_RECIP]);
+                    enerd->term[InteractionFunction::LennardJonesReciprocalSpace]);
             pr_rvecs(debug, 0, "vir_lj_recip after corr", ewaldOutput.vir_lj, DIM);
         }
     }

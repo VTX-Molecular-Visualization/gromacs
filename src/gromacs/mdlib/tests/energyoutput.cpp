@@ -64,13 +64,11 @@
 #include <gtest/gtest.h>
 
 #include "gromacs/fileio/enxio.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/mdlib/constr.h"
 #include "gromacs/mdlib/ebin.h"
 #include "gromacs/mdlib/makeconstraints.h"
 #include "gromacs/mdrunutility/handlerestart.h"
 #include "gromacs/mdrunutility/mdmodulesnotifiers.h"
-#include "gromacs/mdtypes/commrec.h"
 #include "gromacs/mdtypes/enerdata.h"
 #include "gromacs/mdtypes/fcdata.h"
 #include "gromacs/mdtypes/group.h"
@@ -88,11 +86,13 @@
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/enumerationhelpers.h"
+#include "gromacs/utility/mpicomm.h"
 #include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/stringutil.h"
 #include "gromacs/utility/textreader.h"
 #include "gromacs/utility/unique_cptr.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "testutils/refdata.h"
 #include "testutils/setenv.h"
@@ -109,7 +109,7 @@ namespace
 //! Wraps fclose to discard the return value to use it as a deleter with gmx::unique_cptr.
 void fcloseWrapper(FILE* fp)
 {
-    fclose(fp);
+    std::fclose(fp);
 }
 
 /*! \brief Test parameters space.
@@ -159,9 +159,9 @@ const EnergyOutputTestParameters parametersSets[] = {
  */
 class EnergyOutputTest : public ::testing::TestWithParam<EnergyOutputTestParameters>
 {
-    static constexpr int                                      numTempCouplingGroups_ = 3;
+    static constexpr int numTempCouplingGroups_ = 3;
     static constexpr std::array<real, numTempCouplingGroups_> tcgInit_{ 0.0_real, 0.0_real, 0.0_real };
-    static constexpr real                                     cosAccel_ = 1.0;
+    static constexpr real cosAccel_ = 1.0;
 
 public:
     //! File manager
@@ -196,8 +196,10 @@ public:
     std::vector<char*> groupNameHandles_;
     //! Total dipole momentum
     rvec muTotal_;
-    //! Communication record
-    t_commrec cr_;
+    //! Communication object
+    MpiComm mpiComm_;
+    //! Domain decomposition pointer
+    gmx_domdec_t* dd_ = nullptr;
     //! Constraints object (for constraints RMSD output in case of LINCS)
     std::unique_ptr<Constraints> constraints_;
     //! Temporary output filename
@@ -215,6 +217,7 @@ public:
 
     EnergyOutputTest() :
         ekindata_(tcgInit_, EnsembleTemperatureSetting::NotAvailable, -1.0_real, false, cosAccel_, 1),
+        mpiComm_(MpiComm(MpiComm::SingleRank{})),
         logFilename_(fileManager_.getTemporaryFilePath(".log").string()),
         edrFilename_(fileManager_.getTemporaryFilePath(".edr").string()),
         log_(std::fopen(logFilename_.c_str(), "w")),
@@ -224,14 +227,15 @@ public:
         // Input record
         inputrec_.delta_t = 0.001;
 
-        // F_RF_EXCL will not be tested - group scheme is not supported any more
+        // InteractionFunction::ReactionFieldExclusion will not be tested - group scheme is not supported any more
         inputrec_.cutoff_scheme = CutoffScheme::Verlet;
-        // F_COUL_RECIP
+        // InteractionFunction::CoulombReciprocalSpace
         inputrec_.coulombtype = CoulombInteractionType::Pme;
-        // F_LJ_RECIP
+        // InteractionFunction::LennardJonesReciprocalSpace
         inputrec_.vdwtype = VanDerWaalsType::Pme;
 
-        // F_DVDL_COUL, F_DVDL_VDW, F_DVDL_BONDED, F_DVDL_RESTRAINT, F_DKDL and F_DVDL
+        // InteractionFunction::dVCoulombdLambda, InteractionFunction::dVvanderWaalsdLambda, InteractionFunction::dVbondeddLambda,
+        // InteractionFunction::dVrestraintdLambda, InteractionFunction::dEkineticdLambda and InteractionFunction::dVremainingdLambda
         inputrec_.efep = FreeEnergyPerturbationType::Yes;
         inputrec_.fepvals->separate_dvdl[FreeEnergyPerturbationCouplingType::Coul]      = true;
         inputrec_.fepvals->separate_dvdl[FreeEnergyPerturbationCouplingType::Vdw]       = true;
@@ -241,11 +245,11 @@ public:
         inputrec_.fepvals->separate_dvdl[FreeEnergyPerturbationCouplingType::Coul]      = true;
         inputrec_.fepvals->separate_dvdl[FreeEnergyPerturbationCouplingType::Fep]       = true;
 
-        // F_DISPCORR and F_PDISPCORR
+        // InteractionFunction::DispersionCorrection and InteractionFunction::PressureDispersionCorrection
         inputrec_.eDispCorr = DispersionCorrectionType::Ener;
         inputrec_.bRot      = true;
 
-        // F_ECONSERVED
+        // InteractionFunction::ConservedEnergy
         inputrec_.pressureCouplingOptions.ref_p[YY][XX] = 0.0;
         inputrec_.pressureCouplingOptions.ref_p[ZZ][XX] = 0.0;
         inputrec_.pressureCouplingOptions.ref_p[ZZ][YY] = 0.0;
@@ -263,41 +267,41 @@ public:
 
         molType.atoms.nr = 2;
 
-        // F_CONSTR
+        // InteractionFunction::Constraints
         // This must be initialized so that Constraints object can be created below.
         InteractionList interactionListConstr;
-        interactionListConstr.iatoms.resize(NRAL(F_CONSTR) + 1);
-        interactionListConstr.iatoms[0] = 0;
-        interactionListConstr.iatoms[1] = 0;
-        interactionListConstr.iatoms[2] = 1;
-        molType.ilist.at(F_CONSTR)      = interactionListConstr;
+        interactionListConstr.iatoms.resize(NRAL(InteractionFunction::Constraints) + 1);
+        interactionListConstr.iatoms[0]                 = 0;
+        interactionListConstr.iatoms[1]                 = 0;
+        interactionListConstr.iatoms[2]                 = 1;
+        molType.ilist[InteractionFunction::Constraints] = interactionListConstr;
 
         InteractionList interactionListEmpty;
         interactionListEmpty.iatoms.resize(0);
-        molType.ilist.at(F_CONSTRNC) = interactionListEmpty;
-        molType.ilist.at(F_SETTLE)   = interactionListEmpty;
+        molType.ilist[InteractionFunction::ConstraintsNoCoupling] = interactionListEmpty;
+        molType.ilist[InteractionFunction::SETTLE]                = interactionListEmpty;
 
-        // F_LJ14 and F_COUL14
+        // InteractionFunction::LennardJones14 and InteractionFunction::Coulomb14
         InteractionList interactionListLJ14;
-        interactionListLJ14.iatoms.resize(NRAL(F_LJ14) + 1);
-        molType.ilist.at(F_LJ14) = interactionListLJ14;
+        interactionListLJ14.iatoms.resize(NRAL(InteractionFunction::LennardJones14) + 1);
+        molType.ilist[InteractionFunction::LennardJones14] = interactionListLJ14;
 
-        // F_LJC14_Q
+        // InteractionFunction::LennardJonesCoulomb14Q
         InteractionList interactionListLJC14Q;
-        interactionListLJC14Q.iatoms.resize(NRAL(F_LJC14_Q) + 1);
-        molType.ilist.at(F_LJC14_Q) = interactionListLJC14Q;
+        interactionListLJC14Q.iatoms.resize(NRAL(InteractionFunction::LennardJonesCoulomb14Q) + 1);
+        molType.ilist[InteractionFunction::LennardJonesCoulomb14Q] = interactionListLJC14Q;
 
         // TODO Do proper initialization for distance and orientation
         //      restraints and remove comments to enable their output
-        // F_DISRES
+        // InteractionFunction::DistanceRestraints
         // InteractionList interactionListDISRES;
-        // interactionListDISRES.iatoms.resize(NRAL(F_DISRES) + 1);
-        // molType.ilist.at(F_DISRES)   = interactionListDISRES;
+        // interactionListDISRES.iatoms.resize(NRAL(InteractionFunction::DistanceRestraints) + 1);
+        // molType.ilist[InteractionFunction::DistanceRestraints]   = interactionListDISRES;
         //
-        // F_ORIRES
+        // InteractionFunction::OrientationRestraints
         // InteractionList interactionListORIRES;
-        // interactionListORIRES.iatoms.resize(NRAL(F_ORIRES) + 1);
-        // molType.ilist.at(F_ORIRES)   = interactionListORIRES;
+        // interactionListORIRES.iatoms.resize(NRAL(InteractionFunction::OrientationRestraints) +
+        // 1); molType.ilist[InteractionFunction::OrientationRestraints]   = interactionListORIRES;
 
         mtop_.moltype.push_back(molType);
 
@@ -308,12 +312,14 @@ public:
 
         // This is to keep constraints initialization happy
         mtop_.natoms = 2;
-        mtop_.ffparams.iparams.resize(F_NRE);
-        mtop_.ffparams.functype.resize(F_NRE);
-        mtop_.ffparams.iparams.at(F_CONSTR).constr.dA   = 1.0;
-        mtop_.ffparams.iparams.at(F_CONSTR).constr.dB   = 1.0;
-        mtop_.ffparams.iparams.at(F_CONSTRNC).constr.dA = 1.0;
-        mtop_.ffparams.iparams.at(F_CONSTRNC).constr.dB = 1.0;
+        mtop_.ffparams.iparams.resize(static_cast<int>(InteractionFunction::Count));
+        mtop_.ffparams.functype.resize(static_cast<int>(InteractionFunction::Count));
+        mtop_.ffparams.iparams.at(static_cast<int>(InteractionFunction::Constraints)).constr.dA = 1.0;
+        mtop_.ffparams.iparams.at(static_cast<int>(InteractionFunction::Constraints)).constr.dB = 1.0;
+        mtop_.ffparams.iparams.at(static_cast<int>(InteractionFunction::ConstraintsNoCoupling))
+                .constr.dA = 1.0;
+        mtop_.ffparams.iparams.at(static_cast<int>(InteractionFunction::ConstraintsNoCoupling))
+                .constr.dB = 1.0;
 
         // Groups for energy output, temperature coupling and acceleration
         for (const auto& string : groupNameStrings_)
@@ -374,16 +380,12 @@ public:
         snew(inputrec_.opts.anneal_time, inputrec_.opts.ngtc);
         snew(inputrec_.opts.anneal_temp, inputrec_.opts.ngtc);
 
-        // Communication record (for Constraints constructor)
-        cr_.nnodes = 1;
-        cr_.dd     = nullptr;
-
         // Constraints object (to get constraints RMSD from)
         // TODO EnergyOutput should not take Constraints object
         // TODO This object will always return zero as RMSD value.
         //      It is more relevant to have non-zero value for testing.
         constraints_ = makeConstraints(
-                mtop_, inputrec_, nullptr, false, false, nullptr, &cr_, false, nullptr, nullptr, nullptr, false, nullptr);
+                mtop_, inputrec_, nullptr, false, false, nullptr, mpiComm_, dd_, false, nullptr, nullptr, nullptr, false, nullptr);
     }
 
     /*! \brief Helper function to generate synthetic data to output
@@ -396,37 +398,37 @@ public:
         time_  = (*testValue += 0.1);
         tmass_ = (*testValue += 0.1);
 
-        enerdata_->term[F_LJ]      = (*testValue += 0.1);
-        enerdata_->term[F_COUL_SR] = (*testValue += 0.1);
-        enerdata_->term[F_EPOT]    = (*testValue += 0.1);
-        enerdata_->term[F_EKIN]    = (*testValue += 0.1);
-        enerdata_->term[F_ETOT]    = (*testValue += 0.1);
-        enerdata_->term[F_TEMP]    = (*testValue += 0.1);
-        enerdata_->term[F_PRES]    = (*testValue += 0.1);
+        enerdata_->term[InteractionFunction::LennardJonesShortRange] = (*testValue += 0.1);
+        enerdata_->term[InteractionFunction::CoulombShortRange]      = (*testValue += 0.1);
+        enerdata_->term[InteractionFunction::PotentialEnergy]        = (*testValue += 0.1);
+        enerdata_->term[InteractionFunction::KineticEnergy]          = (*testValue += 0.1);
+        enerdata_->term[InteractionFunction::TotalEnergy]            = (*testValue += 0.1);
+        enerdata_->term[InteractionFunction::Temperature]            = (*testValue += 0.1);
+        enerdata_->term[InteractionFunction::Pressure]               = (*testValue += 0.1);
 
-        enerdata_->term[F_BHAM]         = (*testValue += 0.1);
-        enerdata_->term[F_EQM]          = (*testValue += 0.1);
-        enerdata_->term[F_RF_EXCL]      = (*testValue += 0.1);
-        enerdata_->term[F_COUL_RECIP]   = (*testValue += 0.1);
-        enerdata_->term[F_LJ_RECIP]     = (*testValue += 0.1);
-        enerdata_->term[F_LJ14]         = (*testValue += 0.1);
-        enerdata_->term[F_COUL14]       = (*testValue += 0.1);
-        enerdata_->term[F_LJC14_Q]      = (*testValue += 0.1);
-        enerdata_->term[F_LJC_PAIRS_NB] = (*testValue += 0.1);
+        enerdata_->term[InteractionFunction::BuckinghamShortRange]          = (*testValue += 0.1);
+        enerdata_->term[InteractionFunction::QuantumMechanicalRegionEnergy] = (*testValue += 0.1);
+        enerdata_->term[InteractionFunction::ReactionFieldExclusion]        = (*testValue += 0.1);
+        enerdata_->term[InteractionFunction::CoulombReciprocalSpace]        = (*testValue += 0.1);
+        enerdata_->term[InteractionFunction::LennardJonesReciprocalSpace]   = (*testValue += 0.1);
+        enerdata_->term[InteractionFunction::LennardJones14]                = (*testValue += 0.1);
+        enerdata_->term[InteractionFunction::Coulomb14]                     = (*testValue += 0.1);
+        enerdata_->term[InteractionFunction::LennardJonesCoulomb14Q]        = (*testValue += 0.1);
+        enerdata_->term[InteractionFunction::LennardJonesCoulombNonBondedPairs] = (*testValue += 0.1);
 
-        enerdata_->term[F_DVDL_COUL]      = (*testValue += 0.1);
-        enerdata_->term[F_DVDL_VDW]       = (*testValue += 0.1);
-        enerdata_->term[F_DVDL_BONDED]    = (*testValue += 0.1);
-        enerdata_->term[F_DVDL_RESTRAINT] = (*testValue += 0.1);
-        enerdata_->term[F_DKDL]           = (*testValue += 0.1);
-        enerdata_->term[F_DVDL]           = (*testValue += 0.1);
+        enerdata_->term[InteractionFunction::dVCoulombdLambda]     = (*testValue += 0.1);
+        enerdata_->term[InteractionFunction::dVvanderWaalsdLambda] = (*testValue += 0.1);
+        enerdata_->term[InteractionFunction::dVbondeddLambda]      = (*testValue += 0.1);
+        enerdata_->term[InteractionFunction::dVrestraintdLambda]   = (*testValue += 0.1);
+        enerdata_->term[InteractionFunction::dEkineticdLambda]     = (*testValue += 0.1);
+        enerdata_->term[InteractionFunction::dVremainingdLambda]   = (*testValue += 0.1);
 
-        enerdata_->term[F_DISPCORR]   = (*testValue += 0.1);
-        enerdata_->term[F_PDISPCORR]  = (*testValue += 0.1);
-        enerdata_->term[F_DISRESVIOL] = (*testValue += 0.1);
-        enerdata_->term[F_ORIRESDEV]  = (*testValue += 0.1);
-        enerdata_->term[F_COM_PULL]   = (*testValue += 0.1);
-        enerdata_->term[F_ECONSERVED] = (*testValue += 0.1);
+        enerdata_->term[InteractionFunction::DispersionCorrection]           = (*testValue += 0.1);
+        enerdata_->term[InteractionFunction::PressureDispersionCorrection]   = (*testValue += 0.1);
+        enerdata_->term[InteractionFunction::DistanceRestraintViolations]    = (*testValue += 0.1);
+        enerdata_->term[InteractionFunction::OrientationRestraintDeviations] = (*testValue += 0.1);
+        enerdata_->term[InteractionFunction::CenterOfMassPullingEnergy]      = (*testValue += 0.1);
+        enerdata_->term[InteractionFunction::ConservedEnergy]                = (*testValue += 0.1);
 
         // Group pairs
         for (int i = 0; i < enerdata_->grpp.nener; i++)

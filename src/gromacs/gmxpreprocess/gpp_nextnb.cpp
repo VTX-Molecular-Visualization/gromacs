@@ -44,7 +44,6 @@
 
 #include "gromacs/gmxpreprocess/grompp_impl.h"
 #include "gromacs/gmxpreprocess/toputil.h"
-#include "gromacs/topology/ifunc.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/gmxassert.h"
@@ -96,7 +95,7 @@ static void __prints(char* str, int n, sortable* s)
             fprintf(debug, "%d\t%d\n", s[i].ai, s[i].aj);
         }
 
-        fflush(debug);
+        std::fflush(debug);
     }
 }
 #else
@@ -213,7 +212,7 @@ static void nnb2excl(t_nextnb* nnb, gmx::ListOfLists<int>* excls)
         prints("nnb2excl before qsort", nr_of_sortables, s);
         if (nr_of_sortables > 1)
         {
-            qsort(s, nr_of_sortables, static_cast<size_t>(sizeof(s[0])), bond_sort);
+            std::qsort(s, nr_of_sortables, static_cast<size_t>(sizeof(s[0])), bond_sort);
             prints("nnb2excl after qsort", nr_of_sortables, s);
         }
 
@@ -283,7 +282,7 @@ static bool atom_is_present_in_nnb(const t_nextnb* nnb, int atom, int highest_or
 static void do_gen(int       nrbonds, /* total number of bonds in s	*/
                    sortable* s,       /* bidirectional list of bonds    */
                    t_nextnb* nnb)     /* the tmp storage for excl     */
-/* Assume excl is initalised and s[] contains all bonds bidirectional */
+/* Assume excl is initialised and s[] contains all bonds bidirectional */
 {
     int i, j, k, n, nb;
 
@@ -354,13 +353,13 @@ static void add_b(InteractionsOfType* bonds, int* nrf, sortable* s)
     }
 }
 
-void gen_nnb(t_nextnb* nnb, gmx::ArrayRef<InteractionsOfType> plist)
+void gen_nnb(t_nextnb* nnb, gmx::EnumerationArray<InteractionFunction, InteractionsOfType>& plist)
 {
     sortable* s;
     int       nrbonds, nrf;
 
     nrbonds = 0;
-    for (int i = 0; (i < F_NRE); i++)
+    for (const auto i : gmx::EnumerationWrapper<InteractionFunction>{})
     {
         if (IS_CHEMBOND(i))
         {
@@ -372,7 +371,7 @@ void gen_nnb(t_nextnb* nnb, gmx::ArrayRef<InteractionsOfType> plist)
     snew(s, nrbonds);
 
     nrf = 0;
-    for (int i = 0; (i < F_NRE); i++)
+    for (const auto i : gmx::EnumerationWrapper<InteractionFunction>{})
     {
         if (IS_CHEMBOND(i))
         {
@@ -384,7 +383,7 @@ void gen_nnb(t_nextnb* nnb, gmx::ArrayRef<InteractionsOfType> plist)
     prints("gen_excl before qsort", nrbonds, s);
     if (nrbonds > 1)
     {
-        qsort(s, nrbonds, static_cast<size_t>(sizeof(sortable)), bond_sort);
+        std::qsort(s, nrbonds, static_cast<size_t>(sizeof(sortable)), bond_sort);
         prints("gen_excl after qsort", nrbonds, s);
     }
 
@@ -404,7 +403,7 @@ static void sort_and_purge_nnb(t_nextnb* nnb)
             /* Sort atoms in this list */
             if (nnb->nrexcl[i][n] > 0)
             {
-                qsort(nnb->a[i][n], nnb->nrexcl[i][n], sizeof(int), compare_int);
+                std::qsort(nnb->a[i][n], nnb->nrexcl[i][n], sizeof(int), compare_int);
             }
             cnt  = 0;
             prev = -1;
@@ -434,7 +433,10 @@ static void sort_and_purge_nnb(t_nextnb* nnb)
 }
 
 
-void generate_excl(int nrexcl, int nratoms, gmx::ArrayRef<InteractionsOfType> plist, gmx::ListOfLists<int>* excls)
+void generate_excl(int                                                             nrexcl,
+                   int                                                             nratoms,
+                   gmx::EnumerationArray<InteractionFunction, InteractionsOfType>& plist,
+                   gmx::ListOfLists<int>*                                          excls)
 {
     t_nextnb nnb;
     if (nrexcl < 0)

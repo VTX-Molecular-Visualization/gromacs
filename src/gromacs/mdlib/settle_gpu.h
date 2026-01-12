@@ -49,12 +49,12 @@
 #include "gromacs/gpu_utils/devicebuffer_datatype.h"
 #include "gromacs/gpu_utils/gputraits.h"
 #include "gromacs/math/functions.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/mdlib/constraint_gpu_helpers.h"
 #include "gromacs/mdlib/settle.h"
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/pbcutil/pbc_aiuc.h"
 #include "gromacs/topology/mtop_util.h"
+#include "gromacs/utility/vec.h"
 
 class InteractionDefinitions;
 
@@ -118,7 +118,7 @@ public:
      * Does not recycle the data preparation routines from the CPU version.
      * All three atoms from single water molecule should be handled by the same GPU.
      *
-     * SETTLEs atom ID's is taken from idef.il[F_SETTLE].iatoms.
+     * SETTLEs atom ID's is taken from idef.il[InteractionFunction::SETTLE].iatoms.
      *
      * \param[in] idef    System topology
      */

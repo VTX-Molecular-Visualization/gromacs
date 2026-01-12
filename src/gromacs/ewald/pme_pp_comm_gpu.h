@@ -42,12 +42,13 @@
 #define GMX_PME_PP_COMM_GPU_H
 
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "gromacs/gpu_utils/devicebuffer_datatype.h"
 #include "gromacs/gpu_utils/hostallocator.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/utility/gmxmpi.h"
+#include "gromacs/utility/vectypes.h"
 
 class DeviceContext;
 class DeviceStream;
@@ -61,7 +62,12 @@ class DeviceStreamManager;
 /*! \libinternal
 
  * \brief Manages communication related to GPU buffers between this
- * PME rank and its PP rank. */
+ * PP rank and its PME rank.
+ *
+ * Note that the coordinates and forces are transferred between each on each
+ * step, even from empty domains. However the long-range forces only
+ * participate in the subsequent reduction phase when the domain has
+ * particles. */
 class PmePpCommGpu
 {
 
@@ -88,7 +94,7 @@ public:
     void reinit(int size);
 
     /*! \brief
-     * Pull data from PME GPU directly using CUDA Memory copy.
+     * Pull data from PME GPU directly using GPU Memory copy.
      * \param[out] recvPtr  Buffer to receive PME force data
      * \param[in] recvSize Number of elements to receive
      * \param[in] recvPmeForceToGpu Whether receive is to GPU, otherwise CPU
@@ -96,29 +102,35 @@ public:
     void receiveForceFromPme(RVec* recvPtr, int recvSize, bool recvPmeForceToGpu);
 
     /*! \brief Push coordinates buffer directly to GPU memory on PME task
+     * Note that, when using GPU-aware MPI with staged communication and not using NVSHMEM
+     * for GPU force receives, this method also posts a non-blocking force receive request
+     * to overlap communication with computation.
      * \param[in] sendPtr Buffer with coordinate data
      * \param[in] sendSize Number of elements to send
-     * \param[in] coordinatesReadyOnDeviceEvent Event recorded when coordinates are available on device
+     * \param[in] coordinatesReadyOnDeviceEvent Event recorded when coords available on device
+     * \param[in] receiveForcesToGpu Whether PME forces will be received to GPU
      */
     void sendCoordinatesToPmeFromGpu(DeviceBuffer<RVec>    sendPtr,
                                      int                   sendSize,
-                                     GpuEventSynchronizer* coordinatesReadyOnDeviceEvent);
+                                     GpuEventSynchronizer* coordinatesReadyOnDeviceEvent,
+                                     bool                  receiveForcesToGpu);
 
     /*! \brief Push coordinates buffer from host memory directly to GPU memory on PME task
      * \param[in] sendPtr Buffer with coordinate data
      * \param[in] sendSize Number of elements to send
+     * \param[in] receiveForcesToGpu Whether PME forces will be received to GPU
      */
-    void sendCoordinatesToPmeFromCpu(RVec* sendPtr, int sendSize);
+    void sendCoordinatesToPmeFromCpu(const RVec* sendPtr, int sendSize, bool receiveForcesToGpu);
 
-    /*! \brief
-     * Return pointer to buffer used for staging PME force on GPU
-     */
-    DeviceBuffer<gmx::RVec> getGpuForceStagingPtr();
+    /*! \brief When this PP rank has particles with PME force
+     * contributions expected from its PME-only rank, return pointer
+     * to buffer used for staging PME force on GPU. */
+    std::optional<DeviceBuffer<RVec>> getGpuForceStagingPtr();
 
-    /*! \brief
-     * Return pointer to event recorded when forces are ready
-     */
-    GpuEventSynchronizer* getForcesReadySynchronizer();
+    /*! \brief When this thread-MPI rank has particles with PME force
+     * contribtions expected from its PME-only rank, return pointer to
+     * event recorded when forces are ready. */
+    std::optional<GpuEventSynchronizer*> getForcesReadySynchronizer();
 
     /*! \brief
      * Return pointer to force synchronization NVSHMEM object

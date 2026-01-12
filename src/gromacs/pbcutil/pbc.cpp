@@ -54,9 +54,6 @@
 #include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
 #include "gromacs/math/utilities.h"
-#include "gromacs/math/vec.h"
-#include "gromacs/math/vecdump.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/pbcutil/ishift.h"
 #include "gromacs/pbcutil/mshift.h"
@@ -69,6 +66,9 @@
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vecdump.h"
+#include "gromacs/utility/vectypes.h"
 
 const gmx::EnumerationArray<PbcType, std::string> c_pbcTypeNames = {
     { "xyz", "no", "xy", "screw", "unset" }
@@ -505,7 +505,7 @@ static void low_set_pbc(t_pbc* pbc, PbcType pbcType, const ivec dd_pbc, const ma
                         {
                             continue;
                         }
-                        /* A shift is only useful when it is trilinic */
+                        /* A shift is only useful when it is triclinic */
                         if (j != 0 || k != 0)
                         {
                             rvec trial;
@@ -1441,7 +1441,6 @@ static void putAtomsInBoxTemplated(PbcType                  pbcType,
         GMX_ASSERT(v.size() == x.size(), "Need velocities for box deformation");
     }
 
-    // NOLINTNEXTLINE(readability-misleading-indentation)
     int npbcdim;
 
     if (pbcType == PbcType::Screw)

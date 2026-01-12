@@ -36,14 +36,15 @@
 
 #include <cstdio>
 
+#include <optional>
 #include <string>
 #include <vector>
 
-#include "gromacs/math/vec.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/timing/wallcycle.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/real.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
 
 struct gmx_hw_info_t;
 struct t_commrec;
@@ -52,6 +53,7 @@ struct t_filenm;
 struct t_inputrec;
 struct gmx_localtop_t;
 struct gmx_mtop_t;
+struct gmx_multisim_t;
 struct gmx_wallcycle;
 struct interaction_const_t;
 union t_iparams;
@@ -67,10 +69,12 @@ class SimulationWorkload;
 /*! \brief Create nonbonded parameter lists
  *
  * \param[in] numAtomTypes           The number of atom types
+ * \param[in] addFillerAtomType      Whether to add an atom type, at the end, for filler particles
  * \param[in] iparams                The LJ parameters
  * \param[in] useBuckinghamPotential Use Buckingham potential
  */
 std::vector<real> makeNonBondedParameterLists(int                            numAtomTypes,
+                                              bool                           addFillerAtomType,
                                               gmx::ArrayRef<const t_iparams> iparams,
                                               bool useBuckinghamPotential);
 
@@ -110,16 +114,19 @@ void init_interaction_const_tables(FILE* fp, interaction_const_t* ic, real rlist
  *
  * \param[in]  fplog              File for printing
  * \param[in]  mdlog              File for printing
- * \param[out] forcerec                 The forcerec
- * \param[in]  simulationWork           Simulation workload flags
- * \param[in]  inputrec                 Inputrec structure
+ * \param[out] forcerec           The forcerec
+ * \param[in]  simulationWork     Simulation workload flags
+ * \param[in]  inputrec           Inputrec structure
  * \param[in]  mtop               Molecular topology
- * \param[in]  commrec                 Communication structures
+ * \param[in]  commrec            Communication structures
+ * \param[in]  commMultiSim       Multi-simulation communication, can be nullptr
  * \param[in]  box                Simulation box
  * \param[in]  tabfn              Table potential file for non-bonded interactions
  * \param[in]  tabpfn             Table potential file for pair interactions
  * \param[in]  tabbfnm            Table potential files for bonded interactions
  * \param[in]  print_force        Print forces for atoms with force >= print_force
+ * \param[in]  anMDModuleProvidesDirectCoulomb  If not set, any module choice is not needed and NBNxM kernels are used
+
  */
 void init_forcerec(FILE*                            fplog,
                    const gmx::MDLogger&             mdlog,
@@ -128,10 +135,12 @@ void init_forcerec(FILE*                            fplog,
                    const t_inputrec&                inputrec,
                    const gmx_mtop_t&                mtop,
                    const t_commrec*                 commrec,
+                   const gmx_multisim_t*            commMultiSim,
                    matrix                           box,
                    const char*                      tabfn,
                    const char*                      tabpfn,
                    gmx::ArrayRef<const std::string> tabbfnm,
-                   real                             print_force);
+                   real                             print_force,
+                   std::optional<bool>              anMDModuleProvidesDirectCoulomb);
 
 #endif

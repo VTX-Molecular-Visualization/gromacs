@@ -51,35 +51,65 @@
 
 #include "gromacs/math/arrayrefwithpadding.h"
 #include "gromacs/math/matrix.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/mdrunutility/mdmodulesnotifier.h"
+#include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/gmxmpi.h"
+#include "gromacs/utility/keyvaluetreebuilder.h"
 #include "gromacs/utility/real.h"
+#include "gromacs/utility/vectypes.h"
 
 
-struct t_commrec;
 struct gmx_mtop_t;
 class WarningHandler;
 enum class PbcType : int;
 struct t_inputrec;
+struct gmx_multisim_t;
 
 namespace gmx
 {
 
+class MpiComm;
 class KeyValueTreeObject;
 class KeyValueTreeObjectBuilder;
 class LocalAtomSetManager;
 class MDLogger;
 class IndexGroupsAndNames;
 class SeparatePmeRanksPermitted;
-struct MDModulesCheckpointReadingDataOnMain;
-struct MDModulesCheckpointReadingBroadcast;
-struct MDModulesWriteCheckpointData;
+class PlainPairlistRanges;
 enum class StartingBehavior;
+
+/*! \libinternal
+ * \brief Provides the MDModules with the checkpointed data on the main rank.
+ */
+struct MDModulesCheckpointReadingDataOnMain
+{
+    //! The data of the MDModules that is stored in the checkpoint file
+    const KeyValueTreeObject& checkpointedData_;
+};
+
+/*! \libinternal
+ * \brief Provides the MDModules with the communication record to broadcast.
+ */
+struct MDModulesCheckpointReadingBroadcast
+{
+    //! The communicator
+    MPI_Comm communicator_;
+    //! Whether the run is executed in parallel
+    bool isParallelRun_;
+};
+
+/*! \libinternal \brief Writing the MDModules data to a checkpoint file.
+ */
+struct MDModulesWriteCheckpointData
+{
+    //! Builder for the Key-Value-Tree to store the MDModule checkpoint data
+    KeyValueTreeObjectBuilder builder_;
+};
 
 /*! \libinternal \brief Notification that atoms may have been redistributed
  *
- * This notification is emitted at the end of the DD (re)partioning
+ * This notification is emitted at the end of the DD (re)partitioning
  * or without DD right after atoms have put into the box.
  * The local atom sets are updated for the new atom order when this signal is emitted.
  * The coordinates of atoms can be shifted by periodic vectors
@@ -87,8 +117,10 @@ enum class StartingBehavior;
  */
 struct MDModulesAtomsRedistributedSignal
 {
-    MDModulesAtomsRedistributedSignal(const matrix box, gmx::ArrayRef<const RVec> x) :
-        box_(createMatrix3x3FromLegacyMatrix(box)), x_(x)
+    MDModulesAtomsRedistributedSignal(const matrix                            box,
+                                      gmx::ArrayRef<const RVec>               x,
+                                      std::optional<gmx::ArrayRef<const int>> globalAtomIndices) :
+        box_(createMatrix3x3FromLegacyMatrix(box)), x_(x), globalAtomIndices_(globalAtomIndices)
     {
     }
 
@@ -96,6 +128,57 @@ struct MDModulesAtomsRedistributedSignal
     const Matrix3x3 box_;
     //! List of local atom coordinates after partitioning
     gmx::ArrayRef<const RVec> x_;
+    /*! \brief List of global atom indices for the home atoms
+     *
+     * Filler particles might be present in the home atom list, these have index -1
+     * Note that this index list will only be present when domain decomposition is active.
+     *
+     * Note that when using fixed sub-groups of the system, the LocalAtomSet mechanism
+     * is the preferred and more convenient way to manage atom indices of groups.
+     */
+    std::optional<gmx::ArrayRef<const int>> globalAtomIndices_;
+};
+
+/*! \libinternal \brief Notification that the atom pair list has be (re)constructed
+ *
+ * This notification is emitted after the atom pair list has been reconstructed.
+ * The returned pair list is valid until the next notification. Two lists are returned.
+ * One is the list of interating pairs. The other is a list of pairs that are explicitly
+ * excluded from interacting in the topology. This list does not include self-pairs.
+ * A pairlist is returned on each PP-MPI-rank / domain. Together these pairlists
+ * contain all pairs in the system that are within the pairlist cut-off.
+ *
+ * Both lists have entries that consist of a pair where the first pair in the pair
+ * of atom indices and the second a shift index that indicates the periodic shift.
+ * The distance vector between a pair of particles is:
+ *   x[first.first] - x[first.second] + shiftVector[second]
+ * The composition in terms of box vectors of shiftVector is given by shiftIndexToXYZ()
+ * which is declared and defined in gromacs/pbcutil/ishift.h.
+ *
+ * At the time of construction, the pairlist contains all interacting atom pairs within
+ * the pairlist cut-off \p rlist. But within the next \p nstlist steps where this pairlist
+ * is used, atoms move around. Then nearly all pairs within \p max(rvdw, rcoulomb) are
+ * guaranteed to be in the returned pairlist. Thus this is the maximum cut-off distances
+ * one should use with the returned pairlist.
+ */
+struct MDModulesPairlistConstructedSignal
+{
+    using ParticlePair  = std::pair<int, int>;
+    using PairlistEntry = std::pair<ParticlePair, int>;
+
+    MDModulesPairlistConstructedSignal(ArrayRef<const PairlistEntry> pairlist,
+                                       ArrayRef<const PairlistEntry> excludedPairlist,
+                                       ArrayRef<const int>           atomTypes) :
+        pairlist_(pairlist), excludedPairlist_(excludedPairlist), atomTypes_(atomTypes)
+    {
+    }
+
+    //! The list of interacting atom pairs
+    ArrayRef<const PairlistEntry> pairlist_;
+    //! The list of excluded atom pairs
+    ArrayRef<const PairlistEntry> excludedPairlist_;
+    //! The list of atom types for all atoms occuring in the pairlist
+    ArrayRef<const int> atomTypes_;
 };
 
 /*! \libinternal \brief Check if module outputs energy to a specific field.
@@ -114,9 +197,34 @@ struct MDModulesEnergyOutputToDensityFittingRequestChecker
  */
 struct MDModulesEnergyOutputToQMMMRequestChecker
 {
-    //! Trigger output to density fitting energy field
+    //! Trigger output to QMMM energy field
     bool energyOutputToQMMM_ = false;
 };
+
+/*! \libinternal \brief Check if NNPot module outputs energy to a specific field.
+ *
+ * Ensures that energy is output for NNPot module.
+ */
+struct MDModulesEnergyOutputToNNPotRequestChecker
+{
+    //! Trigger output to NNPot energy field
+    bool energyOutputToNNPot_ = false;
+};
+
+/*!
+ * \brief Indicates whether an MD module is a direct (short-range coulomb interactions) provider.
+ *
+ * std::optional lets the NB module know if a module provides
+ * direct interactions, or if no choice was made.
+ */
+struct MDModulesDirectProvider
+{
+    /*! \brief Whether an MD module is a direct provider
+     *
+     * If std::nullopt, no module reported a choice (defaults to NBNxM kernels) */
+    std::optional<bool> isDirectProvider = std::nullopt;
+};
+
 
 /*! \libinternal
  * \brief Collect errors for the energy calculation frequency.
@@ -191,6 +299,15 @@ struct QMInputFileName
     std::string qmInputFileName_;
 };
 
+/*! \libinternal \brief Notification for the optional plumed input filename
+ *  provided by user as command-line argument for mdrun
+ */
+struct PlumedInputFilename
+{
+    //! The name of plumed input file, empty by default
+    std::optional<std::string> plumedFilename_{};
+};
+
 /*! \libinternal \brief Provides the constant ensemble temperature
  */
 struct EnsembleTemperature
@@ -202,6 +319,13 @@ struct EnsembleTemperature
     explicit EnsembleTemperature(const t_inputrec& ir);
     //! The constant ensemble temperature
     std::optional<real> constantEnsembleTemperature_;
+};
+
+/*! \libinternal \brief Provides Coulomb interaction type info to MD modules
+ */
+struct MdModulesCoulombTypeInfo
+{
+    CoulombInteractionType coulombInteractionType;
 };
 
 /*! \libinternal
@@ -314,6 +438,9 @@ struct MDModulesNotifiers
      *                              Enables writing of module internal data to .tpr files.
      * \tparam QMInputFileName      Allows the QMMM module to know if the user has provided
      *                              an external QM input file
+     * \tparam MdModulesCoulombTypeInfo
+     *                              Allows modules to access the Coulomb interaction type configured
+     *                              for the simulation (e.g., PME, RF, FMM, etc.).
      * \tparam EnsembleTemperature  Provides modules with the constant ensemble temperature.
      */
     BuildMDModulesNotifier<const CoordinatesAndBoxPreprocessed&,
@@ -324,6 +451,7 @@ struct MDModulesNotifiers
                            const IndexGroupsAndNames&,
                            KeyValueTreeObjectBuilder,
                            const QMInputFileName&,
+                           const MdModulesCoulombTypeInfo&,
                            const EnsembleTemperature&>::type preProcessingNotifier_;
 
     /*! \brief Handles subscribing and calling checkpointing callback functions.
@@ -358,6 +486,9 @@ struct MDModulesNotifiers
      * \tparam MDModulesEnergyOutputToQMMMRequestChecker*
      *                              Enables QMMM module to report if it wants to write its energy
      *                              output to the "Quantum En." field in the energy files
+     * \tparam MDModulesEnergyOutputToNNPotRequestChecker*
+     *                              Enables NNPot module to report if it wants to write its energy
+     *                              output to the "NN Potential" field in the energy files
      * \tparam SeparatePmeRanksPermitted*
      *                              Enables modules to report if they want to disable dedicated
      *                              PME ranks
@@ -367,26 +498,52 @@ struct MDModulesNotifiers
      *                              them to interconvert between step and time information
      * \tparam EnsembleTemperature& Provides modules with the (eventual) constant ensemble
      *                              temperature
-     * \tparam t_commrec&           Provides a communicator to the modules during simulation
+     * \tparam MpiComm&             Provides a communicator to the modules during simulation
      *                              setup
+     * \tparam gmx_multisim_t&      Shares the multisim struct with the modules
+     *                              Subscribing to this notifier will sync checkpointing
+     *                              of simulations and will cause simulations to stop,
+     *                              due to signals or exceededing maximum time, at the same step.
+     *                              This ensures that the output and checkpoints of ensemble
+     *                              simulations are consistent and that ensemble simulations
+     *                              can be continued.
+     * \tparam PlainPairlistRanges* Allows modules to request a range for the plain pairlist
      * \tparam MdRunInputFilename&  Allows modules to know .tpr filename during mdrun
      * \tparam EdrOutputFilename&   Allows modules to know .edr filename during mdrun
+     * \tparam MDModulesDirectProvider*
+     *                              Allows a modules to indicate whether it
+     *                              handle short-range coulomb interactions
+     * \tparam PlumedInputFilename& Allows modules to know the optional .dat filename to be read by plumed
      */
     BuildMDModulesNotifier<const KeyValueTreeObject&,
                            LocalAtomSetManager*,
                            const StartingBehavior&,
                            const MDLogger&,
                            const gmx_mtop_t&,
-                           const MDModulesAtomsRedistributedSignal,
                            MDModulesEnergyOutputToDensityFittingRequestChecker*,
                            MDModulesEnergyOutputToQMMMRequestChecker*,
+                           MDModulesEnergyOutputToNNPotRequestChecker*,
                            SeparatePmeRanksPermitted*,
                            const PbcType&,
                            const SimulationTimeStep&,
                            const EnsembleTemperature&,
-                           const t_commrec&,
+                           const MpiComm&,
+                           const gmx_multisim_t*,
+                           PlainPairlistRanges*,
                            const MdRunInputFilename&,
-                           const EdrOutputFilename&>::type simulationSetupNotifier_;
+                           const EdrOutputFilename&,
+                           MDModulesDirectProvider*,
+                           const PlumedInputFilename&>::type simulationSetupNotifier_;
+
+    /*! \brief Handles subscribing and calling callbacks during a running simulation.
+     *
+     * These callbacks are called after calling all simulation setup notifications.
+     *
+     * \tparam MDModulesAtomsRedistributedSignal  Allows modules to react on atom redistribution
+     * \tparam MDModulesPairlistConstructedSignal  Enables access to the pairlist
+     */
+    BuildMDModulesNotifier<const MDModulesAtomsRedistributedSignal&,
+                           const MDModulesPairlistConstructedSignal&>::type simulationRunNotifier_;
 };
 
 } // namespace gmx

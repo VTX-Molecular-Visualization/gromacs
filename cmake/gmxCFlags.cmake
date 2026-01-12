@@ -36,25 +36,25 @@ include(CheckCXXCompilerFlag)
 
 # Test C flags FLAGS, and set VARIABLE to true if the work. Also add the
 # flags to CFLAGSVAR.
-MACRO(GMX_TEST_CFLAG VARIABLE FLAGS CFLAGSVAR)
-    IF(NOT DEFINED ${VARIABLE})
+macro(GMX_TEST_CFLAG VARIABLE FLAGS CFLAGSVAR)
+    if(NOT DEFINED ${VARIABLE})
         CHECK_C_COMPILER_FLAG("${FLAGS}" ${VARIABLE})
-    ENDIF()
-    IF (${VARIABLE})
+    endif()
+    if(${VARIABLE})
         list(APPEND ${CFLAGSVAR} "${FLAGS}")
-    ENDIF ()
-ENDMACRO(GMX_TEST_CFLAG VARIABLE FLAGS CFLAGSVAR)
+    endif()
+endmacro(GMX_TEST_CFLAG VARIABLE FLAGS CFLAGSVAR)
 
 # Test C++ flags FLAGS, and set VARIABLE to true if the work. Also add the
 # flags to CXXFLAGSVAR.
-MACRO(GMX_TEST_CXXFLAG VARIABLE FLAGS CXXFLAGSVAR)
-    IF(NOT DEFINED ${VARIABLE})
+macro(GMX_TEST_CXXFLAG VARIABLE FLAGS CXXFLAGSVAR)
+    if(NOT DEFINED ${VARIABLE})
         CHECK_CXX_COMPILER_FLAG("${FLAGS}" ${VARIABLE})
-    ENDIF()
-    IF (${VARIABLE})
+    endif()
+    if(${VARIABLE})
         list(APPEND ${CXXFLAGSVAR} "${FLAGS}")
-    ENDIF ()
-ENDMACRO(GMX_TEST_CXXFLAG VARIABLE FLAGS CXXFLAGSVAR)
+    endif()
+endmacro(GMX_TEST_CXXFLAG VARIABLE FLAGS CXXFLAGSVAR)
 
 # Prepare some local variables so CUDA and non-CUDA code in targets
 # works the same way.
@@ -105,20 +105,6 @@ function(gmx_target_compile_options TARGET)
             $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:${build_type}>>:${GMXC_CXXFLAGS_${build_type}}>
             )
     endforeach()
-    # TODO: Restrict the scope of MPI dependence.
-    # Targets that actually need MPI headers and build tool flags should
-    # manage their own `target_link_libraries` locally. Such a change is beyond
-    # the scope of the bug fix for #4678.
-    if (GMX_LIB_MPI AND TARGET ${TARGET})
-        target_link_libraries(
-            ${TARGET} PRIVATE
-            $<$<LINK_LANGUAGE:CXX>:MPI::MPI_CXX>
-            # We don't know whether we have sought the MPI::C component at all, or at least
-            # by the time we process these lines.
-            $<$<AND:$<TARGET_EXISTS:MPI::MPI_C>,$<LINK_LANGUAGE:C>>:MPI::MPI_C>
-            $<$<LINK_LANGUAGE:CUDA>:MPI::MPI_CXX>
-        )
-    endif ()
     # Add the release-configuration compiler options to build
     # configurations that derive from it.
     foreach(build_type RELWITHDEBINFO RELWITHASSERT MINSIZEREL PROFILE)
@@ -249,12 +235,14 @@ macro (gmx_c_flags)
         if (GMX_COMPILER_WARNINGS)
             GMX_TEST_CFLAG(CFLAGS_WARN "-Wall;-Wno-unused;-Wunused-value;-Wunused-parameter" GMXC_CFLAGS)
             GMX_TEST_CFLAG(CFLAGS_WARN_EXTRA "-Wextra;-Wno-sign-compare;-Wpointer-arith" GMXC_CFLAGS)
+            GMX_TEST_CFLAG(CFLAGS_WARN_PEDANTIC "-Wpedantic" GMXC_CFLAGS)
             GMX_TEST_CFLAG(CFLAGS_WARN_UNDEF "-Wundef" GMXC_CFLAGS)
             GMX_TEST_CFLAG(CFLAGS_WARN_REL "-Wno-array-bounds" GMXC_CFLAGS_RELEASE_ONLY)
             if(CYGWIN)
                 GMX_TEST_CFLAG(CFLAGS_WARN_SUBSCRIPT "-Wno-char-subscripts" GMXC_CFLAGS)
             endif()
             GMX_TEST_CFLAG(CFLAGS_STRINGOP_TRUNCATION "-Werror=stringop-truncation" GMXC_CFLAGS)
+            GMX_TEST_CFLAG(CFLAGS_FLAGS_WARN_SHADOW "-Wshadow" GMXC_CFLAGS)
         endif()
         GMX_TEST_CFLAG(CFLAGS_WARN_NO_MISSING_FIELD_INITIALIZERS "-Wno-missing-field-initializers" GMXC_CFLAGS)
         # new in gcc 4.5
@@ -273,12 +261,14 @@ macro (gmx_c_flags)
             # Problematic with CUDA
             # GMX_TEST_CXXFLAG(CXXFLAGS_WARN_EFFCXX "-Wnon-virtual-dtor" GMXC_CXXFLAGS)
             GMX_TEST_CXXFLAG(CXXFLAGS_WARN_EXTRA "-Wextra;-Wpointer-arith;-Wmissing-declarations" GMXC_CXXFLAGS)
+            GMX_TEST_CXXFLAG(CXXFLAGS_WARN_PEDANTIC "-Wpedantic" GMXC_CXXFLAGS)
             GMX_TEST_CXXFLAG(CXXFLAGS_WARN_UNDEF "-Wundef" GMXC_CXXFLAGS)
             GMX_TEST_CFLAG(CXXFLAGS_WARN_REL "-Wno-array-bounds" GMXC_CXXFLAGS_RELEASE_ONLY)
             GMX_TEST_CXXFLAG(CXXFLAGS_STRINGOP_TRUNCATION "-Wstringop-truncation" GMXC_CXXFLAGS)
             if (CXXFLAGS_STRINGOP_TRUNCATION)
                 set(CXXFLAGS_NO_STRINGOP_TRUNCATION "-Wno-stringop-truncation")
             endif()
+            GMX_TEST_CXXFLAG(CXX_FLAGS_WARN_SHADOW "-Wshadow" GMXC_CXXFLAGS)
         endif()
         GMX_TEST_CXXFLAG(CXXFLAGS_WARN_NO_MISSING_FIELD_INITIALIZERS "-Wno-missing-field-initializers" GMXC_CXXFLAGS)
         # new in gcc 4.5
@@ -378,7 +368,8 @@ macro (gmx_c_flags)
         endif()
         if (GMX_COMPILER_WARNINGS)
             GMX_TEST_CFLAG(CFLAGS_WARN "-Wall;-Wno-unused;-Wunused-value;-Wunused-parameter" GMXC_CFLAGS)
-            GMX_TEST_CFLAG(CFLAGS_WARN_EXTRA "-Wpointer-arith" GMXC_CFLAGS_EXTRA)
+            GMX_TEST_CFLAG(CFLAGS_WARN_EXTRA "-Wpointer-arith" GMXC_CFLAGS)
+            GMX_TEST_CFLAG(CFLAGS_WARN_SHADOW_ALL "-Wshadow-all" GMXC_CFLAGS)
         endif()
         if (CMAKE_BUILD_TYPE MATCHES "Debug")
             GMX_TEST_CFLAG(CFLAGS_NO_DEBUG_DISABLES_OPTIMIZATION "-Wno-debug-disables-optimization" GMXC_CFLAGS)
@@ -390,13 +381,12 @@ macro (gmx_c_flags)
         if (GMX_COMPILER_WARNINGS)
             # If used, -Wall should precede other options that silence warnings it enables
             GMX_TEST_CXXFLAG(CXXFLAGS_WARN "-Wall" GMXC_CXXFLAGS)
-            if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS "6.0") #LLVM BUG #21629
-                GMX_TEST_CXXFLAG(CXXFLAGS_WARN_NO_BRACES "-Wno-missing-braces" GMXC_CXXFLAGS)
-            endif()
             GMX_TEST_CXXFLAG(CXXFLAGS_WARN_EXTRA "-Wextra;-Wpointer-arith;-Wmissing-prototypes" GMXC_CXXFLAGS)
+            GMX_TEST_CXXFLAG(CXXFLAGS_WARN_PEDANTIC "-Wpedantic" GMXC_CXXFLAGS)
             if(NOT CMAKE_CXX_FLAGS MATCHES "-Wno-deprecated")
                 GMX_TEST_CXXFLAG(CXXFLAGS_DEPRECATED "-Wdeprecated" GMXC_CXXFLAGS)
             endif()
+            GMX_TEST_CXXFLAG(CXXFLAGS_WARN_SHADOW_ALL "-Wshadow-all" GMXC_CXXFLAGS)
 
             if (APPLE)
                 # macOS Ventura deprecated `sprintf` in favor of `snprintf`.

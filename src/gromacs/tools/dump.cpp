@@ -53,6 +53,7 @@
 #include <string>
 #include <vector>
 
+#include "gromacs/commandline/cmdlinemodulesettings.h"
 #include "gromacs/commandline/cmdlineoptionsmodule.h"
 #include "gromacs/fileio/checkpoint.h"
 #include "gromacs/fileio/enxio.h"
@@ -66,8 +67,6 @@
 #include "gromacs/fileio/xtcio.h"
 #include "gromacs/gmxpreprocess/gmxcpp.h"
 #include "gromacs/linearalgebra/sparsematrix.h"
-#include "gromacs/math/vecdump.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/mdrun/mdmodules.h"
 #include "gromacs/mdtypes/forcerec.h"
 #include "gromacs/mdtypes/inputrec.h"
@@ -92,6 +91,8 @@
 #include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/txtdump.h"
+#include "gromacs/utility/vecdump.h"
+#include "gromacs/utility/vectypes.h"
 
 namespace gmx
 {
@@ -628,7 +629,10 @@ public:
     Dump() {}
 
     // From ICommandLineOptionsModule
-    void init(CommandLineModuleSettings* /*settings*/) override {}
+    void init(CommandLineModuleSettings* settings) override
+    {
+        outputStream_ = settings->outputStream();
+    }
 
     void initOptions(IOptionsContainer* options, ICommandLineOptionsModuleSettings* settings) override;
 
@@ -654,6 +658,8 @@ private:
     std::string inputMatrixFilename_;
     std::string outputMdpFilename_;
     //! \}
+    //! The output stream to use
+    FILE* outputStream_ = stdout;
 };
 
 void Dump::initOptions(IOptionsContainer* options, ICommandLineOptionsModuleSettings* settings)
@@ -741,7 +747,7 @@ int Dump::run()
     }
     else if (!inputCheckpointFilename_.empty())
     {
-        list_checkpoint(inputCheckpointFilename_.c_str(), stdout);
+        list_checkpoint(inputCheckpointFilename_.c_str(), outputStream_);
     }
     else if (!inputTopologyFilename_.empty())
     {

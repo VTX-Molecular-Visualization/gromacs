@@ -45,8 +45,12 @@
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/real.h"
 
-struct t_commrec;
 struct t_lambda;
+
+namespace gmx
+{
+class MpiComm;
+} // namespace gmx
 
 // The non-bonded energy terms accumulated for energy group pairs
 enum class NonBondedEnergyTerms : int
@@ -178,7 +182,7 @@ public:
      * \param[in] lambda       Lambda values for the efptNR contribution types
      * \param[in] fepvals      Free-energy parameters
      */
-    void finalizeKineticContributions(gmx::ArrayRef<const real> energyTerms,
+    void finalizeKineticContributions(const gmx::EnumerationArray<InteractionFunction, real>& energyTerms,
                                       double                    dhdlMass,
                                       gmx::ArrayRef<const real> lambda,
                                       const t_lambda&           fepvals);
@@ -190,9 +194,9 @@ public:
      * Note: should only be called after the object has been finalized by a call to
      * accumulateLinearPotentialComponents() (is asserted).
      *
-     * \param[in] cr  Communication record, used to reduce the terms when !=nullptr
+     * \param[in] mpiComm  Communication object for my group
      */
-    std::pair<std::vector<double>, std::vector<double>> getTerms(const t_commrec* cr) const;
+    std::pair<std::vector<double>, std::vector<double>> getTerms(const gmx::MpiComm& mpiComm) const;
 
     //! Sets all terms to 0
     void zeroAllTerms();
@@ -229,7 +233,7 @@ struct gmx_enerdata_t
                    const gmx::EnumerationArray<FreeEnergyPerturbationCouplingType, std::vector<double>>* allLambdas);
 
     //! The energies for all different interaction types
-    std::array<real, F_NRE> term = { 0 };
+    gmx::EnumerationArray<InteractionFunction, real> term = { 0 };
     //! Energy group pair non-bonded energies
     struct gmx_grppairener_t grpp;
     //! Contributions to dV/dlambda with linear dependence on lambda

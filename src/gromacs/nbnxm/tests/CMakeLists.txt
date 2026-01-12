@@ -32,10 +32,13 @@
 # the research papers on the package. Check out https://www.gromacs.org.
 
 gmx_add_unit_test(NbnxmTests nbnxm-test
+    OPENMP_THREADS
+        2
     CPP_SOURCE_FILES
         exclusions.cpp
         kernel_test.cpp
         kernelsetup.cpp
+        plainpairlist.cpp
         simd_energy_accumulator.cpp
         testsystem.cpp
         )
@@ -47,3 +50,41 @@ gmx_add_unit_test(NbnxmGpuTests nbnxm-gpu-test
         pairlist.cpp
         )
 target_link_libraries(nbnxm-gpu-test PRIVATE nbnxm gpu_utils timing)
+
+gmx_add_unit_test(GmxlibTests nonbonded-fep-test
+    CPP_SOURCE_FILES
+        freeenergykernel.cpp
+    )
+target_link_libraries(
+    nonbonded-fep-test PRIVATE
+    ewald
+    gmxlib
+    math
+    mdlib
+    mdtypes
+    pbcutil
+    tables
+    testutils
+    topology
+    utility
+)
+
+gmx_add_unit_test(GmxlibGpuTests nonbonded-fep-gpu-test
+    HARDWARE_DETECTION
+    GPU_CPP_SOURCE_FILES
+        freeenergygpukernel.cpp
+    )
+target_link_libraries(
+    nonbonded-fep-gpu-test PRIVATE
+    ewald
+    gmxlib
+    math
+    mdlib
+    mdtypes
+    pbcutil
+    tables
+    testutils
+    topology
+    utility
+    gpu_utils
+)

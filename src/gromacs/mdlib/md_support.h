@@ -36,11 +36,11 @@
 
 #include <cstdint>
 
-#include "gromacs/math/vectypes.h"
 #include "gromacs/mdlib/vcm.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/timing/wallcycle.h"
 #include "gromacs/utility/basedefinitions.h"
+#include "gromacs/utility/vectypes.h"
 
 class gmx_ekindata_t;
 struct gmx_enerdata_t;
@@ -52,13 +52,13 @@ struct t_inputrec;
 struct t_nrnb;
 class t_state;
 struct t_trxframe;
-struct t_commrec;
 struct t_mdatoms;
 
 namespace gmx
 {
 template<typename T>
 class ArrayRef;
+class MpiComm;
 class MDLogger;
 class ObservablesReducer;
 class SimulationSignaller;
@@ -68,6 +68,8 @@ class SimulationSignaller;
  * passed to compute_globals in md.c and global_stat.
  */
 
+/* Compute the kinetic energy of groups, implied by CGLO_TEMPERATURE */
+#define CGLO_COMPUTEEKIN (1u << 1u)
 /* we are computing the kinetic energy from average velocities */
 #define CGLO_EKINAVEVEL (1u << 2u)
 /* we are removing the center of mass momenta */
@@ -76,7 +78,7 @@ class SimulationSignaller;
 #define CGLO_GSTAT (1u << 4u)
 /* Sum the energy terms in global computation */
 #define CGLO_ENERGY (1u << 6u)
-/* Sum the kinetic energy terms in global computation */
+/* Sum the kinetic energy terms in global computation, implies CGLO_COMPUTEEKINH */
 #define CGLO_TEMPERATURE (1u << 7u)
 /* Sum the kinetic energy terms in global computation */
 #define CGLO_PRESSURE (1u << 8u)
@@ -96,9 +98,11 @@ int computeGlobalCommunicationPeriod(const t_inputrec* ir);
  * intra-simulation communications, given the constraints of the
  * inputrec, and write information to log.
  * Calls computeGlobalCommunicationPeriod(ir) internally. */
-int computeGlobalCommunicationPeriod(const gmx::MDLogger& mdlog, const t_inputrec* ir, const t_commrec* cr);
+int computeGlobalCommunicationPeriod(const gmx::MDLogger& mdlog,
+                                     const t_inputrec*    ir,
+                                     const gmx::MpiComm&  mpiComm);
 
-void rerun_parallel_comm(t_commrec* cr, t_trxframe* fr, gmx_bool* bLastStep);
+void rerun_parallel_comm(const gmx::MpiComm& mpiComm, t_trxframe* fr, gmx_bool* bLastStep);
 
 //! \brief Allocate and initialize node-local state entries
 void set_state_entries(t_state* state, const t_inputrec* ir, bool useModularSimulator);
@@ -110,7 +114,7 @@ void set_state_entries(t_state* state, const t_inputrec* ir, bool useModularSimu
  * Velocities v are needed for kinetic energy calculation and for COM removal.
  */
 void compute_globals(gmx_global_stat*               gstat,
-                     t_commrec*                     cr,
+                     const gmx::MpiComm&            mpiComm,
                      const t_inputrec*              ir,
                      t_forcerec*                    fr,
                      gmx_ekindata_t*                ekind,

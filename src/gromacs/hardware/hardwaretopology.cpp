@@ -68,7 +68,9 @@
 #include <sys/types.h>
 
 #include "gromacs/hardware/cpuinfo.h"
+#include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/gmxassert.h"
+#include "gromacs/utility/stringutil.h"
 
 #ifdef HAVE_SCHED_H
 #    include <sched.h>
@@ -91,13 +93,37 @@ namespace gmx
 namespace
 {
 
+// Returns empty on failure
+std::unordered_set<int> getAffinityList()
+{
+#if HAVE_SCHED_AFFINITY
+    cpu_set_t cpuSet;
+    int       ret = sched_getaffinity(0, sizeof(cpu_set_t), &cpuSet);
+    if (ret != 0)
+    {
+        return {};
+    }
+    std::unordered_set<int> affinitySet;
+    for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu)
+    {
+        if (CPU_ISSET(cpu, &cpuSet) != 0)
+        {
+            affinitySet.insert(cpu);
+        }
+    }
+    return affinitySet;
+#else
+    return {};
+#endif
+}
+
 /*****************************************************************************
  *                                                                           *
  *   Utility functions for extracting hardware topology from CpuInfo object  *
  *                                                                           *
  *****************************************************************************/
 
-/*! \brief Utlility function to renumber and translate low-level APIC info to topology
+/*! \brief Utility function to renumber and translate low-level APIC info to topology
  *
  * \param logicalProcessors Logical processor information according to the CpuInfo
  *                          structure. Note that the indices refer
@@ -106,7 +132,7 @@ namespace
  *                          logical cores/processing units we use.
  * \param machine           Hardware topology machine structure where result is written.
  */
-void translateCpuInfoLogicalProcessorsToMachine(const std::vector<CpuInfo::LogicalProcessor>& logicalProcessors,
+void translateCpuInfoLogicalProcessorsToMachine(ArrayRef<const CpuInfo::LogicalProcessor> logicalProcessors,
                                                 HardwareTopology::Machine* machine)
 {
     // We will keep and report the os-provided indices for packages, since we need to be
@@ -163,6 +189,9 @@ void translateCpuInfoLogicalProcessorsToMachine(const std::vector<CpuInfo::Logic
         machine->packages[newPkg].cores[newCore].processingUnits.push_back({ -1, p.osId });
     }
 
+    const std::unordered_set<int> processAffinityList = getAffinityList();
+    const bool                    haveAffinityList    = !processAffinityList.empty();
+
     // Fill linear structure of logical processors and assign global core/PU id in tree
     for (int pkg = 0, coreId = 0, puId = 0; static_cast<std::size_t>(pkg) < machine->packages.size(); pkg++)
     {
@@ -174,8 +203,11 @@ void translateCpuInfoLogicalProcessorsToMachine(const std::vector<CpuInfo::Logic
                  pu++)
             {
                 int osId = machine->packages[pkg].cores[core].processingUnits[pu].osId;
-                // No numa info, set it to -1.
-                machine->logicalProcessors.push_back({ puId, osId, pkg, core, pu, -1 });
+                // If we don't have an affinity list, assume things are ok
+                bool isInAffinityList = !haveAffinityList
+                                        || processAffinityList.find(osId) != processAffinityList.end();
+                // No numa info here, set it to -1
+                machine->logicalProcessors.push_back({ puId, osId, pkg, core, pu, -1, isInAffinityList });
                 machine->osIdToPuId.insert({ osId, puId });
                 machine->packages[pkg].cores[core].processingUnits[pu].id = puId++; // global PU id
             }
@@ -289,8 +321,19 @@ std::vector<const hwloc_obj*> getHwLocDescendantsByType(const hwloc_topology*  t
  */
 bool parseHwLocPackagesCoresProcessingUnits(hwloc_topology_t topo, HardwareTopology::Machine* machine)
 {
-    const hwloc_obj*              root          = hwloc_get_root_obj(topo);
+    const hwloc_obj* root = hwloc_get_root_obj(topo);
     std::vector<const hwloc_obj*> hwlocPackages = getHwLocDescendantsByType(topo, root, HWLOC_OBJ_PACKAGE);
+
+    hwloc_cpuset_t cpuset = hwloc_bitmap_alloc();
+    if (cpuset)
+    {
+        int ret = hwloc_get_cpubind(topo, cpuset, HWLOC_CPUBIND_PROCESS);
+        if (ret != 0 || hwloc_bitmap_iszero(cpuset))
+        {
+            hwloc_bitmap_free(cpuset);
+            cpuset = nullptr;
+        }
+    }
 
     std::size_t puCount = hwloc_get_nbobjs_by_type(topo, HWLOC_OBJ_PU);
     machine->logicalProcessors.resize(puCount);
@@ -334,6 +377,9 @@ bool parseHwLocPackagesCoresProcessingUnits(hwloc_topology_t topo, HardwareTopol
                 machine->logicalProcessors[puId].coreRankInPackage        = static_cast<int>(j);
                 machine->logicalProcessors[puId].processingUnitRankInCore = static_cast<int>(k);
                 machine->logicalProcessors[puId].numaNodeId               = -1;
+                machine->logicalProcessors[puId].isAssignedToProcess =
+                        (cpuset == nullptr)
+                        || (hwloc_bitmap_intersects(cpuset, hwlocPUs[k]->cpuset) != 0);
 
                 // Use a convenience map so we can easily find the internal logical
                 // processing unit id based on the OS-provided one if necessary.
@@ -341,7 +387,13 @@ bool parseHwLocPackagesCoresProcessingUnits(hwloc_topology_t topo, HardwareTopol
             }
         }
     }
-    return true; // for now we can't really fail cleanly, but keep the option to signal failed detection
+    if (cpuset)
+    {
+        hwloc_bitmap_free(cpuset);
+    }
+
+    // for now we can't really fail cleanly, but keep the option to signal failed detection
+    return true;
 }
 
 /*! \brief Read cache information from hwloc topology
@@ -510,7 +562,7 @@ bool parseHwLocNuma(hwloc_topology_t topo, HardwareTopology::Machine* machine)
         machine->numa.maxRelativeLatency = maxLatency / minLatency;
 
 #    else  // GMX_HWLOC_API_VERSION_IS_2XX == false, hwloc api is 1.x.x
-        const int                       depth = hwloc_get_type_depth(topo, HWLOC_OBJ_NUMANODE);
+        const int depth = hwloc_get_type_depth(topo, HWLOC_OBJ_NUMANODE);
         const struct hwloc_distances_s* dist = hwloc_get_whole_distance_matrix_by_depth(topo, depth);
         if (dist != nullptr && dist->nbobjs == hwlocNumaNodes.size())
         {
@@ -591,7 +643,7 @@ bool parseHwLocNuma(hwloc_topology_t topo, HardwareTopology::Machine* machine)
  */
 bool parseHwLocDevices(hwloc_topology_t topo, HardwareTopology::Machine* machine)
 {
-    const hwloc_obj*              root = hwloc_get_root_obj(topo);
+    const hwloc_obj* root = hwloc_get_root_obj(topo);
     std::vector<const hwloc_obj*> pcidevs = getHwLocDescendantsByType(topo, root, HWLOC_OBJ_PCI_DEVICE);
 
     for (const auto& p : pcidevs)
@@ -792,14 +844,18 @@ std::vector<int> parseCpuString(const std::string& cpuString)
             {
                 if (i < 0 || (!cpus.empty() && cpus[cpus.size() - 1] >= i))
                 {
-                    return {}; // data in string is bad
+                    // data in string is bad
+                    cpus.clear();
+                    return cpus;
                 }
                 cpus.push_back(i);
             }
         }
         else
         {
-            return {}; // string not well-formatted; interval has 0 or >2 parts
+            // string not well-formatted; interval has 0 or >2 parts
+            cpus.clear();
+            return cpus;
         }
     }
     return cpus;
@@ -820,7 +876,7 @@ std::vector<int> parseCpuString(const std::string& cpuString)
  *                    processor indices on which we are allowed to run.
  *
  * This is a poor man's version of the much fancier topology detection
- * available from hwloc, but given the compilcations of modern hardware
+ * available from hwloc, but given the complications of modern hardware
  * we are critically dependent on being able to understand at least
  * how many sockets/cores/threads we have, even when Gromacs is compiled
  * without hwloc support.
@@ -829,7 +885,7 @@ std::vector<int> parseCpuString(const std::string& cpuString)
  */
 HardwareTopology::SupportLevel parseSysFsCpuTopology(HardwareTopology::Machine* machine,
                                                      const std::string&         root        = "",
-                                                     const std::vector<int>&    allowedCpus = {})
+                                                     ArrayRef<const int>        allowedCpus = {})
 {
     std::string possibleCpuString;
     std::getline(std::ifstream(root + "/sys/devices/system/cpu/possible"), possibleCpuString);
@@ -921,9 +977,9 @@ HardwareTopology::SupportLevel parseSysFsCpuTopology(HardwareTopology::Machine* 
  *
  * \return Path to the active cgroup directory, or empty string if none found.
  */
-std::string findCgroupPath(const std::vector<std::string>& mountPoints,
-                           const std::vector<std::string>& subGroups,
-                           const std::string&              root)
+std::string findCgroupPath(ArrayRef<const std::string> mountPoints,
+                           ArrayRef<const std::string> subGroups,
+                           const std::string&          root)
 {
     // We read the pid from /proc/self/stat instead of calling getpid(),
     // so we can mock this properly in testing.
@@ -966,7 +1022,7 @@ std::string findCgroupPath(const std::vector<std::string>& mountPoints,
  * \return Allowed CPU limit. Note that this is often larger than 1,
  *                    meaning the limit is larger than 1 thread.
  */
-float parseCgroup1CpuLimit(const std::vector<std::string>& mountPoints, const std::string& root = "")
+float parseCgroup1CpuLimit(ArrayRef<const std::string> mountPoints, const std::string& root = "")
 {
     std::vector<std::string> subGroups;
 
@@ -1030,7 +1086,7 @@ float parseCgroup1CpuLimit(const std::vector<std::string>& mountPoints, const st
  * \return Allowed CPU limit. Note that this is often larger than 1,
  *                    meaning the limit is larger than 1 thread.
  */
-float parseCgroup2CpuLimit(const std::vector<std::string>& mountPoints, const std::string& root = "")
+float parseCgroup2CpuLimit(ArrayRef<const std::string> mountPoints, const std::string& root = "")
 {
     std::vector<std::string> subGroups;
 
@@ -1105,13 +1161,12 @@ float detectCpuLimit(const std::string& root = "")
     float cpuLimit = -1;
 
     std::string              line;
-    bool                     found = false;
     std::vector<std::string> cgroups1Mounts;
     std::vector<std::string> cgroups2Mounts;
 
     // if /etc/mtab isn't present, std::getline will return 0.
-    std::ifstream mtabStream(root + "/etc/mtab");
-    while (!found && std::getline(mtabStream, line))
+    std::ifstream procMountsStream(root + "/proc/mounts");
+    while (std::getline(procMountsStream, line))
     {
         std::istringstream       lineStream(line);
         std::vector<std::string> columns{ std::istream_iterator<std::string>(lineStream),
@@ -1121,7 +1176,9 @@ float detectCpuLimit(const std::string& root = "")
         {
             continue;
         }
-        // Column 1 is the fs type (we look for cgroup), column 1 the mount path
+        // Column 0 is the fs class (cgroups for either v1 or v2),
+        // and column2 the version (e.g. cgroups or cgroups2).
+        // For either of these, the mount path will be in coloumn 1.
         if (columns[2] == "cgroup2")
         {
             // cgroup2 uses a unified mount, so there will only be one entry
@@ -1258,6 +1315,32 @@ HardwareTopology::HardwareTopology(int logicalProcessorCount) :
     }
 }
 
+
+HardwareTopology::HardwareTopology(int logicalProcessorCount, ArrayRef<const int> externalAffinitySet) :
+    supportLevel_(SupportLevel::LogicalProcessorCount),
+    machine_(),
+    isThisSystem_(false),
+    cpuLimit_(logicalProcessorCount),
+    maxThreads_(logicalProcessorCount)
+{
+    std::vector<CpuInfo::LogicalProcessor> logicalProcessors(logicalProcessorCount);
+    // Simple topology with no SMP and trivial ordering
+    for (int i = 0; i < logicalProcessorCount; i++)
+    {
+        logicalProcessors[i] = { 0, i, 0, i };
+    }
+    translateCpuInfoLogicalProcessorsToMachine(logicalProcessors, &machine_);
+    supportLevel_ = SupportLevel::Basic;
+    for (auto& lp : machine_.logicalProcessors)
+    {
+        lp.isAssignedToProcess = false;
+    }
+    for (int c : externalAffinitySet)
+    {
+        machine_.logicalProcessors.at(c).isAssignedToProcess = true;
+    }
+}
+
 HardwareTopology::HardwareTopology(const std::map<int, std::array<int, 3>>& logicalProcessorIdMap,
                                    const std::string&                       filesystemRoot) :
     supportLevel_(SupportLevel::None), machine_(), isThisSystem_(false)
@@ -1299,8 +1382,7 @@ HardwareTopology::HardwareTopology(const std::map<int, std::array<int, 3>>& logi
     }
 }
 
-HardwareTopology::HardwareTopology(const std::string&      filesystemRoot,
-                                   const std::vector<int>& allowedProcessors) :
+HardwareTopology::HardwareTopology(const std::string& filesystemRoot, ArrayRef<const int> allowedProcessors) :
     supportLevel_(SupportLevel::None), machine_(), isThisSystem_(false)
 {
     // Create mock topology by parsing saved sys/fs and (optionally) cgroups files
@@ -1315,6 +1397,26 @@ HardwareTopology::HardwareTopology(const std::string&      filesystemRoot,
     {
         supportLevel_ = SupportLevel::LogicalProcessorCount;
     }
+}
+
+HardwareTopology::HardwareTopology(const std::string&  filesystemRoot,
+                                   ArrayRef<const int> allowedProcessors,
+                                   ArrayRef<const int> externalAffinitySet) :
+    HardwareTopology(filesystemRoot, allowedProcessors)
+{
+    for (auto& lp : machine_.logicalProcessors)
+    {
+        lp.isAssignedToProcess = std::find(externalAffinitySet.begin(), externalAffinitySet.end(), lp.osId)
+                                 != externalAffinitySet.end();
+    }
+}
+std::string hwlocDescription()
+{
+#if GMX_USE_HWLOC
+    return formatString("hwloc-%s", HWLOC_VERSION);
+#else
+    return "disabled";
+#endif
 }
 
 } // namespace gmx

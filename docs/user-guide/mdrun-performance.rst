@@ -5,10 +5,143 @@ Getting good performance from :ref:`mdrun <gmx mdrun>`
 
 Here we give an overview on the parallelization and acceleration schemes employed by |Gromacs|.
 The aim is to provide an understanding of the underlying mechanisms that make |Gromacs| one of the
-fastest molecular dynamics packages. The information presented
+fastest molecular dynamics simulation packages. The information presented
 should help choosing appropriate parallelization options, run configuration,
 as well as acceleration options to achieve optimal simulation performance.
+We start with quick checklist. That is followed by more detailed discussions
+of different aspects affecting performance.
 
+Performance checklist
+---------------------
+
+There are many different aspects that affect the performance of simulations in
+|Gromacs|. Most simulations require a lot of computational resources, therefore
+it can be worthwhile to optimize the use of those resources. Several issues
+mentioned in the list below could lead to a performance difference of a factor
+of 2. So it can be useful go through the checklist.
+
+|Gromacs| configuration
+^^^^^^^^^^^^^^^^^^^^^^^
+
+* Do not use double precision unless you are absolutely sure you need it.
+* Compile the FFTW library (yourself) with the correct flags on x86 (in most
+  cases, the correct flags are automatically configured).
+* On x86, use gcc as the compiler (not icc, pgi or the Cray compiler).
+* On POWER, use gcc instead of IBM's xlc.
+* Use a new compiler version.
+* MPI library: OpenMPI usually has good performance and causes little trouble.
+* Make sure your compiler supports OpenMP (some versions of Clang do not).
+* If you have GPUs that support either CUDA, OpenCL, SYCL or HIP use them.
+
+  * Configure with ``-DGMX_GPU=CUDA``, ``-DGMX_GPU=OpenCL``, or ``-DGMX_GPU=SYCL``.
+  * For GPUs, use the newest available SDK for your GPU to take advantage of the
+    latest performance enhancements.
+  * Use a recent GPU driver.
+  * Make sure you use an :ref:`gmx mdrun` with ``GMX_SIMD`` appropriate for the CPU
+    architecture; the log file will contain a warning note if suboptimal setting is used.
+    However, prefer ``AVX2`` over ``AVX512`` in GPU or highly parallel MPI runs (for more
+    information see the :ref:`intra-core parallelization information <intra-core-parallelization>`).
+  * If compiling on a cluster head node, make sure that ``GMX_SIMD``
+    is appropriate for the compute nodes.
+
+Run setup
+^^^^^^^^^
+
+* For an approximately spherical solute, use a rhombic dodecahedron unit cell.
+* When using a time-step of <=2.5 fs, use :mdp-value:`constraints=h-bonds`
+  (and not :mdp-value:`constraints=all-bonds`), since:
+
+  * this is faster, especially with GPUs;
+  * it is necessary in order to be able to use GPU-resident mode;
+  * and most force fields have been parametrized with only bonds involving hydrogens constrained.
+
+* When running on CPUs only or with GPUs but integration on the CPU, you can
+  use  multiple time stepping to perform the PME mesh calculations every second
+  step: set :mdp-value:`mts` to ``yes``.
+* You can often increase the time-step to 4 fs by repartitioning hydrogen
+  masses using the :mdp-value:`mass-repartition-factor` mdp option. This does not
+  affect equilibrium distributions, but makes dynamics slightly slower.
+* For massively parallel runs with PME, you might need to try different numbers
+  of PME ranks (``gmx mdrun -npme ???``) to achieve best performance;
+  :ref:`gmx tune_pme` can help automate this search.
+* For massively parallel runs (also ``gmx mdrun -multidir``), or with a slow
+  network, global communication can become a bottleneck and you can reduce it
+  by choosing larger periods for algorithms such as temperature and
+  pressure coupling).
+
+Checking and improving performance
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* Look at the end of the ``md.log`` file to see the performance and the cycle
+  counters and wall-clock time for different parts of the MD calculation. The
+  PP/PME load ratio is also printed, with a warning when a lot of performance is
+  lost due to imbalance.
+* Six performance metrics are reported in the ``md.log``. Select the appropriate
+  metric for benchmarking based on the purpose of the simulation.
+
+  ns/day
+    This is a commonly used metric for simulation throughput that is specific to
+    simulation systems, conditions, and hardware.
+
+  hour/ns
+    As the inverse of ns/day, hour/ns can be used to estimate the time to obtain a
+    desired simulation time.
+
+  ms/step
+    This is a time step-independent metric that directly measures the wall-time per timestep
+    and can be used to measure performance with a given system.
+
+  Matom*steps/s
+    This is a metric for simulation throughput that is timestep-independent and
+    normalized by system size. It provides a measure of simulation efficiency, as
+    the amount of work scales nearly linearly with the number of atoms, given
+    the same type of system and simulation settings.
+
+  Mnbf/s (Mega non-bonded forces per second)
+    This throughput metric is time step-independent and partially normalized by
+    system size; When non-bonded interactions dominate in the simulations,
+    Mnbf/s can be used to compare hardware or algorithmic efficiency.
+
+  MFlops (Mega floating-point operations per second)
+    This is not an MD-specific metric and gives an estimate of the achieved flop rate, 
+    which can be compared with the theoretical peak flop rate of the hardware.
+    Note that this is an estimate of the useful floating point operations in the code,
+    not the actual operations emitted by the compiler or measured during profiling.
+    MFlops and Mnbf/s are only printed when the environment variable 
+    ``GMX_DETAILED_PERF_STATS`` is set.
+
+* Adjust the number of PME ranks and/or the cut-off and PME grid-spacing when
+  there is a large PP/PME imbalance. Note that even with a small reported
+  imbalance, the automated PME-tuning might have reduced the initial imbalance.
+  You could still gain performance by changing the mdp parameters or increasing
+  the number of PME ranks.
+* (Especially) In GPU-resident runs (``-update gpu``):
+
+  * Frequent virial or energy computation can have a large overhead (and this will not show up in the cycle counters).
+    To reduce this overhead, increase ``nstcalcenergy``;
+  * Frequent temperature or pressure coupling can have significant overhead;
+    to reduce this, make sure to have as infrequent coupling as your algorithms allow (typically >=50-100 steps).
+
+* If the neighbor searching and/or domain decomposition takes a lot of time, increase ``nstlist``. If a Verlet
+  buffer tolerance is used, this is done automatically by :ref:`gmx mdrun`
+  and the pair-list buffer is increased to keep the energy drift constant.
+
+    * especially with multi-GPU runs, the automatic increasing of ``nstlist`` at ``mdrun``
+      startup can be conservative and larger value is often be optimal
+      (e.g. ``nstlist=200-300`` with PME and default Verlet buffer tolerance).
+
+    * odd values of nstlist should be avoided when using CUDA Graphs
+      to minimize the overhead associated with graph instantiation.
+
+* If ``Comm. energies`` takes a lot of time (a note will be printed in the log
+  file), increase ``nstcalcenergy``.
+* If all communication takes a lot of time, you might be running on too many
+  cores, or you could try running combined MPI/OpenMP parallelization with 2
+  or 4 OpenMP threads per MPI process.
+* In multi-GPU runs, avoid using as many ranks as cores (or hardware threads) since
+  this introduces a major inefficiency due to overheads associated to GPUs sharing by several MPI ranks.
+  Use at most a few ranks per GPU, 1-3 ranks is generally optimal;
+  with GPU-resident mode and direct GPU communication typically 1 rank/GPU is best.
 
 The |Gromacs| build system and the :ref:`gmx mdrun` tool have a lot of built-in
 and configurable intelligence to detect your hardware and make pretty
@@ -212,7 +345,7 @@ the lowest common SIMD instruction set (as these rely little on SIMD acceleratio
 performance :ref:`mdrun <gmx mdrun>` should be compiled be compiled separately with the
 highest (latest) ``native`` SIMD instruction set of the target architecture (supported by |Gromacs|).
 
-Recent Intel CPU architectures bring tradeoffs between the maximum clock frequency of the
+Some Intel CPU architectures bring tradeoffs between the maximum clock frequency of the
 CPU (ie. its speed), and the width of the SIMD instructions it executes (ie its throughput
 at a given speed). In particular, the Intel ``Skylake`` and ``Cascade Lake`` processors
 (e.g. Xeon SP Gold/Platinum), can offer better throughput when using narrower SIMD because
@@ -222,9 +355,8 @@ performance in GPU accelerated or highly parallel MPI runs.
 
 Some of the latest ARM based CPU, such as the Fujitsu A64fx, support the Scalable Vector Extensions (SVE).
 Though SVE can be used to generate fairly efficient Vector Length Agnostic (VLA) code,
-this is not a good fit for |Gromacs| (as the SIMD vector length assumed to be known at
-CMake time). Consequently, the SVE vector length must be fixed at CMake time. The default
-is to automatically detect the default vector length at CMake time
+this is not a good fit for |Gromacs|, as the SIMD vector length is fixed at
+CMake time. The default is to automatically detect the default vector length at CMake time
 (via the ``/proc/sys/abi/sve_default_vector_length`` pseudo-file, and this can be changed by
 configuring with ``GMX_SIMD_ARM_SVE_LENGTH=<len>``.
 The supported vector lengths are 128, 256, 512 and 1024. Since the SIMD short-range non-bonded kernels
@@ -250,12 +382,10 @@ Node level parallelization via GPU offloading and thread-MPI
 Multithreading with thread-MPI
 ..............................
 
-The thread-MPI library implements a subset of the MPI 1.1 specification,
-based on the system threading support. Both POSIX pthreads and Windows threads are supported,
-thus providing great portability to most UNIX/Linux and Windows operating systems.
+The thread-MPI library implements a subset of the MPI specification,
+based on the system threading support. Both POSIX pthreads and Windows threads are supported.
 Acting as a drop-in replacement for MPI, thread-MPI enables compiling and running :ref:`mdrun <gmx mdrun>`
-on a single machine (i.e. not across a network) without MPI. Additionally, it not only provides a
-convenient way to use computers with multicore CPU(s), but thread-MPI does in some
+on a single machine (i.e. not across a network) without MPI. Additionally, thread-MPI does in some
 cases make :ref:`mdrun <gmx mdrun>` run slightly faster than with MPI.
 
 Thread-MPI is included in the |Gromacs| source and it is the default parallelization mode,
@@ -292,25 +422,26 @@ To efficiently use all compute resource available, CPU and GPU computation is do
 Overlapping with the OpenMP multithreaded bonded force and PME long-range electrostatic calculations
 on the CPU, non-bonded forces are calculated on the GPU. Multiple GPUs, both in a single node as
 well as across multiple nodes, are supported using domain-decomposition. A single GPU is assigned
-to the non-bonded workload of a domain, therefore, the number GPUs used has to match the number
-of of MPI processes (or thread-MPI threads) the simulation is started with. The available
+to the non-bonded workload of a domain, therefore, the number of GPUs used has to match the number
+of MPI processes (or thread-MPI threads) the simulation is started with. The available
 CPU cores are partitioned among the processes (or thread-MPI threads) and a set of cores
 with a GPU do the calculations on the respective domain.
 
 With PME electrostatics, :ref:`mdrun <gmx mdrun>` supports automated CPU-GPU load-balancing by
 shifting workload from the PME mesh calculations, done on the CPU, to the particle-particle
-non-bonded calculations, done on the GPU. At startup a few iterations of tuning are executed
-during the first 100 to 1000 MD steps. These iterations involve scaling the electrostatics cut-off
+non-bonded calculations, done on the GPU. At startup, a few stages of tuning are executed
+during the first few thousand MD steps. These stages involve scaling the electrostatics cut-off
 and PME grid spacing to determine the value that gives optimal CPU-GPU load balance. The cut-off
 value provided using the :mdp:`rcoulomb` ``=rvdw`` :ref:`mdp` option represents the minimum
 electrostatics cut-off the tuning starts with and therefore should be chosen as small as
 possible (but still reasonable for the physics simulated). The Lennard-Jones cut-off ``rvdw``
-is kept fixed. We don't allow scaling to shorter cut-off as we don't want to change ``rvdw``
-and there would be no performance gain.
+is kept fixed. We do not allow scaling to shorter cut-off as we do not want to change ``rvdw``
+because that would affect the validity of the force-field parameters and there would be no
+performance gain.
 
 While the automated CPU-GPU load balancing always attempts to find the optimal cut-off setting,
 it might not always be possible to balance CPU and GPU workload. This happens when the CPU threads
-finish calculating the bonded forces and PME faster than the GPU the non-bonded force calculation,
+finish calculating the bonded forces and PME before the GPU finishes the non-bonded force calculation,
 even with the shortest possible cut-off. In such cases the CPU will wait for the GPU and this
 time will show up as ``Wait GPU NB local`` in the cycle and timing summary table at the end
 of the log file.
@@ -373,7 +504,6 @@ parallel hardware.
     minimum allowed cell size. Under certain circumstances the value
     of ``-dds`` might need to be adjusted to account for high or low
     spatial inhomogeneity of the system.
-
 
 
 Multi-level parallelization: MPI and OpenMP
@@ -467,7 +597,7 @@ behavior.
     Alternatively, :ref:`mdrun <gmx mdrun>` will honor the appropriate system
     environment variable (e.g. ``OMP_NUM_THREADS``) if set.
     Note that the maximum number of OpenMP threads (per rank) is,
-    for efficiency reasons, limited to 64. While it is rarely beneficial to use
+    for efficiency reasons, limited to 128. While it is rarely beneficial to use
     a number of threads higher than this, the GMX_OPENMP_MAX_THREADS CMake variable
     can be used to increase the limit.
 
@@ -483,28 +613,42 @@ behavior.
     The default, 0, copies the value from ``-ntomp``.
 
 ``-pin``
-    Can be set to "auto," "on" or "off" to control whether
+    Can be set to "auto," "on," "inherit," or "off" to control whether
     :ref:`mdrun <gmx mdrun>` will attempt to set the affinity of threads to cores.
-    Defaults to "auto," which means that if :ref:`mdrun <gmx mdrun>` detects that all the
-    cores on the node are being used for :ref:`mdrun <gmx mdrun>`, then it should behave
-    like "on," and attempt to set the affinities (unless they are
-    already set by something else).
+    Defaults to "auto," which means that if :ref:`mdrun <gmx mdrun>` detects that all
+    cores on the node are used for :ref:`mdrun <gmx mdrun>` and the affinity is left default
+    (not set by an external tool such as an MPI launcher or ``numactl``), then it behaves
+    like "on," and attempts to set the affinities.
+    With "on," mdrun will set thread affinities, overriding any external CPU affinity settings.
+    With "inherit," mdrun will set thread affinities within the external affinity mask: that is,
+    if an external tool or a job scheduler set CPU affinities limiting each process
+    to a specific set of cores/hardware threads, ref:`mdrun <gmx mdrun>` rank(s) will pin
+    thread(s) within these boundaries.
+    The behavior of "on" and "inherit" is similar, both enable thread pinning, but they
+    differ in scope: "on" pins threads across all available CPU cores in the system,
+    while "inherit" only pins threads within the external affinity mask.
+    This scope difference also affects how the ``-pinoffset`` and ``-pinstride`` options work.
 
 ``-pinoffset``
-    If ``-pin on``, specifies the logical core number to
+    If ``-pin on`` or ``-pin inherit``, specifies the logical core number to
     which :ref:`mdrun <gmx mdrun>` should pin the first thread. When running more than
     one instance of :ref:`mdrun <gmx mdrun>` on a node, use this option to to avoid
     pinning threads from different :ref:`mdrun <gmx mdrun>` instances to the same core.
+    With ``-pin on``, the offset is applied relative to all the available CPUs,
+    while with ``-pin inherit``, the offset is applied relative to the cores
+    within the external affinity mask.
 
 ``-pinstride``
-    If ``-pin on``, specifies the stride in logical core
+    If ``-pin on`` or ``-pin inherit``, specifies the stride in logical core
     numbers for the cores to which :ref:`mdrun <gmx mdrun>` should pin its threads. When
     running more than one instance of :ref:`mdrun <gmx mdrun>` on a node, use this option
     to avoid pinning threads from different :ref:`mdrun <gmx mdrun>` instances to the
-    same core.  Use the default, 0, to minimize the number of threads
+    same core. Use the default, 0, to minimize the number of threads
     per physical core - this lets :ref:`mdrun <gmx mdrun>` manage the hardware-, OS- and
     configuration-specific details of how to map logical cores to
-    physical cores.
+    physical cores. With ``-pin on``, the stride is applied across all available CPUs,
+    while with ``-pin inherit``, the stride is applied only within the external
+    affinity mask.
 
 ``-ddorder``
     Can be set to "interleave," "pp_pme" or "cartesian."
@@ -519,14 +663,14 @@ behavior.
 
 ``-nb``
     Used to set where to execute the short-range non-bonded interactions.
-    Can be set to "auto", "cpu", "gpu."
+    Can be set to "auto," "cpu" or "gpu."
     Defaults to "auto," which uses a compatible GPU if available.
     Setting "cpu" requires that no GPU is used. Setting "gpu" requires
     that a compatible GPU is available and will be used.
 
 ``-pme``
     Used to set where to execute the long-range non-bonded interactions.
-    Can be set to "auto", "cpu", "gpu."
+    Can be set to "auto," "cpu" or "gpu."
     Defaults to "auto," which uses a compatible GPU if available.
     Setting "gpu" requires that a compatible GPU is available.
     Multiple PME ranks are not supported with PME on GPU, so if a GPU is used
@@ -535,7 +679,7 @@ behavior.
 ``-bonded``
     Used to set where to execute the bonded interactions that are part of the
     PP workload for a domain.
-    Can be set to "auto", "cpu", "gpu."
+    Can be set to "auto," "cpu" or "gpu."
     Defaults to "auto," which uses a compatible CUDA or SYCL GPU only when one
     is available, a GPU is handling short-ranged interactions, and the
     CPU is handling long-ranged interaction work (electrostatic or
@@ -547,7 +691,7 @@ behavior.
 
 ``-update``
     Used to set where to execute update and constraints, when present.
-    Can be set to "auto", "cpu", "gpu."
+    Can be set to "auto," "cpu" or "gpu."
     Defaults to "auto," which currently always uses the CPU.
     Setting "gpu" requires that a compatible CUDA or SYCL GPU is available,
     the simulation uses a single rank.
@@ -626,7 +770,7 @@ behavior.
 
 ``-pmefft``
     Allows choosing whether to execute the 3D FFT computation on a CPU or GPU.
-    Can be set to "auto", "cpu", "gpu.".
+    Can be set to "auto," "cpu" or "gpu."
     When PME is offloaded to a GPU ``-pmefft gpu`` is the default,
     and the entire PME calculation is executed on the GPU. However,
     in some cases, e.g. with a relatively slow or older generation GPU
@@ -753,7 +897,7 @@ cores may differ between operating systems. On Linux,
 
     mpirun -np 2 gmx_mpi mdrun
 
-When using an :ref:`gmx mdrun` compiled with external MPI,
+When using a :ref:`gmx mdrun` compiled with external MPI,
 this will start two ranks and as many OpenMP threads
 as the hardware and MPI setup will permit. If the
 MPI setup is restricted to one node, then the resulting
@@ -785,11 +929,18 @@ There are further command-line parameters that are relevant in these
 cases.
 
 ``-tunepme``
-    Defaults to "on." If "on," a simulation will
-    optimize various aspects of the PME and DD algorithms, shifting
-    load between ranks and/or GPUs to maximize throughput. Some
-    :ref:`mdrun <gmx mdrun>` features are not compatible with this, and these ignore
-    this option.
+    Defaults to "on." If "on," a simulation will optimize
+    :mdp:`rcoulomb` and :mdp:`fourierspacing` parameters for PME by
+    scaling both by the same value. This results in an equivalent
+    model physics that has shifted computational load between ranks
+    and/or GPUs and can be optimized to maximize throughput. Some
+    :ref:`mdrun <gmx mdrun>` features are not compatible with this,
+    and these ignore this option. Note that acceptable equivalence can
+    depend on the use case; multi-replica simulations such as replica
+    exchange can tune PME differently for different replicas and thus
+    compute potential energies that are slightly different depending
+    on the PME parameters in use by that replica, e.g. on a different
+    discrete Fourier-space grid.
 
 ``-dlb``
     Can be set to "auto," "no," or "yes."
@@ -803,12 +954,12 @@ cases.
     DLB is not compatible with GPU-resident parallelization (with ``-update gpu``)
     and therefore it remains switched off in such simulations.
 
-During the simulation :ref:`gmx mdrun` must communicate between all
+During the simulation, :ref:`gmx mdrun` must communicate between all
 PP ranks to compute quantities such as kinetic energy for log file
 reporting, or perhaps temperature coupling. By default, this happens
 whenever necessary to honor several :ref:`mdp options <mdp-general>`,
-so that the period between communication phases is the least common
-denominator of :mdp:`nstcalcenergy`,
+so that the period between communication phases is the greatest common
+divisor of :mdp:`nstcalcenergy`,
 :mdp:`nsttcouple`, and :mdp:`nstpcouple`.
 
 Note that ``-tunepme`` has more effect when there is more than one
@@ -856,12 +1007,12 @@ component.
 
 ::
 
-    mpirun -np 11 gmx_mpi mdrun -ntomp 2 -npme 6 -ntomp_pme 1
+    mpirun -np 16 gmx_mpi mdrun -ntomp 2 -npme 6 -ntomp_pme 1
 
-Starts :ref:`gmx mdrun` with 11 ranks, as above, and
+Starts :ref:`gmx mdrun` with 16 ranks, as above, and
 require that six of them are dedicated to the PME
 component with one OpenMP thread each. The remaining
-five do the PP component, with two OpenMP threads
+ten do the PP component, with two OpenMP threads
 each.
 
 ::
@@ -896,7 +1047,7 @@ has two sockets each of four cores.
 
     mpirun -np 10 gmx_mpi mdrun -gpu_id 1
 
-Starts :ref:`gmx mdrun` with 20 ranks, and assigns the CPU cores evenly
+Starts :ref:`gmx mdrun` with 10 ranks, and assigns the CPU cores evenly
 across ranks each to one OpenMP thread. This setup is likely to be
 suitable when there are ten nodes, each with two GPUs, but another
 job on each node is using GPU 0. The job scheduler should set the
@@ -1016,7 +1167,7 @@ The performance counters are:
 
 As performance data is collected for every run, they are essential to assessing
 and tuning the performance of :ref:`gmx mdrun` performance. Therefore, they benefit
-both code developers as well as users of the program.
+both developers as well as users of the program.
 The counters are an average of the time/cycles different parts of the simulation take,
 hence can not directly reveal fluctuations during a single run (although comparisons across
 multiple runs are still very useful).
@@ -1129,8 +1280,8 @@ this problem and thus reduce the calculation time.
 
 .. _gmx-gpu-pme:
 
-GPU accelerated calculation of PME
-..................................
+GPU accelerated calculation of PME (not for AMD HIP)
+....................................................
 
 .. todo:: again, extend this and add some actual useful information concerning performance etc...
 
@@ -1161,7 +1312,7 @@ Known limitations
 - LJ PME is not supported on GPUs.
 
 - When |Gromacs| is built without a GPU FFT library (``-DGMX_GPU_FFT_LIBRARY=none``),
-  only hybrid mode (``-pmefft cpu``) is supported.  
+  only hybrid mode (``-pmefft cpu``) is supported.
 
 .. _gmx-gpu-bonded:
 
@@ -1191,22 +1342,22 @@ constraint calculation on a GPU.
 This parallelization mode is referred to as "GPU-resident" as all force and coordinate
 data can remain resident on the GPU for a number of steps (typically between temperature/pressure coupling or
 neighbor searching steps).
-The GPU-resident mode allows executing all (supported) computation of a simulation step on the GPU. 
+The GPU-resident mode allows executing all (supported) computation of a simulation step on the GPU.
 This has the benefit that there is less coupling between CPU host and GPU and
 on typical MD steps data does not need to be transferred between CPU and GPU
 in contrast to the force-offload scheme requires coordinates and forces to be transferred
 every step between the CPU and GPU.
 The GPU-resident scheme however is still able to carry out part of the computation
 on the CPU concurrently with GPU calculation.
-This helps supporting the broad range of |Gromacs| features not all of which are 
-ported to GPUs. At the same time, it also allows improving performance by making 
-use of the otherwise mostly idle CPU. It can often be advantageous to move the bonded 
+This helps supporting the broad range of |Gromacs| features not all of which are
+ported to GPUs. At the same time, it also allows improving performance by making
+use of the otherwise mostly idle CPU. It can often be advantageous to move the bonded
 or PME calculation back to the CPU, but the details of this will depending on the
 relative performance if the CPU cores paired in a simulation with a GPU.
 
 GPU-resident mode is enabled by default (when supported) with an automatic
 fallback to CPU update when the build configuration or simulation settings
-are incompatible with it. 
+are incompatible with it.
 It is possible to change the default behaviour by setting the
 ``GMX_FORCE_UPDATE_DEFAULT_CPU`` environment variable. In this
 case simulations following the default behavior (ie. ``-update auto``)
@@ -1234,7 +1385,7 @@ One overview over the possible task assignments is given below:
 |Gromacs| version 2018:
 
   Two different types of assignable GPU accelerated tasks are available, (short-range) nonbonded and PME.
-  Each PP rank has a nonbnonded task that can be offloaded to a GPU.
+  Each PP rank has a nonbonded task that can be offloaded to a GPU.
   If there is only one rank with a PME task (including if that rank is a
   PME-only rank), then that task can be offloaded to a GPU. Such a PME
   task can run wholly on the GPU, or have its latter stages run only on the CPU.
@@ -1260,7 +1411,7 @@ One overview over the possible task assignments is given below:
   In domain-decomposition halo exchange and PP-PME communication,
   instead of staging transfers between GPUs though the CPU,
   direct GPU--GPU communication is possible.
-  As an auxiliary tasks for halo exchange  data packing and unpacking is performed 
+  As an auxiliary tasks for halo exchange  data packing and unpacking is performed
   which is also offloaded to the GPU.
   In the 2021 release this is supported with thread-MPI and from the 2022 release
   it is also supported using GPU-aware MPI.
@@ -1271,11 +1422,16 @@ One overview over the possible task assignments is given below:
 |Gromacs| version 2023:
 
   Update now runs by default on the GPU with supported simulation settings; note that this is only available with CUDA and SYCL not with OpenCL.
-  
+
   PME decomposition support adds additional parallelization-related auxiliary GPU tasks including grid packing and reduction operations
   as well as distributed GPU FFT computation.
 
-  Experimental support for CUDA-graphs scheduling has been added, which supports most GPU-resident runs that don't require CPU force computation.
+  Experimental support for CUDA-graphs scheduling has been added, which supports most GPU-resident runs that do not require CPU force computation.
+
+|Gromacs| version 2025:
+
+  Direct GPU communication is now enabled by default on supported setups. The feature can be disabled
+  using the ``GMX_DISABLE_DIRECT_GPU_COMM`` environment variable.
 
 
 Performance considerations for GPU tasks
@@ -1285,7 +1441,7 @@ Performance considerations for GPU tasks
    have vs the speed and number of GPUs you have.
 
 #) The GPU-resident parallelization mode (with update/constraints offloaded) is less
-   sensitive to the appropriate CPU-GPU balance than the force-offload mode. 
+   sensitive to the appropriate CPU-GPU balance than the force-offload mode.
 
 #) With slow/old GPUs and/or fast/modern CPUs with many
    cores, it might make more sense to let the CPU do PME calculation,
@@ -1338,7 +1494,7 @@ A few percent of runtime spent in launching work is normal,
 but in fast-iterating and multi-GPU parallel runs, costs of 10% or larger can be observed.
 Whether this has a significant performance impact depends on how much work
 within the main MD step is assigned to the CPU. With most or all force computation offloaded,
-and when the CPU is not involved in communication (e.g. with thread-MPI and direct GPU communication enabled) 
+and when the CPU is not involved in communication (e.g. with thread-MPI and direct GPU communication enabled)
 it may be that large launch costs do not lead to large performance losses.
 However, when the CPU is assigned computation (e.g. in free energy or pull/AWH simulations)
 or MPI communication is launched from the CPU (even with GPU-aware MPI), the
@@ -1389,7 +1545,7 @@ Currently supported hardware architectures are:
 - Intel iGPUs.
 
 Make sure that you have the latest drivers installed. For AMD GPUs,
-the compute-oriented `ROCm <https://rocm.docs.amd.com/en/latest/>`_ stack is recommended;
+the compute-oriented `ROCm`_ stack is recommended;
 alternatively, the AMDGPU-PRO stack is also compatible; using the outdated
 and unsupported ``fglrx`` proprietary driver and runtime is not recommended (but
 for certain older hardware that may be the only way to obtain support).
@@ -1428,7 +1584,7 @@ Known limitations of the OpenCL support
 
 Limitations in the current OpenCL support of interest to |Gromacs| users:
 
-- Intel integrated GPUs are supported. Intel CPUs and Xeon Phi are not supported.
+- Intel integrated GPUs are supported. Intel CPUs are not supported.
   Set ``-DGMX_GPU_NB_CLUSTER_SIZE=4`` when compiling |Gromacs| to run on consumer
   Intel GPUs (as opposed to Ponte Vecchio / Data Center Max GPUs).
 - Due to blocking behavior of some asynchronous task enqueuing functions
@@ -1455,104 +1611,14 @@ Please keep in mind the following environment variables that might be useful:
 
   - ``SYCL_CACHE_PERSISTENT=1``: enables caching of GPU kernels, reducing :ref:`gmx mdrun` startup time.
 
-In addition to ``-gpu_id`` option, backend-specific environment variables, like ``SYCL_DEVICE_FILTER``
+In addition to ``-gpu_id`` option, backend-specific environment variables, like ``ONEAPI_DEVICE_SELECTOR``
 or ``ROCR_VISIBLE_DEVICES``, could be used to select GPUs.
 
-Performance checklist
----------------------
+Running HIP version of mdrun
+----------------------------
 
-There are many different aspects that affect the performance of simulations in
-|Gromacs|. Most simulations require a lot of computational resources, therefore
-it can be worthwhile to optimize the use of those resources. Several issues
-mentioned in the list below could lead to a performance difference of a factor
-of 2. So it can be useful go through the checklist.
+Currently only limited offload capabilities are implemented for AMD HIP support. Please ensure you have a recent
+version of the ROCm toolkit and check the :ref:`AMD HIP installation guide <AMD-HIP>`.
 
-|Gromacs| configuration
-^^^^^^^^^^^^^^^^^^^^^^^
-
-* Don't use double precision unless you're absolute sure you need it.
-* Compile the FFTW library (yourself) with the correct flags on x86 (in most
-  cases, the correct flags are automatically configured).
-* On x86, use gcc as the compiler (not icc, pgi or the Cray compiler).
-* On POWER, use gcc instead of IBM's xlc.
-* Use a new compiler version, especially for gcc (e.g. from version 5 to 6
-  the performance of the compiled code improved a lot).
-* MPI library: OpenMPI usually has good performance and causes little trouble.
-* Make sure your compiler supports OpenMP (some versions of Clang don't).
-* If you have GPUs that support either CUDA, OpenCL, or SYCL, use them.
-
-  * Configure with ``-DGMX_GPU=CUDA``, ``-DGMX_GPU=OpenCL``, or ``-DGMX_GPU=SYCL``.
-  * For GPUs, use the newest available SDK for your GPU to take advantage of the
-    latest performance enhancements.
-  * Use a recent GPU driver.
-  * Make sure you use an :ref:`gmx mdrun` with ``GMX_SIMD`` appropriate for the CPU
-    architecture; the log file will contain a warning note if suboptimal setting is used.
-    However, prefer ``AVX2`` over ``AVX512`` in GPU or highly parallel MPI runs (for more
-    information see the :ref:`intra-core parallelization information <intra-core-parallelization>`).
-  * If compiling on a cluster head node, make sure that ``GMX_SIMD``
-    is appropriate for the compute nodes.
-
-Run setup
-^^^^^^^^^
-
-* For an approximately spherical solute, use a rhombic dodecahedron unit cell.
-* When using a time-step of <=2.5 fs, use :mdp-value:`constraints=h-bonds`
-  (and not :mdp-value:`constraints=all-bonds`), since:
-
-  * this is faster, especially with GPUs;
-  * it is necessary to be able to use GPU-resident mode;
-  * and most force fields have been parametrized with only bonds involving hydrogens constrained.
-
-* You can often increase the time-step to 4 fs by repartitioning hydrogen
-  masses using the ``mass-repartition-factor`` mdp option. This does not
-  affect equilibrium distributions, but makes dynamics slightly slower.
-* You can increase the time-step to 4 or 5 fs when using virtual interaction
-  sites (``gmx pdb2gmx -vsite h``).
-* For massively parallel runs with PME, you might need to try different numbers
-  of PME ranks (``gmx mdrun -npme ???``) to achieve best performance;
-  :ref:`gmx tune_pme` can help automate this search.
-* For massively parallel runs (also ``gmx mdrun -multidir``), or with a slow
-  network, global communication can become a bottleneck and you can reduce it
-  by choosing larger periods for algorithms such as temperature and
-  pressure coupling).
-
-Checking and improving performance
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-* Look at the end of the ``md.log`` file to see the performance and the cycle
-  counters and wall-clock time for different parts of the MD calculation. The
-  PP/PME load ratio is also printed, with a warning when a lot of performance is
-  lost due to imbalance.
-* Adjust the number of PME ranks and/or the cut-off and PME grid-spacing when
-  there is a large PP/PME imbalance. Note that even with a small reported
-  imbalance, the automated PME-tuning might have reduced the initial imbalance.
-  You could still gain performance by changing the mdp parameters or increasing
-  the number of PME ranks.
-* (Especially) In GPU-resident runs (``-update gpu``):
-
-  * Frequent virial or energy computation can have a large overhead (and this will not show up in the cycle counters).
-    To reduce this overhead, increase ``nstcalcenergy``;
-  * Frequent temperature or pressure coupling can have significant overhead; 
-    to reduce this, make sure to have as infrequent coupling as your algorithms allow (typically >=50-100 steps).
-
-* If the neighbor searching and/or domain decomposition takes a lot of time, increase ``nstlist``. If a Verlet
-  buffer tolerance is used, this is done automatically by :ref:`gmx mdrun`
-  and the pair-list buffer is increased to keep the energy drift constant.
-
-    * especially with multi-GPU runs, the automatic increasing of ``nstlist`` at ``mdrun``
-      startup can be conservative and larger value is often be optimal
-      (e.g. ``nstlist=200-300`` with PME and default Verlet buffer tolerance).
-
-    * odd values of nstlist should be avoided when using CUDA Graphs
-      to minimize the overhead associated with graph instantiation.
-
-* If ``Comm. energies`` takes a lot of time (a note will be printed in the log
-  file), increase ``nstcalcenergy``.
-* If all communication takes a lot of time, you might be running on too many
-  cores, or you could try running combined MPI/OpenMP parallelization with 2
-  or 4 OpenMP threads per MPI process.
-* In multi-GPU runs avoid using as many ranks as cores (or hardware threads) since
-  this introduces a major inefficiency due to overheads associated to GPUs sharing by several MPI ranks.
-  Use at most a few ranks per GPU, 1-3 ranks is generally optimal;
-  with GPU-resident mode and direct GPU communication typically 1 rank/GPU is best.
-
+If you are using CDNA hardware, please ensure that your |Gromacs| build has been configured to use 64-wide
+execution on the device.

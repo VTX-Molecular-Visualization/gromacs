@@ -85,7 +85,6 @@
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
-#include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/futil.h"
 #include "gromacs/utility/gmxassert.h"
@@ -107,9 +106,9 @@ static void gen_pairs(const InteractionsOfType& nbs, InteractionsOfType* pairs, 
     int  nnn = static_cast<int>(std::sqrt(static_cast<double>(ntp)));
     GMX_ASSERT(nnn * nnn == ntp,
                "Number of pairs of generated non-bonded parameters should be a perfect square");
-    int nrfp  = NRFP(F_LJ);
-    int nrfpA = interaction_function[F_LJ14].nrfpA;
-    int nrfpB = interaction_function[F_LJ14].nrfpB;
+    int nrfp  = NRFP(InteractionFunction::LennardJonesShortRange);
+    int nrfpA = interaction_function[InteractionFunction::LennardJones14].nrfpA;
+    int nrfpB = interaction_function[InteractionFunction::LennardJones14].nrfpB;
 
     if ((nrfp != nrfpA) || (nrfpA != nrfpB))
     {
@@ -221,12 +220,12 @@ static std::string describeAtomsForRBDihedralOfGivenType(const gmx_mtop_t& mtop,
 {
     for (const auto& molt : mtop.moltype)
     {
-        const int* ia = molt.ilist[F_RBDIHS].iatoms.data();
-        for (int i = 0; (i < molt.ilist[F_RBDIHS].size());)
+        const int* ia = molt.ilist[InteractionFunction::RyckaertBellemansDihedrals].iatoms.data();
+        for (int i = 0; (i < molt.ilist[InteractionFunction::RyckaertBellemansDihedrals].size());)
         {
-            const int type  = ia[0];
-            const int ftype = mtop.ffparams.functype[type];
-            const int nra   = interaction_function[ftype].nratoms;
+            const int                 type  = ia[0];
+            const InteractionFunction ftype = mtop.ffparams.functype[type];
+            const int                 nra   = interaction_function[ftype].nratoms;
             if (type == interactionType)
             {
                 return gmx::formatString(
@@ -268,8 +267,8 @@ void checkRBDihedralSum(const gmx_mtop_t& mtop, const t_inputrec& ir, WarningHan
 
     for (int j = 0; j < gmx::ssize(mtop.ffparams.functype); ++j)
     {
-        int ftype = mtop.ffparams.functype[j];
-        if (ftype == F_RBDIHS)
+        InteractionFunction ftype = mtop.ffparams.functype[j];
+        if (ftype == InteractionFunction::RyckaertBellemansDihedrals)
         {
             const t_iparams& params = mtop.ffparams.iparams[j];
             const real       sum_a =
@@ -303,7 +302,8 @@ void checkRBDihedralSum(const gmx_mtop_t& mtop, const t_inputrec& ir, WarningHan
     // originally defined. We can however go through the molecule types and print one instance of
     // the offending dihedral.
 
-    auto generateMessage = [](int numDihedrals, const std::string& note, const std::string& involvedAtoms) {
+    auto generateMessage = [](int numDihedrals, const std::string& note, const std::string& involvedAtoms)
+    {
         return gmx::formatString(
                 "%d dihedrals with function type 3 (Ryckaert-Bellemans or Fourier) have "
                 "coefficients %s"
@@ -403,7 +403,7 @@ static void get_nbparm(char* nb_str, char* comb_str, VanDerWaalsPotential* nb, C
     }
     if (*nb == VanDerWaalsPotential::Count)
     {
-        int integerValue = strtol(nb_str, nullptr, 10);
+        int integerValue = std::strtol(nb_str, nullptr, 10);
         if ((integerValue < 1) || (integerValue >= static_cast<int>(VanDerWaalsPotential::Count)))
         {
             std::string message =
@@ -428,7 +428,7 @@ static void get_nbparm(char* nb_str, char* comb_str, VanDerWaalsPotential* nb, C
     }
     if (*comb == CombinationRule::Count)
     {
-        int integerValue = strtol(comb_str, nullptr, 10);
+        int integerValue = std::strtol(comb_str, nullptr, 10);
         if ((integerValue < 1) || (integerValue >= static_cast<int>(CombinationRule::Count)))
         {
             std::string message =
@@ -471,12 +471,12 @@ static std::vector<char*> cpp_opts(const char* define, const char* include, Warn
             ptr = cppadds[n];
             while (*ptr != '\0')
             {
-                while ((*ptr != '\0') && isspace(*ptr))
+                while ((*ptr != '\0') && std::isspace(*ptr))
                 {
                     ptr++;
                 }
                 rptr = ptr;
-                while ((*rptr != '\0') && !isspace(*rptr))
+                while ((*rptr != '\0') && !std::isspace(*rptr))
                 {
                     rptr++;
                 }
@@ -484,8 +484,8 @@ static std::vector<char*> cpp_opts(const char* define, const char* include, Warn
                 if (len > 2)
                 {
                     snew(buf, (len + 1));
-                    strncpy(buf, ptr, len);
-                    if (strstr(ptr, option[n]) != ptr)
+                    std::strncpy(buf, ptr, len);
+                    if (std::strstr(ptr, option[n]) != ptr)
                     {
                         wi->setFileAndLineNumber("mdp file", -1);
                         sprintf(warn_buf, "Malformed %s option %s", nopt[n], buf);
@@ -539,18 +539,18 @@ static char** read_topol(const char*                                 infile,
                          PreprocessingAtomTypes*                     atypes,
                          std::vector<MoleculeInformation>*           molinfo,
                          std::unique_ptr<MoleculeInformation>*       intermolecular_interactions,
-                         gmx::ArrayRef<InteractionsOfType>           interactions,
-                         CombinationRule*                            combination_rule,
-                         double*                                     reppow,
-                         t_gromppopts*                               opts,
-                         real*                                       fudgeQQ,
-                         std::vector<gmx_molblock_t>*                molblock,
-                         bool*                ffParametrizedWithHBondConstraints,
-                         bool                 bFEP,
-                         bool                 bZero,
-                         bool                 usingFullRangeElectrostatics,
-                         WarningHandler*      wi,
-                         const gmx::MDLogger& logger)
+                         gmx::EnumerationArray<InteractionFunction, InteractionsOfType>& interactions,
+                         CombinationRule*             combination_rule,
+                         double*                      reppow,
+                         t_gromppopts*                opts,
+                         real*                        fudgeQQ,
+                         std::vector<gmx_molblock_t>* molblock,
+                         bool*                        ffParametrizedWithHBondConstraints,
+                         bool                         bFEP,
+                         bool                         bZero,
+                         bool                         usingFullRangeElectrostatics,
+                         WarningHandler*              wi,
+                         const gmx::MDLogger&         logger)
 {
     FILE*                out;
     int                  sl;
@@ -608,9 +608,8 @@ static char** read_topol(const char*                                 infile,
 
     *reppow = 12.0; /* Default value for repulsion power     */
 
-    /* Init the number of CMAP torsion angles  and grid spacing */
-    interactions[F_CMAP].cmapGridSpacing_ = 0;
-    interactions[F_CMAP].numCmaps_        = 0;
+    /* Init the number of CMAP torsion angles */
+    interactions[InteractionFunction::DihedralEnergyCorrectionMap].numCmaps_ = 0;
 
     bWarn_copy_A_B = bFEP;
 
@@ -641,7 +640,7 @@ static char** read_topol(const char*                                 infile,
             pline = gmx_strdup(line);
 
             /* Strip trailing '\' from pline, if it exists */
-            sl = strlen(pline);
+            sl = std::strlen(pline);
             if ((sl > 0) && (pline[sl - 1] == CONTINUE))
             {
                 pline[sl - 1] = ' ';
@@ -658,7 +657,7 @@ static char** read_topol(const char*                                 infile,
                  */
                 tmp_line = gmx_strdup(line);
 
-                sl = strlen(tmp_line);
+                sl = std::strlen(tmp_line);
                 if ((sl > 0) && (tmp_line[sl - 1] == CONTINUE))
                 {
                     tmp_line[sl - 1] = ' ';
@@ -677,8 +676,8 @@ static char** read_topol(const char*                                 infile,
                     }
                 }
 
-                srenew(pline, strlen(pline) + strlen(tmp_line) + 1);
-                strcat(pline, tmp_line);
+                srenew(pline, std::strlen(pline) + std::strlen(tmp_line) + 1);
+                std::strcat(pline, tmp_line);
                 sfree(tmp_line);
             }
 
@@ -687,7 +686,7 @@ static char** read_topol(const char*                                 infile,
             trim(pline);
 
             /* if there is something left... */
-            if (static_cast<int>(strlen(pline)) > 0)
+            if (static_cast<int>(std::strlen(pline)) > 0)
             {
                 if (pline[0] == OPENDIR)
                 {
@@ -696,7 +695,7 @@ static char** read_topol(const char*                                 infile,
                      * skip spaces and tabs on either side of directive
                      */
                     dirstr = gmx_strdup((pline + 1));
-                    if ((dummy2 = strchr(dirstr, CLOSEDIR)) != nullptr)
+                    if ((dummy2 = std::strchr(dirstr, CLOSEDIR)) != nullptr)
                     {
                         (*dummy2) = 0;
                     }
@@ -735,7 +734,7 @@ static char** read_topol(const char*                                 infile,
                                  * by making a "molecule" of the size of the system.
                                  */
                                 *intermolecular_interactions = std::make_unique<MoleculeInformation>();
-                                mi0                          = intermolecular_interactions->get();
+                                mi0 = intermolecular_interactions->get();
                                 mi0->initMolInfo();
                                 make_atoms_sys(*molblock, *molinfo, &mi0->atoms);
                             }
@@ -816,7 +815,12 @@ static char** read_topol(const char*                                 infile,
                         case Directive::d_pairtypes:
                             if (bGenPairs)
                             {
-                                push_nbt(d, pair, atypes, pline, F_LJ14, wi);
+                                push_nbt(d,
+                                         pair,
+                                         atypes,
+                                         pline,
+                                         static_cast<int>(InteractionFunction::LennardJones14),
+                                         wi);
                             }
                             else
                             {
@@ -848,7 +852,13 @@ static char** read_topol(const char*                                 infile,
                             break;
 
                         case Directive::d_cmaptypes:
-                            push_cmaptype(d, interactions, NRAL(F_CMAP), atypes, &bondAtomType, pline, wi);
+                            push_cmaptype(d,
+                                          interactions,
+                                          NRAL(InteractionFunction::DihedralEnergyCorrectionMap),
+                                          atypes,
+                                          &bondAtomType,
+                                          pline,
+                                          wi);
                             break;
 
                         case Directive::d_moleculetype:
@@ -886,11 +896,14 @@ static char** read_topol(const char*                                 infile,
                                 if (bGenPairs)
                                 {
                                     gen_pairs((interactions[static_cast<int>(nb_funct)]),
-                                              &(interactions[F_LJ14]),
+                                              &(interactions[InteractionFunction::LennardJones14]),
                                               fudgeLJ,
                                               *combination_rule);
                                     ncopy = copy_nbparams(
-                                            pair, static_cast<int>(nb_funct), &(interactions[F_LJ14]), ntype);
+                                            pair,
+                                            static_cast<int>(nb_funct),
+                                            &(interactions[InteractionFunction::LennardJones14]),
+                                            ntype);
                                     GMX_LOG(logger.info)
                                             .asParagraph()
                                             .appendTextFormatted(
@@ -933,6 +946,7 @@ static char** read_topol(const char*                                 infile,
                                       bGenPairs,
                                       *fudgeQQ,
                                       bZero,
+                                      false,
                                       &bWarn_copy_A_B,
                                       wi);
                             break;
@@ -950,6 +964,7 @@ static char** read_topol(const char*                                 infile,
                                       FALSE,
                                       1.0,
                                       bZero,
+                                      false,
                                       &bWarn_copy_A_B,
                                       wi);
                             break;
@@ -985,6 +1000,7 @@ static char** read_topol(const char*                                 infile,
                                       bGenPairs,
                                       *fudgeQQ,
                                       bZero,
+                                      cpp_find_define(&handle, "_FF_AMBER_LEAP_ATOM_REORDERING") != nullptr,
                                       &bWarn_copy_A_B,
                                       wi);
                             break;
@@ -1031,7 +1047,7 @@ static char** read_topol(const char*                                 infile,
 
                             bCouple = (opts->couple_moltype != nullptr
                                        && (gmx_strcasecmp("system", opts->couple_moltype) == 0
-                                           || strcmp(*(mi0->name), opts->couple_moltype) == 0));
+                                           || std::strcmp(*(mi0->name), opts->couple_moltype) == 0));
                             if (bCouple)
                             {
                                 nmol_couple += nrcopies;
@@ -1047,7 +1063,7 @@ static char** read_topol(const char*                                 infile,
                                             "Excluding %d bonded neighbours molecule type '%s'",
                                             mi0->nrexcl,
                                             *mi0->name);
-                            sum_q(&mi0->atoms, nrcopies, &qt, &qBt);
+
                             if (!mi0->bProcessed)
                             {
                                 generate_excl(mi0->nrexcl, mi0->atoms.nr, mi0->interactions, &(mi0->excls));
@@ -1069,13 +1085,26 @@ static char** read_topol(const char*                                 infile,
                                 stupid_fill_block(&mi0->mols, mi0->atoms.nr, TRUE);
                                 mi0->bProcessed = TRUE;
                             }
+
+                            // After, potentially, applying decoupling we can accumulate the charge sum
+                            sum_q(&mi0->atoms, nrcopies, &qt, &qBt);
+
                             break;
                         }
                         default:
-                            GMX_LOG(logger.warning)
-                                    .asParagraph()
-                                    .appendTextFormatted("case: %d", static_cast<int>(d));
-                            gmx_incons("unknown directive");
+                            if (d == Directive::d_intermolecular_interactions)
+                            {
+                                gmx_fatal(FARGS,
+                                          "Expected a directive after directive '%s', not a line "
+                                          "with: '%s'",
+                                          enumValueToString(d),
+                                          line);
+                            }
+                            else
+                            {
+                                GMX_RELEASE_ASSERT(
+                                        false, "Unhandled combination of a line after a directive");
+                            }
                     }
                 }
             }
@@ -1114,6 +1143,33 @@ static char** read_topol(const char*                                 infile,
         if (cpp_find_define(&handle, ffDefine))
         {
             *ffParametrizedWithHBondConstraints = true;
+        }
+    }
+
+    if (cpp_find_define(&handle, "_FF_AMBER_LEAP_ATOM_REORDERING") != nullptr)
+    {
+        for (auto ftype : { InteractionFunction::ProperDihedrals,
+                            InteractionFunction::RyckaertBellemansDihedrals,
+                            InteractionFunction::ImproperDihedrals,
+                            InteractionFunction::PeriodicImproperDihedrals })
+        {
+            GMX_ASSERT(interactions[ftype].leapDihedralTypes_.size()
+                               == interactions[ftype].leapDihedralIndices_.size(),
+                       "Numbers of AMBER LEaP dihedral types and their first occurrences should "
+                       "match");
+            if (!interactions[ftype].leapDihedralTypes_.empty())
+            {
+                GMX_LOG(logger.info)
+                        .asParagraph()
+                        .appendTextFormatted(
+                                "To match AMBER LEaP ordering, reordered %zu and kept %zu %s "
+                                "ordered as encountered (%zu %s types total)\n",
+                                interactions[ftype].numLeapReorderingPerformed,
+                                interactions[ftype].numLeapReorderingNotNecessary,
+                                interaction_function[ftype].longname,
+                                interactions[ftype].leapDihedralTypes_.size(),
+                                interaction_function[ftype].longname);
+            }
         }
     }
 
@@ -1186,24 +1242,24 @@ static char** read_topol(const char*                                 infile,
     return title;
 }
 
-char** do_top(bool                                        bVerbose,
-              const char*                                 topfile,
-              const std::optional<std::filesystem::path>& topppfile,
-              t_gromppopts*                               opts,
-              bool                                        bZero,
-              t_symtab*                                   symtab,
-              gmx::ArrayRef<InteractionsOfType>           interactions,
-              CombinationRule*                            combination_rule,
-              double*                                     repulsion_power,
-              real*                                       fudgeQQ,
-              PreprocessingAtomTypes*                     atypes,
-              std::vector<MoleculeInformation>*           molinfo,
-              std::unique_ptr<MoleculeInformation>*       intermolecular_interactions,
-              const t_inputrec*                           ir,
-              std::vector<gmx_molblock_t>*                molblock,
-              bool*                                       ffParametrizedWithHBondConstraints,
-              WarningHandler*                             wi,
-              const gmx::MDLogger&                        logger)
+char** do_top(bool                                                            bVerbose,
+              const char*                                                     topfile,
+              const std::optional<std::filesystem::path>&                     topppfile,
+              t_gromppopts*                                                   opts,
+              bool                                                            bZero,
+              t_symtab*                                                       symtab,
+              gmx::EnumerationArray<InteractionFunction, InteractionsOfType>& interactions,
+              CombinationRule*                                                combination_rule,
+              double*                                                         repulsion_power,
+              real*                                                           fudgeQQ,
+              PreprocessingAtomTypes*                                         atypes,
+              std::vector<MoleculeInformation>*                               molinfo,
+              std::unique_ptr<MoleculeInformation>* intermolecular_interactions,
+              const t_inputrec*                     ir,
+              std::vector<gmx_molblock_t>*          molblock,
+              bool*                                 ffParametrizedWithHBondConstraints,
+              WarningHandler*                       wi,
+              const gmx::MDLogger&                  logger)
 {
     char** title;
 
@@ -1247,7 +1303,7 @@ char** do_top(bool                                        bVerbose,
  * Exclude molecular interactions for QM atoms handled by MiMic.
  *
  * Update the exclusion lists to include all QM atoms of this molecule,
- * replace bonds between QM atoms with CONNBOND and
+ * replace bonds between QM atoms with InteractionFunction::ConnectBonds and
  * set charges of QM atoms to 0.
  *
  * \param[in,out] molt molecule type with QM atoms
@@ -1260,7 +1316,7 @@ static void generate_qmexcl_moltype(gmx_moltype_t*       molt,
                                     t_inputrec*          ir,
                                     const gmx::MDLogger& logger)
 {
-    /* This routine expects molt->ilist to be of size F_NRE and ordered. */
+    /* This routine expects molt->ilist to be of size InteractionFunction::Count and ordered. */
 
     /* generates the exclusions between the individual QM atoms, as
      * these interactions should be handled by the QM subroutines and
@@ -1330,21 +1386,21 @@ static void generate_qmexcl_moltype(gmx_moltype_t*       molt,
      */
     int ftype_connbond = 0;
     int ind_connbond   = 0;
-    if (!molt->ilist[F_CONNBONDS].empty())
+    if (!molt->ilist[InteractionFunction::ConnectBonds].empty())
     {
         GMX_LOG(logger.info)
                 .asParagraph()
                 .appendTextFormatted("nr. of CONNBONDS present already: %d",
-                                     molt->ilist[F_CONNBONDS].size() / 3);
-        ftype_connbond = molt->ilist[F_CONNBONDS].iatoms[0];
-        ind_connbond   = molt->ilist[F_CONNBONDS].size();
+                                     molt->ilist[InteractionFunction::ConnectBonds].size() / 3);
+        ftype_connbond = molt->ilist[InteractionFunction::ConnectBonds].iatoms[0];
+        ind_connbond   = molt->ilist[InteractionFunction::ConnectBonds].size();
     }
     /* now we delete all bonded interactions, except the ones describing
      * a chemical bond. These are converted to CONNBONDS
      */
-    for (int ftype = 0; ftype < F_NRE; ftype++)
+    for (const auto ftype : gmx::EnumerationWrapper<InteractionFunction>{})
     {
-        if (!(interaction_function[ftype].flags & IF_BOND) || ftype == F_CONNBONDS)
+        if (!(interaction_function[ftype].flags & IF_BOND) || ftype == InteractionFunction::ConnectBonds)
         {
             continue;
         }
@@ -1364,11 +1420,11 @@ static void generate_qmexcl_moltype(gmx_moltype_t*       molt,
                 int a2 = molt->ilist[ftype].iatoms[1 + j + 1];
                 bexcl  = (bQMMM[a1] && bQMMM[a2]);
                 /* A chemical bond between two QM atoms will be copied to
-                 * the F_CONNBONDS list, for reasons mentioned above.
+                 * the InteractionFunction::ConnectBonds list, for reasons mentioned above.
                  */
                 if (bexcl && IS_CHEMBOND(ftype))
                 {
-                    InteractionList& ilist = molt->ilist[F_CONNBONDS];
+                    InteractionList& ilist = molt->ilist[InteractionFunction::ConnectBonds];
                     ilist.iatoms.resize(ind_connbond + 3);
                     ilist.iatoms[ind_connbond++] = ftype_connbond;
                     ilist.iatoms[ind_connbond++] = a1;
@@ -1397,7 +1453,7 @@ static void generate_qmexcl_moltype(gmx_moltype_t*       molt,
                  * we do not need do additional exclusions here */
                 bexcl = numQmAtoms == nratoms;
 
-                if (bexcl && ftype == F_SETTLE)
+                if (bexcl && ftype == InteractionFunction::SETTLE)
                 {
                     gmx_fatal(FARGS,
                               "Can not apply QM to molecules with SETTLE, replace the moleculetype "
@@ -1436,24 +1492,24 @@ static void generate_qmexcl_moltype(gmx_moltype_t*       molt,
     qmexcl.nra = qm_nr * (qm_nr + link_nr) + link_nr * qm_nr;
     snew(qmexcl.index, qmexcl.nr + 1);
     snew(qmexcl.a, qmexcl.nra);
-    int j = 0;
+    int l = 0;
     for (int i = 0; i < qmexcl.nr; i++)
     {
-        qmexcl.index[i] = j;
+        qmexcl.index[i] = l;
         if (bQMMM[i])
         {
             for (int k = 0; k < qm_nr; k++)
             {
-                qmexcl.a[k + j] = qm_arr[k];
+                qmexcl.a[k + l] = qm_arr[k];
             }
             for (int k = 0; k < link_nr; k++)
             {
-                qmexcl.a[qm_nr + k + j] = link_arr[k];
+                qmexcl.a[qm_nr + k + l] = link_arr[k];
             }
-            j += (qm_nr + link_nr);
+            l += (qm_nr + link_nr);
         }
     }
-    qmexcl.index[qmexcl.nr] = j;
+    qmexcl.index[qmexcl.nr] = l;
 
     /* and merging with the exclusions already present in sys.
      */
@@ -1467,7 +1523,7 @@ static void generate_qmexcl_moltype(gmx_moltype_t*       molt,
      * as this interaction is already accounted for by the QM, so also
      * here we run the risk of double counting! We proceed in a similar
      * way as we did above for the other bonded interactions: */
-    for (int i = F_LJ14; i < F_COUL14; i++)
+    for (InteractionFunction i : { InteractionFunction::LennardJones14, InteractionFunction::Coulomb14 })
     {
         int nratoms = interaction_function[i].nratoms;
         int j       = 0;
@@ -1495,14 +1551,14 @@ static void generate_qmexcl_moltype(gmx_moltype_t*       molt,
         }
     }
 
-    free(qm_arr);
-    free(bQMMM);
-    free(link_arr);
+    std::free(qm_arr);
+    std::free(bQMMM);
+    std::free(link_arr);
 } /* generate_qmexcl */
 
 void generate_qmexcl(gmx_mtop_t* sys, t_inputrec* ir, const gmx::MDLogger& logger)
 {
-    /* This routine expects molt->molt[m].ilist to be of size F_NRE and ordered.
+    /* This routine expects molt->molt[m].ilist to be of size InteractionFunction::Count and ordered.
      */
 
     unsigned char*  grpnr;

@@ -44,8 +44,13 @@
 #ifndef GMX_NBNXM_BOUNDINGBOX_SIMD_H
 #define GMX_NBNXM_BOUNDINGBOX_SIMD_H
 
-#include "gromacs/math/vec.h"
+#include "config.h"
+
+#include "gromacs/nbnxm/pairlistparams.h"
 #include "gromacs/simd/simd.h"
+#include "gromacs/utility/vec.h"
+
+#include "nbnxm_enums.h"
 
 namespace gmx
 {
@@ -76,12 +81,15 @@ static constexpr int c_numBoundingBoxBounds1D = 2;
 #            define NBNXN_SEARCH_SIMD4_FLOAT_X_BB 0
 #        endif
 
-/* Store bounding boxes corners as quadruplets: xxxxyyyyzzzz
+/* Whether we store bounding boxes corners as quadruplets: xxxxyyyyzzzz
  *
- * The packed bounding box coordinate stride is always set to 4.
+ * The packed bounding box coordinate stride is always set to 4 if the number of cells is >=4.
  * With AVX we could use 8, but that turns out not to be faster.
  */
-#        define NBNXN_BBXXXX 1
+static constexpr bool sc_boundingBoxCornersAsQuadruplets(const PairlistType pairlistType)
+{
+    return sc_gpuNumClusterPerCell(pairlistType) >= 4;
+}
 
 //! The number of bounding boxes in a pack, also the size of a pack along one dimension
 static constexpr int c_packedBoundingBoxesDimSize = GMX_SIMD4_WIDTH;
@@ -99,7 +107,22 @@ static constexpr int packedBoundingBoxesIndex(int clusterIndex)
 #    else /* NBNXN_SEARCH_BB_SIMD4 */
 
 #        define NBNXN_SEARCH_SIMD4_FLOAT_X_BB 0
-#        define NBNXN_BBXXXX 0
+
+static constexpr bool sc_boundingBoxCornersAsQuadruplets(const PairlistType gmx_unused pairlistType)
+{
+    return false;
+}
+
+//! The number of bounding boxes in a pack, also the size of a pack along one dimension
+static constexpr int c_packedBoundingBoxesDimSize = 1;
+
+//! Total number of corners (floats) in a pack of bounding boxes
+static constexpr int c_packedBoundingBoxesSize = 1;
+
+static constexpr int packedBoundingBoxesIndex(int gmx_unused clusterIndex)
+{
+    return 0;
+}
 
 #    endif /* NBNXN_SEARCH_BB_SIMD4 */
 

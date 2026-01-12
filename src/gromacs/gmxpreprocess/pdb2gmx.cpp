@@ -70,8 +70,6 @@
 #include "gromacs/gmxpreprocess/toputil.h"
 #include "gromacs/gmxpreprocess/xlate.h"
 #include "gromacs/math/functions.h"
-#include "gromacs/math/vec.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/options/basicoptions.h"
 #include "gromacs/options/filenameoption.h"
 #include "gromacs/options/ioptionscontainer.h"
@@ -98,6 +96,8 @@
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/strdb.h"
 #include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "hackblock.h"
 #include "resall.h"
@@ -129,9 +129,10 @@ const char* res2bb_notermini(const std::string& name, gmx::ArrayRef<const RtpRen
     /* NOTE: This function returns the main building block name,
      *       it does not take terminal renaming into account.
      */
-    auto found = std::find_if(rr.begin(), rr.end(), [&name](const auto& rename) {
-        return gmx::equalCaseInsensitive(name, rename.gmx);
-    });
+    auto found = std::find_if(rr.begin(),
+                              rr.end(),
+                              [&name](const auto& rename)
+                              { return gmx::equalCaseInsensitive(name, rename.gmx); });
     return found != rr.end() ? found->main.c_str() : name.c_str();
 }
 
@@ -264,7 +265,7 @@ const char* select_res(int resnr, const char* title, gmx::ArrayRef<const RtpRena
                res2bb_notermini(enumValueToString(sel), rr));
     }
     printf("\nType a number:");
-    fflush(stdout);
+    std::fflush(stdout);
 
     int userSelection;
     if (scanf("%d", &userSelection) != 1)
@@ -365,10 +366,13 @@ void read_rtprename(const char* fname, FILE* fp, std::vector<RtpRename>* rtprena
 
 std::string search_resrename(gmx::ArrayRef<const RtpRename> rr, const char* name, bool bStart, bool bEnd, bool bCompareFFRTPname)
 {
-    auto found = std::find_if(rr.begin(), rr.end(), [&name, &bCompareFFRTPname](const auto& rename) {
-        return ((!bCompareFFRTPname && (name == rename.gmx))
-                || (bCompareFFRTPname && (name == rename.main)));
-    });
+    auto found = std::find_if(rr.begin(),
+                              rr.end(),
+                              [&name, &bCompareFFRTPname](const auto& rename)
+                              {
+                                  return ((!bCompareFFRTPname && (name == rename.gmx))
+                                          || (bCompareFFRTPname && (name == rename.main)));
+                              });
 
     std::string newName;
     /* If found in the database, rename this residue's rtp building block,
@@ -415,7 +419,7 @@ void rename_resrtp(t_atoms*                       pdba,
                    bool                           bVerbose,
                    const gmx::MDLogger&           logger)
 {
-    bool bFFRTPTERRNM = (getenv("GMX_NO_FFRTP_TER_RENAME") == nullptr);
+    bool bFFRTPTERRNM = (std::getenv("GMX_NO_FFRTP_TER_RENAME") == nullptr);
 
     for (int r = 0; r < pdba->nres; r++)
     {
@@ -486,7 +490,7 @@ void rename_pdbres(t_atoms* pdba, const char* oldnm, const char* newnm, bool bFu
     {
         resnm = *pdba->resinfo[i].name;
         if ((bFullCompare && (gmx::equalCaseInsensitive(resnm, oldnm)))
-            || (!bFullCompare && strstr(resnm, oldnm) != nullptr))
+            || (!bFullCompare && std::strstr(resnm, oldnm) != nullptr))
         {
             /* Rename the residue name (not the rtp name) */
             pdba->resinfo[i].name = put_symtab(symtab, newnm);
@@ -518,7 +522,7 @@ void renameResidue(const gmx::MDLogger& logger,
         /* We have not set the rtp name yet, use the residue name */
         const char* residueNameInInputConfiguration = *pdba->resinfo[i].name;
         if ((bFullCompare && (gmx::equalCaseInsensitive(residueNameInInputConfiguration, oldnm)))
-            || (!bFullCompare && strstr(residueNameInInputConfiguration, oldnm) != nullptr))
+            || (!bFullCompare && std::strstr(residueNameInInputConfiguration, oldnm) != nullptr))
         {
             /* Change the rtp building block name */
             pdba->resinfo[i].rtp  = put_symtab(symtab, newnm);
@@ -562,8 +566,8 @@ void renameResidueInteractively(t_atoms*    pdba,
     {
         /* We have not set the rtp name yet, use the residue name */
         char* residueNameInInputConfiguration = *pdba->resinfo[i].name;
-        if ((bFullCompare && (strcmp(residueNameInInputConfiguration, oldnm) == 0))
-            || (!bFullCompare && strstr(residueNameInInputConfiguration, oldnm) != nullptr))
+        if ((bFullCompare && (std::strcmp(residueNameInInputConfiguration, oldnm) == 0))
+            || (!bFullCompare && std::strstr(residueNameInInputConfiguration, oldnm) != nullptr))
         {
             const char* interactiveRtpChoice = gettp(i, rr);
             pdba->resinfo[i].rtp             = put_symtab(symtab, interactiveRtpChoice);
@@ -946,7 +950,7 @@ int remove_duplicate_atoms(t_atoms* pdba, gmx::ArrayRef<gmx::RVec> x, bool bVerb
         /* compare 'i' and 'i-1', throw away 'i' if they are identical
            this is a 'while' because multiple alternate locations can be present */
         while ((i < pdba->nr) && (pdba->atom[i - 1].resind == pdba->atom[i].resind)
-               && (strcmp(*pdba->atomname[i - 1], *pdba->atomname[i]) == 0))
+               && (std::strcmp(*pdba->atomname[i - 1], *pdba->atomname[i]) == 0))
         {
             ndel++;
             if (bVerbose)
@@ -1416,7 +1420,7 @@ void modify_chain_numbers(t_atoms* pdba, ChainSeparationType chainSeparation, co
                                         this_atomnum,
                                         this_atomname);
 
-                        if (nullptr == fgets(select, STRLEN - 1, stdin))
+                        if (nullptr == std::fgets(select, STRLEN - 1, stdin))
                         {
                             gmx_fatal(FARGS, "Error reading from stdin");
                         }
@@ -1438,7 +1442,7 @@ void modify_chain_numbers(t_atoms* pdba, ChainSeparationType chainSeparation, co
 }
 
 bool checkChainCyclicity(t_atoms*                               pdba,
-                         rvec*                                  pdbx,
+                         gmx::ArrayRef<const gmx::RVec>         x,
                          int                                    start_ter,
                          int                                    end_ter,
                          gmx::ArrayRef<const PreprocessResidue> rtpFFDB,
@@ -1451,9 +1455,9 @@ bool checkChainCyclicity(t_atoms*                               pdba,
     {
         return false;
     }
-    int         ai = -1, aj = -1;
-    char*       rtpname = *(pdba->resinfo[start_ter].rtp);
-    std::string newName = search_resrename(rr, rtpname, false, false, false);
+    std::optional<int> ai, aj;
+    char*              rtpname = *(pdba->resinfo[start_ter].rtp);
+    std::string        newName = search_resrename(rr, rtpname, false, false, false);
     if (newName.empty())
     {
         newName = rtpname;
@@ -1461,6 +1465,7 @@ bool checkChainCyclicity(t_atoms*                               pdba,
     auto        res = getDatabaseEntry(newName, rtpFFDB);
     const char *name_ai, *name_aj;
 
+    bool bothFound = false;
     for (const auto& patch : res->rb[BondedTypes::Bonds].b)
     { /* Search backward bond for n/5' terminus */
         name_ai = patch.ai().c_str();
@@ -1475,13 +1480,14 @@ bool checkChainCyclicity(t_atoms*                               pdba,
             aj = search_res_atom(++name_aj, end_ter, pdba, "check", TRUE);
             ai = search_res_atom(name_ai, start_ter, pdba, "check", TRUE);
         }
-        if (ai >= 0 && aj >= 0)
+        if (ai.has_value() and aj.has_value())
         {
+            bothFound = true;
             break; /* Found */
         }
     }
 
-    if (!(ai >= 0 && aj >= 0))
+    if (!bothFound)
     {
         rtpname = *(pdba->resinfo[end_ter].rtp);
         newName = search_resrename(rr, rtpname, false, false, false);
@@ -1506,16 +1512,17 @@ bool checkChainCyclicity(t_atoms*                               pdba,
                 ai = search_res_atom(name_ai, end_ter, pdba, "check", TRUE);
                 aj = search_res_atom(++name_aj, start_ter, pdba, "check", TRUE);
             }
-            if (ai >= 0 && aj >= 0)
+            if (ai.has_value() and aj.has_value())
             {
+                bothFound = true;
                 break;
             }
         }
     }
 
-    if (ai >= 0 && aj >= 0)
+    if (bothFound)
     {
-        real dist = distance2(pdbx[ai], pdbx[aj]);
+        real dist = distance2(x[ai.value()], x[aj.value()]);
         /* it is better to read bond length from ffbonded.itp */
         return (dist < gmx::square(long_bond_dist_) && dist > gmx::square(short_bond_dist_));
     }
@@ -1567,17 +1574,28 @@ enum class WaterType : int
 {
     Select,
     None,
+    Opc,
+    Opc3,
     Spc,
     SpcE,
     Tip3p,
     Tip4p,
+    Tip4pew,
     Tip5p,
     Tips3p,
     Count
 };
-const gmx::EnumerationArray<WaterType, const char*> c_waterTypeNames = {
-    { "select", "none", "spc", "spce", "tip3p", "tip4p", "tip5p", "tips3p" }
-};
+const gmx::EnumerationArray<WaterType, const char*> c_waterTypeNames = { { "select",
+                                                                           "none",
+                                                                           "opc",
+                                                                           "opc3",
+                                                                           "spc",
+                                                                           "spce",
+                                                                           "tip3p",
+                                                                           "tip4p",
+                                                                           "tip4pew",
+                                                                           "tip5p",
+                                                                           "tips3p" } };
 
 enum class MergeType : int
 {
@@ -1589,6 +1607,16 @@ enum class MergeType : int
 const gmx::EnumerationArray<MergeType, const char*> c_mergeTypeNames = {
     { "no", "all", "interactive" }
 };
+
+enum class RtpResType : int
+{
+    Auto,
+    No,
+    Yes,
+    Count
+};
+const gmx::EnumerationArray<RtpResType, const char*> c_rtpResTypeNames = { { "auto", "no", "yes" } };
+
 
 } // namespace
 
@@ -1609,6 +1637,7 @@ public:
         vsitesType_(VSitesType::None),
         waterType_(WaterType::Select),
         mergeType_(MergeType::No),
+        RTPresname_(RtpResType::Auto),
         itp_file_(nullptr),
         mHmult_(0)
     {
@@ -1645,10 +1674,8 @@ private:
     bool bRemoveH_;
     bool bDeuterate_;
     bool bVerbose_;
-    bool bChargeGroups_;
     bool bCmap_;
     bool bRenumRes_;
-    bool bRTPresname_;
     bool bIndexSet_;
     bool bOutputSet_;
     bool bVsites_;
@@ -1674,6 +1701,7 @@ private:
     VSitesType          vsitesType_;
     WaterType           waterType_;
     MergeType           mergeType_;
+    RtpResType          RTPresname_;
 
     FILE*                              itp_file_;
     char                               forcefield_[STRLEN];
@@ -1878,19 +1906,15 @@ void pdb2gmx::initOptions(IOptionsContainer* options, ICommandLineOptionsModuleS
             "Make hydrogen atoms heavy"));
     options->addOption(
             BooleanOption("deuterate").store(&bDeuterate_).defaultValue(false).description("Change the mass of hydrogens to 2 amu"));
-    options->addOption(BooleanOption("chargegrp")
-                               .store(&bChargeGroups_)
-                               .defaultValue(true)
-                               .description("Use charge groups in the [REF].rtp[ref] file"));
     options->addOption(BooleanOption("cmap").store(&bCmap_).defaultValue(true).description(
             "Use cmap torsions (if enabled in the [REF].rtp[ref] file)"));
     options->addOption(BooleanOption("renum")
                                .store(&bRenumRes_)
                                .defaultValue(false)
                                .description("Renumber the residues consecutively in the output"));
-    options->addOption(BooleanOption("rtpres")
-                               .store(&bRTPresname_)
-                               .defaultValue(false)
+    options->addOption(EnumOption<RtpResType>("rtpres")
+                               .enumValue(c_rtpResTypeNames)
+                               .store(&RTPresname_)
                                .description("Use [REF].rtp[ref] entry names as residue names"));
     options->addOption(FileNameOption("f")
                                .legacyType(efSTX)
@@ -1971,12 +1995,12 @@ void pdb2gmx::optionsFinished()
     }
 
     /* Force field selection, interactive or direct */
-    ffdir_ = choose_ff(strcmp(ff_.c_str(), "select") == 0 ? nullptr : ff_.c_str(),
+    ffdir_ = choose_ff(std::strcmp(ff_.c_str(), "select") == 0 ? nullptr : ff_.c_str(),
                        forcefield_,
                        sizeof(forcefield_),
                        loggerOwner_->logger());
 
-    if (strlen(forcefield_) > 0)
+    if (std::strlen(forcefield_) > 0)
     {
         ffname_    = forcefield_;
         ffname_[0] = std::toupper(ffname_[0]);
@@ -2074,11 +2098,14 @@ int pdb2gmx::run()
     matrix      box;
     const char* watres;
     clear_mat(box);
-    if (watermodel_ != nullptr && (strstr(watermodel_, "4p") || strstr(watermodel_, "4P")))
+    if (watermodel_ != nullptr
+        && (std::strstr(watermodel_, "4p") != nullptr || std::strstr(watermodel_, "4P") != nullptr
+            || std::string(watermodel_) == "opc" || std::string(watermodel_) == "OPC"))
     {
         watres = "HO4";
     }
-    else if (watermodel_ != nullptr && (strstr(watermodel_, "5p") || strstr(watermodel_, "5P")))
+    else if (watermodel_ != nullptr
+             && (std::strstr(watermodel_, "5p") || std::strstr(watermodel_, "5P")))
     {
         watres = "HO5";
     }
@@ -2170,7 +2197,7 @@ int pdb2gmx::run()
             bMerged         = false;
             if (i > 0 && !bWat_)
             {
-                if (!strncmp(c_mergeTypeNames[mergeType_], "int", 3))
+                if (!std::strncmp(c_mergeTypeNames[mergeType_], "int", 3))
                 {
                     GMX_LOG(logger.info)
                             .asParagraph()
@@ -2190,13 +2217,13 @@ int pdb2gmx::run()
                                     this_atomnum,
                                     this_atomname);
 
-                    if (nullptr == fgets(select, STRLEN - 1, stdin))
+                    if (nullptr == std::fgets(select, STRLEN - 1, stdin))
                     {
                         gmx_fatal(FARGS, "Error reading from stdin");
                     }
                     bMerged = (select[0] == 'y');
                 }
-                else if (!strncmp(c_mergeTypeNames[mergeType_], "all", 3))
+                else if (!std::strncmp(c_mergeTypeNames[mergeType_], "all", 3))
                 {
                     bMerged = true;
                 }
@@ -2263,21 +2290,21 @@ int pdb2gmx::run()
 
     /* set all the water blocks at the end of the chain */
     std::vector<int> swap_index(numChains);
-    int              j = 0;
+    int              jj = 0;
     for (int i = 0; i < numChains; i++)
     {
         if (!pdb_ch[i].bAllWat)
         {
-            swap_index[j] = i;
-            j++;
+            swap_index[jj] = i;
+            jj++;
         }
     }
     for (int i = 0; i < numChains; i++)
     {
         if (pdb_ch[i].bAllWat)
         {
-            swap_index[j] = i;
-            j++;
+            swap_index[jj] = i;
+            jj++;
         }
     }
     if (nwaterchain > 1)
@@ -2305,9 +2332,9 @@ int pdb2gmx::run()
 
         snew(chains[i].pdba, 1);
         init_t_atoms(chains[i].pdba, pdb_ch[si].natom, true);
-        for (j = 0; j < chains[i].pdba->nr; j++)
+        for (int j = 0; j < chains[i].pdba->nr; j++)
         {
-            chains[i].pdba->atom[j]     = pdba_all.atom[pdb_ch[si].start + j];
+            chains[i].pdba->atom[j] = pdba_all.atom[pdb_ch[si].start + j];
             chains[i].pdba->atomname[j] = put_symtab(&symtab, *pdba_all.atomname[pdb_ch[si].start + j]);
             chains[i].pdba->pdbinfo[j] = pdba_all.pdbinfo[pdb_ch[si].start + j];
             chains[i].x.emplace_back(pdbx[pdb_ch[si].start + j]);
@@ -2376,6 +2403,15 @@ int pdb2gmx::run()
     {
         readResidueDatabase(filename, &rtpFFDB, &atype, &symtab, logger, false);
     }
+    if (rtpFFDB[0].replaceResidueNameWithResidueType && RTPresname_ == RtpResType::No)
+    {
+        gmx_fatal(FARGS,
+                  "The selected force field requires the usage of residue types from the .rtp "
+                  "file as residue names. Please do not use -rtpres no");
+    }
+    const bool bRTPresname_ =
+            RTPresname_ == RtpResType::Yes
+            || (RTPresname_ == RtpResType::Auto && rtpFFDB[0].replaceResidueNameWithResidueType);
     if (bNewRTP_)
     {
         /* Not correct with multiple rtp input files with different bonded types */
@@ -2452,7 +2488,7 @@ int pdb2gmx::run()
                       rtprename);
 
         cc->chainstart[cc->nterpairs] = pdba->nres;
-        j                             = 0;
+        int j                         = 0;
         for (int i = 0; i < cc->nterpairs; i++)
         {
             find_nc_ter(pdba,
@@ -2465,7 +2501,7 @@ int pdb2gmx::run()
             if (cc->r_start[j] >= 0 && cc->r_end[j] >= 0)
             {
                 if (checkChainCyclicity(
-                            pdba, pdbx, cc->r_start[j], cc->r_end[j], rtpFFDB, rtprename, long_bond_dist_, short_bond_dist_))
+                            pdba, x, cc->r_start[j], cc->r_end[j], rtpFFDB, rtprename, long_bond_dist_, short_bond_dist_))
                 {
                     cc->cyclicBondsIndex.push_back(cc->r_start[j]);
                     cc->cyclicBondsIndex.push_back(cc->r_end[j]);
@@ -2685,9 +2721,9 @@ int pdb2gmx::run()
 
             /* Check if there have been previous chains with the same id */
             int nid_used = 0;
-            for (int k = 0; k < chain; k++)
+            for (int c = 0; c < chain; c++)
             {
-                if (cc->chainid == chains[k].chainid)
+                if (cc->chainid == chains[c].chainid)
                 {
                     nid_used++;
                 }
@@ -2788,7 +2824,6 @@ int pdb2gmx::run()
                 long_bond_dist_,
                 short_bond_dist_,
                 bDeuterate_,
-                bChargeGroups_,
                 bCmap_,
                 bRenumRes_,
                 bRTPresname_,

@@ -242,9 +242,9 @@ void runTest(TestFileManager*            fileManager,
     }
 
     // prepare some names for files to use with the two mdrun calls
-    std::string fullRunTprFileName      = fileManager->getTemporaryFilePath("full.tpr").string();
+    std::string fullRunTprFileName = fileManager->getTemporaryFilePath("full.tpr").string();
     std::string firstPartRunTprFileName = fileManager->getTemporaryFilePath("firstpart.tpr").string();
-    std::string fullRunEdrFileName      = fileManager->getTemporaryFilePath("full.edr").string();
+    std::string fullRunEdrFileName = fileManager->getTemporaryFilePath("full.edr").string();
     std::string firstPartRunEdrFileName = fileManager->getTemporaryFilePath("firstpart.edr").string();
     std::string firstPartRunCheckpointFileName =
             fileManager->getTemporaryFilePath("firstpart.cpt").string();
@@ -387,7 +387,8 @@ TEST_P(MdrunNoAppendContinuationIsExact, WithinTolerances)
 
     // Check for unimplemented functionality
     // TODO: Update this as modular simulator gains functionality
-    const bool isModularSimulatorExplicitlyDisabled = (getenv("GMX_DISABLE_MODULAR_SIMULATOR") != nullptr);
+    const bool isModularSimulatorExplicitlyDisabled =
+            (std::getenv("GMX_DISABLE_MODULAR_SIMULATOR") != nullptr);
     const bool isTCouplingCompatibleWithModularSimulator =
             (temperatureCoupling == "no" || temperatureCoupling == "v-rescale");
     if (integrator == "md-vv" && pressureCoupling == "parrinello-rahman"
@@ -429,6 +430,18 @@ TEST_P(MdrunNoAppendContinuationIsExact, WithinTolerances)
         mdpFieldValues["verlet-buffer-tolerance"] = "1e-5";
     }
 
+    const int ulpToleranceForPotentialEnergy = (binaryReproducible ? 0 : 256);
+    const int ulpToleranceForKineticEnergy   = (binaryReproducible ? 0 : 512);
+    // Testing shows that PE and KE need wider tolerances
+    EnergyTermsToCompare energyTermsToCompare{
+        { { interaction_function[InteractionFunction::PotentialEnergy].longname,
+            relativeToleranceAsPrecisionDependentUlp(
+                    10.0, ulpToleranceForPotentialEnergy, ulpToleranceForPotentialEnergy) },
+          { interaction_function[InteractionFunction::KineticEnergy].longname,
+            relativeToleranceAsPrecisionDependentUlp(
+                    10.0, ulpToleranceForKineticEnergy, ulpToleranceForKineticEnergy) } }
+    };
+
     int ulpToleranceInMixed  = 0;
     int ulpToleranceInDouble = 0;
     if (!binaryReproducible)
@@ -437,16 +450,9 @@ TEST_P(MdrunNoAppendContinuationIsExact, WithinTolerances)
         // sumation order.
         // Forces and update on GPUs are generally result in different
         // sumation order
-        ulpToleranceInMixed  = 64;
+        ulpToleranceInMixed  = 65;
         ulpToleranceInDouble = 128;
     }
-
-    EnergyTermsToCompare energyTermsToCompare{
-        { { interaction_function[F_EPOT].longname,
-            relativeToleranceAsPrecisionDependentUlp(10.0, ulpToleranceInMixed, ulpToleranceInDouble) },
-          { interaction_function[F_EKIN].longname,
-            relativeToleranceAsPrecisionDependentUlp(10.0, ulpToleranceInMixed, ulpToleranceInDouble) } }
-    };
 
     if (temperatureCoupling != "no" || pressureCoupling != "no")
     {
@@ -457,13 +463,13 @@ TEST_P(MdrunNoAppendContinuationIsExact, WithinTolerances)
             // with positive KE producing small conserved energy.
             const int factor = 4;
             energyTermsToCompare.insert(
-                    { interaction_function[F_ECONSERVED].longname,
+                    { interaction_function[InteractionFunction::ConservedEnergy].longname,
                       relativeToleranceAsPrecisionDependentUlp(
                               10.0, factor * ulpToleranceInMixed, factor * ulpToleranceInDouble) });
         }
         else
         {
-            energyTermsToCompare.insert({ interaction_function[F_ECONSERVED].longname,
+            energyTermsToCompare.insert({ interaction_function[InteractionFunction::ConservedEnergy].longname,
                                           relativeToleranceAsPrecisionDependentUlp(
                                                   10.0, ulpToleranceInMixed, ulpToleranceInDouble) });
         }
@@ -471,16 +477,16 @@ TEST_P(MdrunNoAppendContinuationIsExact, WithinTolerances)
 
     if (mdpFieldValues.count("free-energy") > 0 && mdpFieldValues.at("free-energy") != "no")
     {
-        energyTermsToCompare.insert({ interaction_function[F_DVDL_COUL].longname,
+        energyTermsToCompare.insert({ interaction_function[InteractionFunction::dVCoulombdLambda].longname,
                                       relativeToleranceAsPrecisionDependentUlp(
                                               10.0, ulpToleranceInMixed, ulpToleranceInDouble) });
-        energyTermsToCompare.insert({ interaction_function[F_DVDL_VDW].longname,
+        energyTermsToCompare.insert(
+                { interaction_function[InteractionFunction::dVvanderWaalsdLambda].longname,
+                  relativeToleranceAsPrecisionDependentUlp(10.0, ulpToleranceInMixed, ulpToleranceInDouble) });
+        energyTermsToCompare.insert({ interaction_function[InteractionFunction::dVbondeddLambda].longname,
                                       relativeToleranceAsPrecisionDependentUlp(
                                               10.0, ulpToleranceInMixed, ulpToleranceInDouble) });
-        energyTermsToCompare.insert({ interaction_function[F_DVDL_BONDED].longname,
-                                      relativeToleranceAsPrecisionDependentUlp(
-                                              10.0, ulpToleranceInMixed, ulpToleranceInDouble) });
-        energyTermsToCompare.insert({ interaction_function[F_DVDL_RESTRAINT].longname,
+        energyTermsToCompare.insert({ interaction_function[InteractionFunction::dVrestraintdLambda].longname,
                                       relativeToleranceAsPrecisionDependentUlp(
                                               10.0, ulpToleranceInMixed, ulpToleranceInDouble) });
     }

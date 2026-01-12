@@ -12,6 +12,7 @@
 
 #include <sstream> // TODO specialize templates and replace this with iosfwd
 #include <vector>
+#include <array>
 
 #ifdef COLVARS_LAMMPS
 // Use open-source Jacobi implementation
@@ -19,10 +20,6 @@
 #endif
 
 #include "colvarmodule.h"
-
-#ifndef PI
-#define PI 3.14159265358979323846
-#endif
 
 // ----------------------------------------------------------------------
 /// Linear algebra functions and data types used in the collective
@@ -949,6 +946,19 @@ public:
                         m.yx*r.x + m.yy*r.y + m.yz*r.z,
                         m.zx*r.x + m.zy*r.y + m.zz*r.z);
   }
+
+  inline rmatrix& operator+=(const rmatrix& rhs) {
+    this->xx += rhs.xx;
+    this->xy += rhs.xy;
+    this->xz += rhs.xz;
+    this->yx += rhs.yx;
+    this->yy += rhs.yy;
+    this->yz += rhs.yz;
+    this->zx += rhs.zx;
+    this->zy += rhs.zy;
+    this->zz += rhs.zz;
+    return *this;
+  }
 };
 
 
@@ -960,11 +970,6 @@ class colvarmodule::quaternion {
 public:
 
   cvm::real q0, q1, q2, q3;
-
-  /// Constructor from a 3-d vector
-  inline quaternion(cvm::real x, cvm::real y, cvm::real z)
-    : q0(0.0), q1(x), q2(y), q3(z)
-  {}
 
   /// Constructor component by component
   inline quaternion(cvm::real const qv[4])
@@ -983,50 +988,16 @@ public:
     : q0(v[0]), q1(v[1]), q2(v[2]), q3(v[3])
   {}
 
-  /// "Constructor" after Euler angles (in radians)
-  ///
-  /// http://en.wikipedia.org/wiki/Conversion_between_quaternions_and_Euler_angles
-  inline void set_from_euler_angles(cvm::real phi_in,
-                                    cvm::real theta_in,
-                                    cvm::real psi_in)
-  {
-    q0 = ( (cvm::cos(phi_in/2.0)) * (cvm::cos(theta_in/2.0)) * (cvm::cos(psi_in/2.0)) +
-           (cvm::sin(phi_in/2.0)) * (cvm::sin(theta_in/2.0)) * (cvm::sin(psi_in/2.0)) );
-
-    q1 = ( (cvm::sin(phi_in/2.0)) * (cvm::cos(theta_in/2.0)) * (cvm::cos(psi_in/2.0)) -
-           (cvm::cos(phi_in/2.0)) * (cvm::sin(theta_in/2.0)) * (cvm::sin(psi_in/2.0)) );
-
-    q2 = ( (cvm::cos(phi_in/2.0)) * (cvm::sin(theta_in/2.0)) * (cvm::cos(psi_in/2.0)) +
-           (cvm::sin(phi_in/2.0)) * (cvm::cos(theta_in/2.0)) * (cvm::sin(psi_in/2.0)) );
-
-    q3 = ( (cvm::cos(phi_in/2.0)) * (cvm::cos(theta_in/2.0)) * (cvm::sin(psi_in/2.0)) -
-           (cvm::sin(phi_in/2.0)) * (cvm::sin(theta_in/2.0)) * (cvm::cos(psi_in/2.0)) );
-  }
-
   /// \brief Default constructor
   inline quaternion()
   {
     reset();
   }
 
-  /// \brief Set all components to a scalar
-  inline void set(cvm::real value)
-  {
-    q0 = q1 = q2 = q3 = value;
-  }
-
   /// \brief Set all components to zero (null quaternion)
   inline void reset()
   {
-    set(0.0);
-  }
-
-  /// \brief Set the q0 component to 1 and the others to 0 (quaternion
-  /// representing no rotation)
-  inline void reset_rotation()
-  {
-    q0 = 1.0;
-    q1 = q2 = q3 = 0.0;
+    q0 = q1 = q2 = q3 = 0.0;
   }
 
   /// Tell the number of characters required to print a quaternion, given that of a real number
@@ -1218,12 +1189,53 @@ public:
     return R;
   }
 
-
-  /// \brief Multiply the given vector by the derivative of the given
-  /// (rotated) position with respect to the quaternion
-  cvm::quaternion position_derivative_inner(cvm::rvector const &pos,
-                                            cvm::rvector const &vec) const;
-
+  /** \brief Calculate the sums of element-wise products of a given matrix with respect to dR/dq0, dR/dq1, dR/dq2 and dR/dq3
+   *  \param C A 3x3 matrix
+   *  \return A 4-element tuple (see the detailed documentation below).
+   *
+   *  This function is mainly used for projecting the gradients or forces on
+   *  a rotation matrix to the gradients or forces on the quaternion of the
+   *  same rotation matrix. Mathematically, let \f$C\f$ be the matrix
+   *  \f[
+   *  \begin{bmatrix}
+   *  \frac{\partial f}{\partial R_{00}} & \frac{\partial f}{\partial R_{01}} & \frac{\partial f}{\partial R_{02}} \\
+   *  \frac{\partial f}{\partial R_{10}} & \frac{\partial f}{\partial R_{11}} & \frac{\partial f}{\partial R_{12}} \\
+   *  \frac{\partial f}{\partial R_{20}} & \frac{\partial f}{\partial R_{21}} & \frac{\partial f}{\partial R_{22}}
+   *  \end{bmatrix}
+   *  \f]
+   *  and \f$\frac{{\rm d}R}{{\rm d}q_{i}}\f$ be
+   *  \f[
+   *  \begin{bmatrix}
+   *  \frac{\partial R_{00}}{\partial q_i} & \frac{\partial R_{01}}{\partial q_i} & \frac{\partial R_{02}}{\partial q_i} \\
+   *  \frac{\partial R_{10}}{\partial q_i} & \frac{\partial R_{11}}{\partial q_i} & \frac{\partial R_{12}}{\partial q_i} \\
+   *  \frac{\partial R_{20}}{\partial q_i} & \frac{\partial R_{21}}{\partial q_i} & \frac{\partial R_{22}}{\partial q_i}
+   *  \end{bmatrix}
+   *  \f]
+   *  This function returns
+   *  \f[
+   *  \left[\mathbf{e}^T\left(C \odot \frac{{\rm d}R}{{\rm d}q_0}\right)\mathbf{e},
+   *        \mathbf{e}^T\left(C \odot \frac{{\rm d}R}{{\rm d}q_1}\right)\mathbf{e},
+   *        \mathbf{e}^T\left(C \odot \frac{{\rm d}R}{{\rm d}q_2}\right)\mathbf{e},
+   *        \mathbf{e}^T\left(C \odot \frac{{\rm d}R}{{\rm d}q_3}\right)\mathbf{e}\right]
+   *  \f]
+   *  where \f$\mathbf{e}\f$ is \f$[1, 1, 1]\f$ and \f$\odot\f$ is the element-wise product (Hadamard product).
+   */
+  inline std::array<cvm::real, 4> derivative_element_wise_product_sum(const cvm::real (&C)[3][3]) const {
+    return std::array<cvm::real, 4>{{
+      2.0 * ( q0 * C[0][0] - q3 * C[0][1] + q2 * C[0][2] +
+              q3 * C[1][0] + q0 * C[1][1] - q1 * C[1][2] +
+             -q2 * C[2][0] + q1 * C[2][1] + q0 * C[2][2]),
+      2.0 * ( q1 * C[0][0] + q2 * C[0][1] + q3 * C[0][2] +
+              q2 * C[1][0] - q1 * C[1][1] - q0 * C[1][2] +
+              q3 * C[2][0] + q0 * C[2][1] - q1 * C[2][2]),
+      2.0 * (-q2 * C[0][0] + q1 * C[0][1] + q0 * C[0][2] +
+              q1 * C[1][0] + q2 * C[1][1] + q3 * C[1][2] +
+             -q0 * C[2][0] + q3 * C[2][1] - q2 * C[2][2]),
+      2.0 * (-q3 * C[0][0] - q0 * C[0][1] + q1 * C[0][2] +
+              q0 * C[1][0] - q3 * C[1][1] + q2 * C[1][2] +
+              q1 * C[2][0] + q2 * C[2][1] + q3 * C[2][2])
+    }};
+  }
 
   /// \brief Return the cosine between the orientation frame
   /// associated to this quaternion and another
@@ -1301,7 +1313,7 @@ public:
 
 #ifndef COLVARS_LAMMPS
 namespace NR {
-void diagonalize_matrix(cvm::real m[4][4],
+int diagonalize_matrix(cvm::real m[4][4],
                         cvm::real eigval[4],
                         cvm::real eigvec[4][4]);
 }
@@ -1333,16 +1345,22 @@ public:
   bool b_debug_gradients;
 
   /// \brief The rotation itself (implemented as a quaternion)
-  cvm::quaternion q;
+  cvm::quaternion q{1.0, 0.0, 0.0, 0.0};
 
-  template <typename T1, typename T2>
   friend struct rotation_derivative;
 
-  template<typename T1, typename T2>
-  friend void debug_gradients(
+  /*! @brief  Function for debugging gradients
+   *  @param[in]  pos1  Atom positions of group 1 in SOA (in xxxyyyzzz order)
+   *  @param[in]  pos2  Atom positions of group 2 in SOA (in xxxyyyzzz order)
+   *  @param[in]  num_atoms_pos1 Number of atoms of group 1
+   *  @param[in]  num_atoms_pos2 Number of atoms of group 2
+   */
+  void debug_gradients(
     cvm::rotation &rot,
-    const std::vector<T1> &pos1,
-    const std::vector<T2> &pos2);
+    const std::vector<cvm::real> &pos1,
+    const std::vector<cvm::real> &pos2,
+    const size_t num_atoms_pos1,
+    const size_t num_atoms_pos2);
 
   /// \brief Calculate the optimal rotation and store the
   /// corresponding eigenvalue and eigenvector in the arguments l0 and
@@ -1356,8 +1374,11 @@ public:
   /// DOI: 10.1002/jcc.20110  PubMed: 15376254
   void calc_optimal_rotation(std::vector<atom_pos> const &pos1,
                              std::vector<atom_pos> const &pos2);
-  void calc_optimal_rotation(std::vector<cvm::atom> const &pos1,
-                             std::vector<atom_pos> const &pos2);
+  void calc_optimal_rotation_soa(
+    std::vector<cvm::real> const &pos1,
+    std::vector<cvm::real> const &pos2,
+    const size_t num_atoms_pos1,
+    const size_t num_atoms_pos2);
 
   /// Initialize member data
   int init();
@@ -1491,8 +1512,6 @@ protected:
 
   /// Build the correlation matrix C (used by calc_optimal_rotation())
   void build_correlation_matrix(std::vector<cvm::atom_pos> const &pos1,
-                                std::vector<cvm::atom_pos> const &pos2);
-  void build_correlation_matrix(std::vector<cvm::atom> const &pos1,
                                 std::vector<cvm::atom_pos> const &pos2);
 
   /// \brief Actual implementation of `calc_optimal_rotation` (and called by it)

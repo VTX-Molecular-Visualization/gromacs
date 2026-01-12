@@ -57,8 +57,6 @@
 #include "gromacs/fileio/xtcio.h"
 #include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
-#include "gromacs/math/vec.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/mdrun/mdmodules.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
@@ -82,6 +80,8 @@
 #include "gromacs/utility/futil.h"
 #include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
 
 struct gmx_output_env_t;
 
@@ -249,7 +249,7 @@ static void chk_forces(int frame, int natoms, rvec* f)
 
 static void chk_bonds(const InteractionDefinitions* idef, PbcType pbcType, rvec* x, matrix box, real tol)
 {
-    int   ftype, k, ai, aj, type;
+    int   k, ai, aj, type;
     real  b0, blen, deviation;
     t_pbc pbc;
     rvec  dx;
@@ -257,7 +257,7 @@ static void chk_bonds(const InteractionDefinitions* idef, PbcType pbcType, rvec*
     gmx::ArrayRef<const t_iparams> iparams = idef->iparams;
 
     set_pbc(&pbc, pbcType, box);
-    for (ftype = 0; (ftype < F_NRE); ftype++)
+    for (const auto ftype : gmx::EnumerationWrapper<InteractionFunction>{})
     {
         if ((interaction_function[ftype].flags & IF_CHEMBOND) == IF_CHEMBOND)
         {
@@ -269,11 +269,13 @@ static void chk_bonds(const InteractionDefinitions* idef, PbcType pbcType, rvec*
                 b0   = 0;
                 switch (ftype)
                 {
-                    case F_BONDS: b0 = iparams[type].harmonic.rA; break;
-                    case F_G96BONDS: b0 = std::sqrt(iparams[type].harmonic.rA); break;
-                    case F_MORSE: b0 = iparams[type].morse.b0A; break;
-                    case F_CUBICBONDS: b0 = iparams[type].cubic.b0; break;
-                    case F_CONSTR: b0 = iparams[type].constr.dA; break;
+                    case InteractionFunction::Bonds: b0 = iparams[type].harmonic.rA; break;
+                    case InteractionFunction::GROMOS96Bonds:
+                        b0 = std::sqrt(iparams[type].harmonic.rA);
+                        break;
+                    case InteractionFunction::MorsePotential: b0 = iparams[type].morse.b0A; break;
+                    case InteractionFunction::CubicBonds: b0 = iparams[type].cubic.b0; break;
+                    case InteractionFunction::Constraints: b0 = iparams[type].constr.dA; break;
                     default: break;
                 }
                 if (b0 != 0)
@@ -562,7 +564,7 @@ static void chk_tps(const char* fn, real vdw_fac, real bon_lo, real bon_hi)
             if (((i + 1) % 10) == 0)
             {
                 fprintf(stderr, "\r%5d", i + 1);
-                fflush(stderr);
+                std::fflush(stderr);
             }
             for (j = i + 1; (j < natom); j++)
             {
@@ -811,31 +813,31 @@ int gmx_check(int argc, char* argv[])
     char*             lastener = nullptr;
     t_pargs           pa[]     = {
         { "-vdwfac",
-          FALSE,
-          etREAL,
-          { &vdw_fac },
-          "Fraction of sum of VdW radii used as warning cutoff" },
+                        FALSE,
+                        etREAL,
+                        { &vdw_fac },
+                        "Fraction of sum of VdW radii used as warning cutoff" },
         { "-bonlo", FALSE, etREAL, { &bon_lo }, "Min. fract. of sum of VdW radii for bonded atoms" },
         { "-bonhi", FALSE, etREAL, { &bon_hi }, "Max. fract. of sum of VdW radii for bonded atoms" },
         { "-rmsd", FALSE, etBOOL, { &bRMSD }, "Print RMSD for x, v and f" },
         { "-tol",
-          FALSE,
-          etREAL,
-          { &ftol },
-          "Relative tolerance for comparing real values defined as "
-          "[MATH]2*(a-b)/([MAG]a[mag]+[MAG]b[mag])[math]" },
+                        FALSE,
+                        etREAL,
+                        { &ftol },
+                        "Relative tolerance for comparing real values defined as "
+                                      "[MATH]2*(a-b)/([MAG]a[mag]+[MAG]b[mag])[math]" },
         { "-abstol",
-          FALSE,
-          etREAL,
-          { &abstol },
-          "Absolute tolerance, useful when sums are close to zero." },
+                        FALSE,
+                        etREAL,
+                        { &abstol },
+                        "Absolute tolerance, useful when sums are close to zero." },
         { "-ab", FALSE, etBOOL, { &bCompAB }, "Compare the A and B topology from one file" },
         { "-lastener",
-          FALSE,
-          etSTR,
-          { &lastener },
-          "Last energy term to compare (if not given all are tested). It makes sense to go up "
-          "until the Pressure." }
+                        FALSE,
+                        etSTR,
+                        { &lastener },
+                        "Last energy term to compare (if not given all are tested). It makes sense to go up "
+                                      "until the Pressure." }
     };
 
     if (!parse_common_args(&argc, argv, 0, NFILE, fnm, asize(pa), pa, asize(desc), desc, 0, nullptr, &oenv))

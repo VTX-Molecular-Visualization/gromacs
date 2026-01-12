@@ -53,11 +53,11 @@
 #include <algorithm>
 
 #include "gromacs/gpu_utils/devicebuffer.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/mdlib/leapfrog_gpu_internal.h"
 #include "gromacs/mdtypes/group.h"
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/vec.h"
 
 namespace gmx
 {
@@ -80,7 +80,7 @@ void LeapFrogGpu::integrate(DeviceBuffer<Float3>              d_x,
         GMX_ASSERT(checkDeviceBuffer(d_lambdas_, numTempScaleValues_),
                    "Number of temperature scaling factors changed since it was set for the "
                    "last time.");
-        GMX_ASSERT(numTempScaleValues_ == ssize(h_lambdas_),
+        GMX_ASSERT(numTempScaleValues_ == gmx::ssize(h_lambdas_),
                    "Number of temperature scaling factors changed since it was set for the "
                    "last time.");
 
@@ -149,10 +149,17 @@ LeapFrogGpu::LeapFrogGpu(const DeviceContext& deviceContext,
 
 LeapFrogGpu::~LeapFrogGpu()
 {
-    // Wait for all the tasks to complete before freeing the memory. See #4519.
-    deviceStream_.synchronize();
-    freeDeviceBuffer(&d_inverseMasses_);
-    freeDeviceBuffer(&d_lambdas_);
+    try
+    {
+        // Wait for all the tasks to complete before freeing the memory. See #4519.
+        deviceStream_.synchronize();
+        freeDeviceBuffer(&d_inverseMasses_);
+        freeDeviceBuffer(&d_lambdas_);
+    }
+    catch (gmx::InternalError& e)
+    {
+        fprintf(stderr, "Internal error in destructor of LeapFrogGpu: %s\n", e.what());
+    }
 }
 
 void LeapFrogGpu::set(const int                            numAtoms,

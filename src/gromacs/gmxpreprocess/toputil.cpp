@@ -52,7 +52,6 @@
 #include "gromacs/gmxpreprocess/topdirs.h"
 #include "gromacs/topology/atoms.h"
 #include "gromacs/topology/block.h"
-#include "gromacs/topology/ifunc.h"
 #include "gromacs/topology/symtab.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/basedefinitions.h"
@@ -72,13 +71,13 @@ void add_param_to_list(InteractionsOfType* list, const InteractionOfType& b)
 
 /* PRINTING STRUCTURES */
 
-static void print_bt(FILE*                                   out,
-                     Directive                               d,
-                     PreprocessingAtomTypes*                 at,
-                     int                                     ftype,
-                     int                                     fsubtype,
-                     gmx::ArrayRef<const InteractionsOfType> plist,
-                     bool                                    bFullDih)
+static void print_bt(FILE*                                                                 out,
+                     Directive                                                             d,
+                     PreprocessingAtomTypes*                                               at,
+                     InteractionFunction                                                   ftype,
+                     int                                                                   fsubtype,
+                     const gmx::EnumerationArray<InteractionFunction, InteractionsOfType>& plist,
+                     bool                                                                  bFullDih)
 {
     /* This dihp is a DIRTY patch because the dih-types do not use
      * all four atoms to determine the type.
@@ -97,28 +96,28 @@ static void print_bt(FILE*                                   out,
     int f = 0;
     switch (ftype)
     {
-        case F_G96ANGLES: // Intended to fall through
-        case F_G96BONDS: f = 1; break;
-        case F_MORSE: f = 2; break;
-        case F_CUBICBONDS: f = 3; break;
-        case F_CONNBONDS: f = 4; break;
-        case F_HARMONIC: f = 5; break;
-        case F_CROSS_BOND_ANGLES: f = 2; break;
-        case F_CROSS_BOND_BONDS: f = 3; break;
-        case F_UREY_BRADLEY: f = 4; break;
-        case F_PDIHS:  // Intended to fall through
-        case F_RBDIHS: // Intended to fall through
-        case F_FOURDIHS: bDih = TRUE; break;
-        case F_IDIHS:
+        case InteractionFunction::GROMOS96Angles: // Intended to fall through
+        case InteractionFunction::GROMOS96Bonds: f = 1; break;
+        case InteractionFunction::MorsePotential: f = 2; break;
+        case InteractionFunction::CubicBonds: f = 3; break;
+        case InteractionFunction::ConnectBonds: f = 4; break;
+        case InteractionFunction::HarmonicPotential: f = 5; break;
+        case InteractionFunction::CrossBondAngles: f = 2; break;
+        case InteractionFunction::CrossBondBonds: f = 3; break;
+        case InteractionFunction::UreyBradleyPotential: f = 4; break;
+        case InteractionFunction::ProperDihedrals:            // Intended to fall through
+        case InteractionFunction::RyckaertBellemansDihedrals: // Intended to fall through
+        case InteractionFunction::FourierDihedrals: bDih = TRUE; break;
+        case InteractionFunction::ImproperDihedrals:
             f    = 1;
             bDih = TRUE;
             break;
-        case F_CONSTRNC: // Intended to fall through
-        case F_VSITE3FD: f = 1; break;
-        case F_VSITE3FAD: f = 2; break;
-        case F_VSITE3OUT: f = 3; break;
-        case F_VSITE4FDN: // Intended to fall through
-        case F_CMAP: f = 1; break;
+        case InteractionFunction::ConstraintsNoCoupling: // Intended to fall through
+        case InteractionFunction::VirtualSite3FlexibleDistance: f = 1; break;
+        case InteractionFunction::VirtualSite3FlexibleAngleDistance: f = 2; break;
+        case InteractionFunction::VirtualSite3Outside: f = 3; break;
+        case InteractionFunction::VirtualSite4FlexibleDistanceNormalization: // Intended to fall through
+        case InteractionFunction::DihedralEnergyCorrectionMap: f = 1; break;
 
         default: bDih = FALSE;
     }
@@ -163,7 +162,14 @@ static void print_bt(FILE*                                   out,
     /* print bondtypes */
     for (const auto& parm : bt->interactionTypes)
     {
-        bSwapParity                    = (parm.c0() == NOTSET) && (parm.c1() == -1);
+        if (ftype == InteractionFunction::DihedralEnergyCorrectionMap)
+        {
+            bSwapParity = false;
+        }
+        else
+        {
+            bSwapParity = (parm.c0() == NOTSET) && (parm.c1() == -1);
+        }
         gmx::ArrayRef<const int> atoms = parm.atoms();
         if (!bDih)
         {
@@ -197,7 +203,7 @@ static void print_bt(FILE*                                   out,
         fprintf(out, "\n");
     }
     fprintf(out, "\n");
-    fflush(out);
+    std::fflush(out);
 }
 
 void print_excl(FILE* out, int natoms, t_excls excls[])
@@ -229,7 +235,7 @@ void print_excl(FILE* out, int natoms, t_excls excls[])
             }
         }
         fprintf(out, "\n");
-        fflush(out);
+        std::fflush(out);
     }
 }
 
@@ -249,7 +255,7 @@ static double get_residue_charge(const t_atoms* atoms, int at)
     return q;
 }
 
-void print_atoms(FILE* out, PreprocessingAtomTypes* atype, t_atoms* at, int* cgnr, bool bRTPresname)
+void print_atoms(FILE* out, PreprocessingAtomTypes* atype, t_atoms* at, bool bRTPresname)
 {
     int         i, ri;
     int         tpA, tpB;
@@ -317,7 +323,7 @@ void print_atoms(FILE* out, PreprocessingAtomTypes* atype, t_atoms* at, int* cgn
                     bRTPresname ? *(at->resinfo[at->atom[i].resind].rtp)
                                 : *(at->resinfo[at->atom[i].resind].name),
                     *(at->atomname[i]),
-                    cgnr[i],
+                    i + 1, // legacy charge group number
                     at->atom[i].q,
                     at->atom[i].m);
             if (PERTURBED(at->atom[i]))
@@ -347,15 +353,20 @@ void print_atoms(FILE* out, PreprocessingAtomTypes* atype, t_atoms* at, int* cgn
             }
             else
             {
-                fputs("\n", out);
+                std::fputs("\n", out);
             }
         }
     }
     fprintf(out, "\n");
-    fflush(out);
+    std::fflush(out);
 }
 
-void print_bondeds(FILE* out, int natoms, Directive d, int ftype, int fsubtype, gmx::ArrayRef<const InteractionsOfType> plist)
+void print_bondeds(FILE*                                                                 out,
+                   int                                                                   natoms,
+                   Directive                                                             d,
+                   InteractionFunction                                                   ftype,
+                   int                                                                   fsubtype,
+                   const gmx::EnumerationArray<InteractionFunction, InteractionsOfType>& plist)
 {
     auto                   atom = std::make_unique<t_atom>();
     PreprocessingAtomTypes atype;

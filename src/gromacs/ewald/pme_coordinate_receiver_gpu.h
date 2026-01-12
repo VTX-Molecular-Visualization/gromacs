@@ -44,8 +44,8 @@
 #include <memory>
 
 #include "gromacs/gpu_utils/devicebuffer_datatype.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/utility/gmxmpi.h"
+#include "gromacs/utility/vectypes.h"
 
 class DeviceStream;
 class DeviceContext;
@@ -59,19 +59,22 @@ namespace gmx
 template<typename>
 class ArrayRef;
 
+/*! \libinternal
+ * \brief Manages receiving coordinates on PME-only ranks from their PP ranks.
+ *
+ * For multi-GPU runs, the PME GPU can receive coordinates from
+ * multiple PP GPUs. Data from these distinct communications can
+ * be handled separately in the PME spline/spread kernel, allowing
+ * pipelining which overlaps computation and communication.
+ *
+ * Note that the PME rank always transfers coordinates from each PP
+ * rank each step, even from empty domains. */
 class PmeCoordinateReceiverGpu
 {
 
 public:
     /*! \brief Creates PME GPU coordinate receiver object
      *
-     * For multi-GPU runs, the PME GPU can receive coordinates from
-     * multiple PP GPUs. Data from these distinct communications can
-     * be handled separately in the PME spline/spread kernel, allowing
-     * pipelining which overlaps computation and communication. The
-     * class methods are designed to called seperately for each remote
-     * PP rank, and internally a different stream is used for each
-     * remote PP rank to allow overlapping.
      *
      * \param[in] comm            Communicator used for simulation
      * \param[in] deviceContext   GPU context
@@ -112,11 +115,16 @@ public:
 
     /*! \brief
      * Return PP co-ordinate transfer event received from PP
-     * rank determined from pipeline stage, for consumer to enqueue
-     * \param[in] pipelineStage  stage of pipeline corresponding to this transfer
-     * \returns                  tuple with rank of sending PP task and corresponding event
+     * rank determined from \c senderIndex, for consumer to enqueue
+     *
+     * The returned sender index corresponds to a PP rank that
+     * transferred particles this step.
+     *
+     * \param[in]  senderIndex   Index of the sender within the set of PP ranks
+     * \returns                  tuple with index of sending PP rank
+     *                           and corresponding event.
      */
-    std::tuple<int, GpuEventSynchronizer*> receivePpCoordinateSendEvent(int pipelineStage);
+    std::tuple<int, GpuEventSynchronizer*> receivePpCoordinateSendEvent(int senderIndex);
 
     /*! \brief
      * Wait for coordinates from any PP rank
@@ -137,12 +145,12 @@ public:
     std::tuple<int, int> ppCommAtomRange(int senderIndex);
 
     /*! \brief
-     * Return number of PP ranks involved in PME-PP communication
+     * Return number of PP ranks contributing particles to PME-PP communication
      */
-    int ppCommNumSenderRanks();
+    int ppCommNumRanksSendingParticles();
 
-    /*! \brief
-     * Mark an event in the sender stream \p senderIndex and enqueue it into \p stream.
+    /*! \brief Mark an event in the sender stream \p senderIndex
+     * (which must be valid) and enqueue it into \p stream.
      */
     void insertAsDependencyIntoStream(int senderIndex, const DeviceStream& stream);
 

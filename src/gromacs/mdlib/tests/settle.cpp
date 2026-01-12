@@ -81,10 +81,9 @@
 
 #include <gtest/gtest.h>
 
+#include "gromacs/gpu_utils/capabilities.h"
 #include "gromacs/hardware/device_management.h"
 #include "gromacs/math/paddedvector.h"
-#include "gromacs/math/vec.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/mdlib/tests/watersystem.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/mdtypes/mdatom.h"
@@ -95,6 +94,8 @@
 #include "gromacs/utility/real.h"
 #include "gromacs/utility/stringutil.h"
 #include "gromacs/utility/unique_cptr.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "testutils/refdata.h"
 #include "testutils/test_device.h"
@@ -318,8 +319,7 @@ TEST_P(SettleTest, SatisfiesConstraints)
     // Add runners for CPU version
     runners.emplace_back(std::make_unique<SettleHostTestRunner>());
     // If supported, add runners for the GPU version for each available GPU
-    const bool addGpuRunners = GPU_SETTLE_SUPPORTED;
-    if (addGpuRunners)
+    if (GpuConfigurationCapabilities::Update)
     {
         for (const auto& testDevice : getTestHardwareEnvironment()->getTestDeviceList())
         {
@@ -364,7 +364,7 @@ TEST_P(SettleTest, SatisfiesConstraints)
         // SETTLE produces constrained coordinates consistent with
         // sensible sampling needs to be tested at a much higher level.
         // TODO: Re-evaluate the tolerances.
-        real                   dOH       = testData->dOH_;
+        real dOH = testData->dOH_;
         FloatingPointTolerance tolerance = relativeToleranceAsPrecisionDependentUlp(dOH * dOH, 80, 380);
         FloatingPointTolerance toleranceVirial = absoluteTolerance(0.000001);
 

@@ -50,14 +50,15 @@
 #include <string>
 #include <vector>
 
+#include "gromacs/gpu_utils/capabilities.h"
 #include "gromacs/listed_forces/listed_forces_gpu.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/topology/idef.h"
 #include "gromacs/topology/topology.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/message_string_collector.h"
+#include "gromacs/utility/vectypes.h"
 
 class DeviceContext;
 class DeviceStream;
@@ -80,9 +81,10 @@ static bool someInteractionsCanRunOnGpu(const InteractionLists& ilists)
     // very unlikely to occur, and has little run-time cost,
     // so we don't complicate the code by catering for it
     // here.
-    return std::any_of(fTypesOnGpu.begin(), fTypesOnGpu.end(), [ilists](int fType) {
-        return !ilists[fType].iatoms.empty();
-    });
+    return std::any_of(fTypesOnGpu.begin(),
+                       fTypesOnGpu.end(),
+                       [ilists](InteractionFunction fType)
+                       { return !ilists[static_cast<int>(fType)].iatoms.empty(); });
 }
 
 //! Returns whether there are any bonded interactions in the global topology suitable for a GPU.
@@ -113,7 +115,7 @@ bool buildSupportsListedForcesGpu(std::string* error)
     // Before changing the prefix string, make sure that it is not searched for in regression tests.
     errorReasons.startContext("Bonded interactions on GPU are not supported in:");
     errorReasons.appendIf(GMX_DOUBLE, "Double precision build of GROMACS");
-    errorReasons.appendIf(GMX_GPU_OPENCL, "OpenCL build of GROMACS");
+    errorReasons.appendIf(!GpuConfigurationCapabilities::Bonded, "Current GPU backend");
     errorReasons.appendIf(!GMX_GPU, "CPU-only build of GROMACS");
     errorReasons.finishContext();
     if (error != nullptr)
@@ -147,7 +149,7 @@ bool inputSupportsListedForcesGpu(const t_inputrec& ir, const gmx_mtop_t& mtop, 
     return errorReasons.isEmpty();
 }
 
-#if !GMX_GPU_CUDA && !GMX_GPU_SYCL
+#if !GMX_GPU || GMX_GPU_OPENCL
 
 class ListedForcesGpu::Impl
 {
@@ -197,6 +199,6 @@ void ListedForcesGpu::waitAccumulateEnergyTerms(gmx_enerdata_t* /* enerd */) {}
 
 void ListedForcesGpu::clearEnergies() {}
 
-#endif // !GMX_GPU_CUDA
+#endif // !GMX_GPU || GMX_GPU_OPENCL
 
 } // namespace gmx

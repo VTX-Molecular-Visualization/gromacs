@@ -45,7 +45,6 @@
 #include <gtest/gtest.h>
 
 #include "gromacs/math/functions.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/mdlib/updategroups.h"
 #include "gromacs/topology/block.h"
 #include "gromacs/topology/forcefieldparameters.h"
@@ -55,6 +54,7 @@
 #include "gromacs/topology/topology.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/real.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "testutils/refdata.h"
 #include "testutils/testasserts.h"
@@ -88,7 +88,7 @@ gmx::RVec positions[] = { { .130, -.041, -.291 },  { .120, -.056, -.192 },  { .0
 TEST(UpdateGroupsCog, ComputesCogs)
 {
     const int settleType     = 0;
-    const int atomsPerSettle = NRAL(F_SETTLE);
+    const int atomsPerSettle = NRAL(InteractionFunction::SETTLE);
     const int numAtoms       = sizeof(positions) / sizeof(positions[0]);
     const int numMolecules   = gmx::exactDiv(numAtoms, atomsPerSettle);
 
@@ -97,7 +97,7 @@ TEST(UpdateGroupsCog, ComputesCogs)
 
     gmx_moltype_t moltype;
     moltype.atoms.nr         = atomsPerSettle;
-    std::vector<int>& iatoms = moltype.ilist[F_SETTLE].iatoms;
+    std::vector<int>& iatoms = moltype.ilist[InteractionFunction::SETTLE].iatoms;
     iatoms.push_back(settleType);
     iatoms.push_back(0);
     iatoms.push_back(1);
@@ -124,7 +124,7 @@ TEST(UpdateGroupsCog, ComputesCogs)
     auto updateGroupingsPerMoleculeType = std::get<std::vector<RangePartitioning>>(result);
     real temperature                    = 300;
 
-    UpdateGroupsCog updateGroupsCog(mtop, updateGroupingsPerMoleculeType, temperature, numAtoms);
+    UpdateGroupsCog updateGroupsCog(mtop, updateGroupingsPerMoleculeType, temperature);
 
     EXPECT_FLOAT_EQ(updateGroupsCog.maxUpdateGroupRadius(), 0.083887339);
 
@@ -146,7 +146,7 @@ TEST(UpdateGroupsCog, ComputesCogs)
         }
     }
 
-    updateGroupsCog.addCogs(globalAtomIndices, positions);
+    updateGroupsCog.addCogs(globalAtomIndices, positions, {});
 
     EXPECT_EQ(updateGroupsCog.numCogs(), numMolecules);
 

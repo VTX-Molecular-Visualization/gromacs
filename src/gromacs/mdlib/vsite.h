@@ -46,14 +46,13 @@
 #include <memory>
 #include <vector>
 
-#include "gromacs/math/vectypes.h"
 #include "gromacs/topology/idef.h"
 #include "gromacs/topology/ifunc.h"
 #include "gromacs/utility/real.h"
+#include "gromacs/utility/vectypes.h"
 
 struct gmx_domdec_t;
 struct gmx_mtop_t;
-struct t_commrec;
 struct InteractionList;
 struct t_nrnb;
 struct gmx_wallcycle;
@@ -72,12 +71,42 @@ class ArrayRef;
  * This is used to avoid loops over all ftypes just to get the vsite entries.
  * (We should replace the fixed ilist array by only the used entries.)
  */
-static constexpr int c_ftypeVsiteStart = F_VSITE1;
+static constexpr InteractionFunction c_ftypeVsiteStart = InteractionFunction::VirtualSite1;
 //! The start and end value of the vsite indices in the ftype enum
-static constexpr int c_ftypeVsiteEnd = F_VSITEN + 1;
+static constexpr InteractionFunction c_ftypeVsiteEnd =
+        InteractionFunction::CenterOfMassPullingEnergy; // InteractionFunction::VirtualSiteN + 1
+
+static constexpr int numFtypes = static_cast<int>(c_ftypeVsiteEnd) - static_cast<int>(c_ftypeVsiteStart);
+
+const std::array<InteractionFunction, numFtypes> vSiteFunctionTypes = {
+    InteractionFunction::VirtualSite1,
+    InteractionFunction::VirtualSite2,
+    InteractionFunction::VirtualSite2FlexibleDistance,
+    InteractionFunction::VirtualSite3,
+    InteractionFunction::VirtualSite3FlexibleDistance,
+    InteractionFunction::VirtualSite3FlexibleAngleDistance,
+    InteractionFunction::VirtualSite3Outside,
+    InteractionFunction::VirtualSite4FlexibleDistance,
+    InteractionFunction::VirtualSite4FlexibleDistanceNormalization,
+    InteractionFunction::VirtualSiteN
+};
+
+const std::array<InteractionFunction, numFtypes> vSiteFunctionTypesReversed = {
+    InteractionFunction::VirtualSiteN,
+    InteractionFunction::VirtualSite4FlexibleDistanceNormalization,
+    InteractionFunction::VirtualSite4FlexibleDistance,
+    InteractionFunction::VirtualSite3Outside,
+    InteractionFunction::VirtualSite3FlexibleAngleDistance,
+    InteractionFunction::VirtualSite3FlexibleDistance,
+    InteractionFunction::VirtualSite3,
+    InteractionFunction::VirtualSite2FlexibleDistance,
+    InteractionFunction::VirtualSite2,
+    InteractionFunction::VirtualSite1
+};
+
 
 //! Type for storing PBC atom information for all vsite types in the system
-typedef std::array<std::vector<int>, c_ftypeVsiteEnd - c_ftypeVsiteStart> VsitePbc;
+typedef std::array<std::vector<int>, numFtypes> VsitePbc;
 
 //! Whether we calculate vsite positions, velocities, or both
 enum class VSiteOperation
@@ -106,10 +135,10 @@ public:
     int numInterUpdategroupVirtualSites() const;
 
     //! Set VSites and distribute VSite work over threads, should be called after each DD partitioning
-    void setVirtualSites(ArrayRef<const InteractionList> ilist,
-                         int                             numAtoms,
-                         int                             homenr,
-                         ArrayRef<const ParticleType>    ptype);
+    void setVirtualSites(const gmx::EnumerationArray<InteractionFunction, InteractionList>* ilist,
+                         int                          numAtoms,
+                         int                          homenr,
+                         ArrayRef<const ParticleType> ptype);
 
     /*! \brief Create positions of vsite atoms based for the local system
      *
@@ -160,9 +189,9 @@ private:
  * \param[in]     ip       Interaction parameters
  * \param[in]     ilist    The interaction list
  */
-void constructVirtualSites(ArrayRef<RVec>                  x,
-                           ArrayRef<const t_iparams>       ip,
-                           ArrayRef<const InteractionList> ilist);
+void constructVirtualSites(ArrayRef<RVec>            x,
+                           ArrayRef<const t_iparams> ip,
+                           const gmx::EnumerationArray<InteractionFunction, InteractionList>* ilist);
 
 /*! \brief Create positions of vsite atoms for the whole system assuming all molecules are wholex
  *
@@ -193,7 +222,8 @@ int countInterUpdategroupVsites(const gmx_mtop_t&                 mtop,
 /*! \brief Create the virtual site handler
  *
  * \param[in] mtop                           The global topology
- * \param[in] cr                             The communication record
+ * \param[in] domdec                         The domain decomposition struct, pass nullptr
+ *                                           when DD is not in use
  * \param[in] pbcType                        The type of PBC
  * \param[in] updateGroupingPerMoleculeType  Update grouping per molecule type, pass
  *                                           empty when not using update groups
@@ -201,7 +231,7 @@ int countInterUpdategroupVsites(const gmx_mtop_t&                 mtop,
  */
 std::unique_ptr<VirtualSitesHandler>
 makeVirtualSitesHandler(const gmx_mtop_t&                 mtop,
-                        const t_commrec*                  cr,
+                        gmx_domdec_t*                     domdec,
                         PbcType                           pbcType,
                         ArrayRef<const RangePartitioning> updateGroupingPerMoleculeType);
 

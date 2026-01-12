@@ -90,6 +90,7 @@ DeviceStreamManager::Impl::Impl(const DeviceInformation& deviceInfo,
                                 const bool               useTiming) :
     context_(deviceInfo), havePpDomainDecomposition_(simulationWork.havePpDomainDecomposition)
 {
+    context_.activate();
     try
     {
         streams_[DeviceStreamType::NonBondedLocal] =
@@ -114,7 +115,7 @@ DeviceStreamManager::Impl::Impl(const DeviceInformation& deviceInfo,
         if (simulationWork.useGpuPme || simulationWork.useGpuUpdate || simulationWork.useGpuXBufferOpsWhenAllowed)
         {
             streams_[DeviceStreamType::UpdateAndConstraints] =
-                    std::make_unique<DeviceStream>(context_, DeviceStreamPriority::Normal, useTiming);
+                    std::make_unique<DeviceStream>(context_, DeviceStreamPriority::High, useTiming);
         }
         if (simulationWork.useGpuPmePpCommunication)
         {

@@ -49,7 +49,6 @@
 
 #include <gtest/gtest.h>
 
-#include "gromacs/math/vectypes.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/pbcutil/pbcenums.h"
@@ -60,6 +59,7 @@
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/smalloc.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "testutils/refdata.h"
 #include "testutils/testasserts.h"
@@ -85,11 +85,11 @@ namespace
  */
 void populateMoleculeType(gmx_moltype_t* moltype)
 {
-    constexpr int atomNumber        = 5;
-    constexpr int residueNumber     = 3;
-    moltype->atoms.nr               = atomNumber;
-    moltype->ilist[F_CONSTR].iatoms = { 0, 1, 2 };
-    moltype->ilist[F_ANGLES].iatoms = { 1, 2, 1, 3 };
+    constexpr int atomNumber                                = 5;
+    constexpr int residueNumber                             = 3;
+    moltype->atoms.nr                                       = atomNumber;
+    moltype->ilist[InteractionFunction::Constraints].iatoms = { 0, 1, 2 };
+    moltype->ilist[InteractionFunction::Angles].iatoms      = { 1, 2, 1, 3 };
 
     snew(moltype->atoms.atom, atomNumber);
     snew(moltype->atoms.resinfo, residueNumber);
@@ -126,7 +126,6 @@ std::vector<RVec> initialCoordinates()
 }
 
 using COMInPlaceTestParams = std::tuple<UnitCellType, CenteringType, PbcType>;
-using test::FloatingPointTolerance;
 
 /*! \brief
  * Test fixture for checking correct molecule COM treatment.
@@ -162,7 +161,7 @@ COMInPlaceTest::COMInPlaceTest() :
     molblock.type        = 0;
     testTopology_.natoms = moltype.atoms.nr * molblock.nmol;
     testTopology_.finalize();
-    FloatingPointTolerance tolerance(
+    test::FloatingPointTolerance tolerance(
             FloatingPointTolerance(1.0e-6, 1.0e-6, 1.0e-8, 1.0e-12, 10000, 100, false));
     checker_.setDefaultTolerance(tolerance);
 }

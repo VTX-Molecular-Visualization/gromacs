@@ -52,6 +52,7 @@
 #include <string>
 #include <vector>
 
+#include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/gmxassert.h"
 
@@ -61,7 +62,7 @@ namespace gmx
 std::size_t countWords(const char* s)
 {
     std::size_t nWords = 0;
-    // Use length variable to avoid N^2 complexity when executing strlen(s) every iteration
+    // Use length variable to avoid N^2 complexity when executing std::strlen(s) every iteration
     std::size_t length = std::strlen(s);
 
     for (std::size_t i = 0; i < length; i++)
@@ -302,18 +303,24 @@ std::string replaceAllWords(const std::string& input, const std::string& from, c
 bool equalCaseInsensitive(const std::string& source, const std::string& target)
 {
     return source.length() == target.length()
-           && std::equal(source.begin(), source.end(), target.begin(), [](const char& s, const char& t) {
-                  return std::tolower(s) == std::tolower(t);
-              });
+           && std::equal(source.begin(),
+                         source.end(),
+                         target.begin(),
+                         [](const char& s, const char& t)
+                         { return std::tolower(s) == std::tolower(t); });
 }
 
 bool equalIgnoreDash(const std::string& source, const std::string& target)
 {
     return source.length() == target.length()
-           && std::equal(source.begin(), source.end(), target.begin(), [](const char& s, const char& t) {
-                  return ((s == '-' || s == '_') ? toupper(s) : s)
-                         == ((t == '-' || t == '_') ? toupper(t) : t);
-              });
+           && std::equal(source.begin(),
+                         source.end(),
+                         target.begin(),
+                         [](const char& s, const char& t)
+                         {
+                             return ((s == '-' || s == '_') ? std::toupper(s) : s)
+                                    == ((t == '-' || t == '_') ? std::toupper(t) : t);
+                         });
 }
 
 bool equalCaseInsensitive(const std::string& source, const std::string& target, size_t maxLengthOfComparison)
@@ -335,9 +342,10 @@ bool equalCaseInsensitive(const std::string& source, const std::string& target, 
         }
         comparisonEnd = source.begin() + maxLengthOfComparison;
     }
-    return std::equal(source.begin(), comparisonEnd, target.begin(), [](const char& s, const char& t) {
-        return std::tolower(s) == std::tolower(t);
-    });
+    return std::equal(source.begin(),
+                      comparisonEnd,
+                      target.begin(),
+                      [](const char& s, const char& t) { return std::tolower(s) == std::tolower(t); });
 }
 
 std::string toUpperCase(const std::string& text)
@@ -488,6 +496,60 @@ std::vector<std::string> TextLineWrapper::wrapToVector(const std::string& input)
         lineStart = nextLineStart;
     }
     return result;
+}
+
+std::string prettyPrintListAsRange(ArrayRef<const int> list)
+{
+    if (list.empty())
+    {
+        return "";
+    }
+    if (list.size() == 1)
+    {
+        return std::to_string(list[0]);
+    }
+
+    std::vector<std::string> parts;
+    size_t                   i = 0;
+
+    while (i < list.size())
+    {
+        size_t start = i;
+
+        // Try to find an arithmetic sequence starting at position i
+        if (i + 1 < list.size())
+        {
+            int    step = list[i + 1] - list[i];
+            size_t end  = i + 1;
+
+            // Extend the sequence as far as possible
+            while (end + 1 < list.size() && list[end + 1] - list[end] == step)
+            {
+                ++end;
+            }
+
+            // If we found a sequence of at least 3 elements, format it
+            if (end - start >= 2 && step > 0)
+            {
+                if (step == 1)
+                {
+                    parts.push_back(gmx::formatString("%d-%d", list[start], list[end]));
+                }
+                else
+                {
+                    parts.push_back(gmx::formatString("%d-%d:%d", list[start], list[end], step));
+                }
+                i = end + 1;
+                continue;
+            }
+        }
+
+        // Not a sequence (or too short), just add the single element
+        parts.push_back(std::to_string(list[i]));
+        ++i;
+    }
+
+    return gmx::joinStrings(parts, ",");
 }
 
 } // namespace gmx

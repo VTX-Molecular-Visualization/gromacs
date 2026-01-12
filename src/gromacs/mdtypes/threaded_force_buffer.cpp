@@ -49,13 +49,13 @@
 #include <array>
 #include <string>
 
-#include "gromacs/math/vec.h"
 #include "gromacs/mdtypes/forceoutput.h"
 #include "gromacs/pbcutil/ishift.h"
 #include "gromacs/utility/alignedallocator.h"
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/gmxassert.h"
+#include "gromacs/utility/vec.h"
 
 namespace gmx
 {
@@ -66,15 +66,10 @@ namespace gmx
 static constexpr int s_maxNumThreadsForReduction = 256;
 
 template<typename ForceBufferElementType>
-ThreadForceBuffer<ForceBufferElementType>::ThreadForceBuffer(const int  threadIndex,
-                                                             const bool useEnergyTerms,
-                                                             const int  numEnergyGroups) :
+ThreadForceBuffer<ForceBufferElementType>::ThreadForceBuffer(const int threadIndex,
+                                                             const int numEnergyGroups) :
     threadIndex_(threadIndex), shiftForces_(c_numShiftVectors), groupPairEnergies_(numEnergyGroups)
 {
-    if (useEnergyTerms)
-    {
-        energyTerms_.resize(F_NRE);
-    }
 }
 
 template<typename ForceBufferElementType>
@@ -93,6 +88,8 @@ void ThreadForceBuffer<ForceBufferElementType>::clearForcesAndEnergies()
     std::fill(shiftForces_.begin(), shiftForces_.end(), zeroVec);
 
     std::fill(energyTerms_.begin(), energyTerms_.end(), 0.0_real);
+
+    diagonalVirial_ = { 0.0_real, 0.0_real, 0.0_real };
 
     for (int i = 0; i < static_cast<int>(NonBondedEnergyTerms::Count); i++)
     {
@@ -160,7 +157,8 @@ void reduceThreadForceBuffers(ArrayRef<gmx::RVec> force,
     GMX_ASSERT(numBuffers <= s_maxNumThreadsForReduction,
                "There is a limit on the number of buffers we can use for reduction");
 
-    const int numAtoms = threadForceBuffers[0]->size();
+    // In case force is only for local atoms, we need to limit the reduction range
+    const int numAtoms = std::min(gmx::ssize(force), threadForceBuffers[0]->size());
 
     rvec* gmx_restrict f = as_rvec_array(force.data());
 
@@ -246,8 +244,8 @@ ThreadedForceBuffer<ForceBufferElementType>::ThreadedForceBuffer(const int  numT
             /* Note that thread 0 uses the global fshift and energy arrays,
              * but to keep the code simple, we initialize all data here.
              */
-            threadForceBuffers_[t] = std::make_unique<ThreadForceBuffer<ForceBufferElementType>>(
-                    t, useEnergyTerms_, numEnergyGroups);
+            threadForceBuffers_[t] =
+                    std::make_unique<ThreadForceBuffer<ForceBufferElementType>>(t, numEnergyGroups);
         }
         GMX_CATCH_ALL_AND_EXIT_WITH_FATAL_ERROR
     }
@@ -327,55 +325,123 @@ void ThreadedForceBuffer<ForceBufferElementType>::setupReduction()
     }
 }
 
+namespace
+{
+
+//! Reduces the shift forces in \p threadForceBuffers to \p forceWithShiftForces
 template<typename ForceBufferElementType>
-void ThreadedForceBuffer<ForceBufferElementType>::reduce(gmx::ForceWithShiftForces* forceWithShiftForces,
-                                                         real*                      ener,
-                                                         gmx_grppairener_t*         grpp,
-                                                         gmx::ArrayRef<real>        dvdl,
-                                                         const gmx::StepWorkload& stepWork,
-                                                         const int reductionBeginIndex)
+void reduceVirialData(ForceWithShiftForces* forceWithShiftForces,
+                      ArrayRef<const std::unique_ptr<ThreadForceBuffer<ForceBufferElementType>>> threadForceBuffers)
+{
+    rvec* gmx_restrict fshift = as_rvec_array(forceWithShiftForces->shiftForces().data());
+
+    for (int i = 0; i < gmx::c_numShiftVectors; i++)
+    {
+        for (const auto& threadForceBuffer : threadForceBuffers)
+        {
+            rvec_inc(fshift[i], threadForceBuffer->shiftForces()[i]);
+        }
+    }
+}
+
+//! Reduces the virial contributions in \p threadForceBuffers to \p forceWithVirial
+template<typename ForceBufferElementType>
+void reduceVirialData(ForceWithVirial* forceWithVirial,
+                      ArrayRef<const std::unique_ptr<ThreadForceBuffer<ForceBufferElementType>>> threadForceBuffers)
+{
+    for (const auto& threadForceBuffer : threadForceBuffers)
+    {
+        forceWithVirial->addVirialContribution(threadForceBuffer->diagonalVirial());
+    }
+}
+
+} // namespace
+
+template<typename ForceBufferElementType>
+template<typename ForceBufferType>
+void ThreadedForceBuffer<ForceBufferElementType>::reduceTemplated(
+        ForceBufferType*                                  forceBuffer,
+        gmx::EnumerationArray<InteractionFunction, real>* ener,
+        gmx_grppairener_t*                                grpp,
+        gmx::ArrayRef<real>                               dvdl,
+        const gmx::StepWorkload&                          stepWork,
+        const int                                         reductionBeginIndex)
 {
     if (stepWork.computeForces && !usedBlockIndices_.empty())
     {
         /* Reduce the force buffer */
-        GMX_ASSERT(forceWithShiftForces, "Need a valid force buffer for reduction");
+        GMX_ASSERT(forceBuffer, "Need a valid force buffer for reduction");
 
         reduceThreadForceBuffers<ForceBufferElementType>(
-                forceWithShiftForces->force(), threadForceBuffers_, reductionMask_, usedBlockIndices_);
+                forceBuffer->force(), threadForceBuffers_, reductionMask_, usedBlockIndices_);
     }
 
     const int numBuffers = numThreadBuffers();
 
-    /* When necessary, reduce energy and virial using one thread only */
-    if ((stepWork.computeEnergy || stepWork.computeVirial || stepWork.computeDhdl)
-        && numBuffers > reductionBeginIndex)
+    /* When necessary, reduce virial using one thread only */
+    if (stepWork.computeVirial && numBuffers > reductionBeginIndex)
     {
         gmx::ArrayRef<const std::unique_ptr<ThreadForceBuffer<ForceBufferElementType>>> f_t =
                 threadForceBuffers_;
 
         if (stepWork.computeVirial)
         {
-            GMX_ASSERT(forceWithShiftForces, "Need a valid force buffer for reduction");
+            GMX_ASSERT(forceBuffer, "Need a valid force buffer for reduction");
 
-            rvec* gmx_restrict fshift = as_rvec_array(forceWithShiftForces->shiftForces().data());
-
-            for (int i = 0; i < gmx::c_numShiftVectors; i++)
-            {
-                for (int t = reductionBeginIndex; t < numBuffers; t++)
-                {
-                    rvec_inc(fshift[i], f_t[t]->shiftForces()[i]);
-                }
-            }
+            reduceVirialData(forceBuffer, f_t.subArray(1, numBuffers - 1));
         }
+    }
+
+    reduceEnergiesAndDvdl(ener, grpp, dvdl, stepWork, reductionBeginIndex);
+}
+
+template<typename ForceBufferElementType>
+void ThreadedForceBuffer<ForceBufferElementType>::reduce(gmx::ForceWithShiftForces* forceWithShiftForces,
+                                                         gmx::EnumerationArray<InteractionFunction, real>* ener,
+                                                         gmx_grppairener_t*       grpp,
+                                                         gmx::ArrayRef<real>      dvdl,
+                                                         const gmx::StepWorkload& stepWork,
+                                                         const int reductionBeginIndex)
+{
+    reduceTemplated(forceWithShiftForces, ener, grpp, dvdl, stepWork, reductionBeginIndex);
+}
+
+template<typename ForceBufferElementType>
+void ThreadedForceBuffer<ForceBufferElementType>::reduce(gmx::ForceWithVirial* forceWithVirial,
+                                                         gmx::EnumerationArray<InteractionFunction, real>* ener,
+                                                         gmx_grppairener_t*       grpp,
+                                                         gmx::ArrayRef<real>      dvdl,
+                                                         const gmx::StepWorkload& stepWork,
+                                                         const int reductionBeginIndex)
+{
+    reduceTemplated(forceWithVirial, ener, grpp, dvdl, stepWork, reductionBeginIndex);
+}
+
+template<typename ForceBufferElementType>
+void ThreadedForceBuffer<ForceBufferElementType>::reduceEnergiesAndDvdl(
+        gmx::EnumerationArray<InteractionFunction, real>* ener,
+        gmx_grppairener_t*                                grpp,
+        gmx::ArrayRef<real>                               dvdl,
+        const gmx::StepWorkload&                          stepWork,
+        const int                                         reductionBeginIndex)
+{
+    const int numBuffers = numThreadBuffers();
+
+    /* When necessary, reduce energy and virial using one thread only */
+    if ((stepWork.computeEnergy || stepWork.computeDhdl) && numBuffers > reductionBeginIndex)
+    {
+        gmx::ArrayRef<const std::unique_ptr<ThreadForceBuffer<ForceBufferElementType>>> f_t =
+                threadForceBuffers_;
+
         if (stepWork.computeEnergy && useEnergyTerms_)
         {
             GMX_ASSERT(ener, "Need a valid energy buffer for reduction");
 
-            for (int i = 0; i < F_NRE; i++)
+            for (const auto i : gmx::EnumerationWrapper<InteractionFunction>{})
             {
                 for (int t = reductionBeginIndex; t < numBuffers; t++)
                 {
-                    ener[i] += f_t[t]->energyTerms()[i];
+                    (*ener)[i] += f_t[t]->energyTerms()[i];
                 }
             }
         }

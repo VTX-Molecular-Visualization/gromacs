@@ -57,14 +57,14 @@
 #include "gromacs/correlationfunctions/polynomials.h"
 #include "gromacs/fileio/xvgr.h"
 #include "gromacs/math/functions.h"
-#include "gromacs/math/vec.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/utility/arraysize.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/futil.h"
 #include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/strconvert.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
 
 /*! \brief Shortcut macro to select modes. */
 #define MODE(x) ((mode & (x)) == (x))
@@ -134,7 +134,6 @@ static void do_ac_core(int nframes, int nout, real corr[], real c1[], int nresta
 {
     int  j, k, j3, jk3, m, n;
     real ccc, cth;
-    rvec xj, xk;
 
     if (nrestart < 1)
     {
@@ -183,6 +182,7 @@ static void do_ac_core(int nframes, int nout, real corr[], real c1[], int nresta
             {
                 unsigned int mmm;
 
+                rvec xj, xk;
                 for (m = 0; (m < DIM); m++)
                 {
                     xj[m] = c1[j3 + m];
@@ -227,6 +227,7 @@ static void do_ac_core(int nframes, int nout, real corr[], real c1[], int nresta
             }
             else if (MODE(eacVector))
             {
+                rvec xj, xk;
                 for (m = 0; (m < DIM); m++)
                 {
                     xj[m] = c1[j3 + m];
@@ -331,7 +332,7 @@ static void norm_and_scale_vectors(int nframes, real c1[], real scale)
 }
 
 /*! \brief Debugging */
-static void dump_tmp(char* s, int n, real c[])
+static void dump_tmp(const char* s, int n, real c[])
 {
     FILE* fp;
     int   i;
@@ -553,7 +554,6 @@ void low_do_autocorr(const char*             fn,
                      int                     eFitFn)
 {
     FILE *   fp, *gp = nullptr;
-    int      i;
     real*    csum;
     real *   ctmp, *fit;
     real     sum, Ct2av, Ctav;
@@ -610,7 +610,7 @@ void low_do_autocorr(const char*             fn,
         if (bVerbose && (((i % 100) == 0) || (i == nitem - 1)))
         {
             fprintf(stderr, "\rThingie %d", i + 1);
-            fflush(stderr);
+            std::fflush(stderr);
         }
 
         if (bFour)
@@ -673,7 +673,7 @@ void low_do_autocorr(const char*             fn,
         {
             gp = xvgropen("ct-distr.xvg", "Correlation times", "item", "time (ps)", oenv);
         }
-        for (i = 0; i < nitem; i++)
+        for (int i = 0; i < nitem; i++)
         {
             if (bNormalize)
             {
@@ -694,12 +694,12 @@ void low_do_autocorr(const char*             fn,
             }
             Ctav += sum;
             Ct2av += sum * sum;
-            if (debug)
+            if (gp)
             {
                 fprintf(gp, "%5d  %.3f\n", i, sum);
             }
         }
-        if (debug)
+        if (gp)
         {
             xvgrclose(gp);
         }

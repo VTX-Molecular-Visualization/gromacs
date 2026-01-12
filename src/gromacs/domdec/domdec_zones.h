@@ -49,9 +49,9 @@
 
 #include <array>
 
-#include "gromacs/math/vectypes.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/range.h"
+#include "gromacs/utility/vectypes.h"
 
 struct gmx_ddbox_t;
 struct gmx_domdec_t;
@@ -173,10 +173,7 @@ public:
      * \param[in]     ddbox       The domain decomposition box struct
      * \param[in]     zoneRange   The range of zones to set sizes for
      */
-    void setSizes(const gmx_domdec_t&   dd,
-                  const matrix          box,
-                  const gmx_ddbox_t*    ddbox,
-                  const gmx::Range<int> zoneRange);
+    void setSizes(const gmx_domdec_t& dd, const matrix box, const gmx_ddbox_t* ddbox, gmx::Range<int> zoneRange);
 
 private:
     //! The number of zones including the home zone

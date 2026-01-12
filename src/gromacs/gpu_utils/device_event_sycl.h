@@ -69,15 +69,19 @@ public:
     // Disable copy, move, and assignment. They all can be allowed, but not needed yet.
     DeviceEvent& operator=(const DeviceEvent&) = delete;
     DeviceEvent(const DeviceEvent&)            = delete;
-    DeviceEvent& operator=(DeviceEvent&&) = delete;
-    DeviceEvent(DeviceEvent&&)            = delete;
+    DeviceEvent& operator=(DeviceEvent&&)      = delete;
+    DeviceEvent(DeviceEvent&&)                 = delete;
 
     /*! \brief Marks the synchronization point in the \p deviceStream.
      * Should be called first and then followed by wait() or enqueueWait().
      */
     inline void mark(const DeviceStream& deviceStream)
     {
-#    if defined(ACPP_EXT_ENQUEUE_CUSTOM_OPERATION) || defined(HIPSYCL_EXT_ENQUEUE_CUSTOM_OPERATION)
+#    if defined(ACPP_EXT_ENQUEUE_CUSTOM_OPERATION)
+        // This will not launch any GPU operation, but it will mark an event which is returned
+        events_ = { deviceStream.stream().AdaptiveCpp_enqueue_custom_operation(
+                [=](sycl::interop_handle&) {}) };
+#    elif defined(HIPSYCL_EXT_ENQUEUE_CUSTOM_OPERATION) // ACpp 24.02 and earlier
         // This will not launch any GPU operation, but it will mark an event which is returned
         events_ = { deviceStream.stream().hipSYCL_enqueue_custom_operation([=](sycl::interop_handle&) {}) };
 #    elif defined(SYCL_EXT_ONEAPI_ENQUEUE_BARRIER)
@@ -91,7 +95,6 @@ public:
     //! Synchronizes the host thread on the marked event.
     inline void wait()
     {
-        // Note: this is not to prevent use-before-marking, but for checking the DPC++ vs hipSYCL consistency
         for (auto& event : events_)
         {
             event.wait_and_throw();
@@ -101,11 +104,15 @@ public:
     inline void enqueueWait(const DeviceStream& deviceStream)
     {
 #    if defined(ACPP_EXT_ENQUEUE_CUSTOM_OPERATION) || defined(HIPSYCL_EXT_ENQUEUE_CUSTOM_OPERATION)
-        // Submit an empty operation that depends on all the events recorded.
-        deviceStream.stream().submit(GMX_SYCL_DISCARD_EVENT[&](sycl::handler & cgh) {
-            cgh.depends_on(events_);
-            cgh.hipSYCL_enqueue_custom_operation([=](sycl::interop_handle&) {});
-        });
+        // Submit an empty operation that depends on all the events recorded
+        // but avoids returning a (useless) event.
+        gmx::syclSubmitWithCghWithoutEvent(deviceStream.stream(),
+                                           [&](sycl::handler& cgh)
+                                           {
+                                               cgh.depends_on(events_);
+                                               gmx::syclEnqueueCustomOp(
+                                                       cgh, [=](sycl::interop_handle&) {});
+                                           });
 #    elif defined(SYCL_EXT_ONEAPI_ENQUEUE_BARRIER)
         // Relies on sycl_ext_oneapi_enqueue_barrier extensions
         deviceStream.stream().ext_oneapi_submit_barrier(events_);
@@ -118,11 +125,15 @@ public:
     //! Checks the completion of the underlying event.
     inline bool isReady()
     {
-        bool allReady = std::all_of(events_.begin(), events_.end(), [](sycl::event& event) {
-            auto info       = event.get_info<sycl::info::event::command_execution_status>();
-            bool isComplete = (info == sycl::info::event_command_status::complete);
-            return isComplete;
-        });
+        bool allReady = std::all_of(
+                events_.begin(),
+                events_.end(),
+                [](sycl::event& event)
+                {
+                    auto info       = event.get_info<sycl::info::event::command_execution_status>();
+                    bool isComplete = (info == sycl::info::event_command_status::complete);
+                    return isComplete;
+                });
         return allReady;
     }
 

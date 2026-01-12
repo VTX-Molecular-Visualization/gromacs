@@ -53,13 +53,11 @@
 
 #include "gromacs/listed_forces/bonded.h"
 #include "gromacs/math/functions.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/mdtypes/enerdata.h"
 #include "gromacs/mdtypes/forcerec.h"
 #include "gromacs/mdtypes/group.h"
 #include "gromacs/mdtypes/interaction_const.h"
 #include "gromacs/mdtypes/md_enums.h"
-#include "gromacs/mdtypes/nblist.h"
 #include "gromacs/mdtypes/simulation_workload.h"
 #include "gromacs/pbcutil/ishift.h"
 #include "gromacs/pbcutil/pbc.h"
@@ -75,6 +73,7 @@
 #include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/gmxassert.h"
+#include "gromacs/utility/vec.h"
 
 #include "listed_internal.h"
 
@@ -250,7 +249,6 @@ static real free_energy_evaluate_single(real                                    
             }
             sigma_pow[i] = sigma6[i];
         }
-        // NOLINTNEXTLINE(readability-misleading-indentation) remove when clang-tidy-13 is required
         if constexpr (softcoreType == KernelSoftcoreType::Gapsys)
         {
             if ((c6[i] > 0) && (c12[i] > 0))
@@ -267,7 +265,6 @@ static real free_energy_evaluate_single(real                                    
         }
     }
 
-    // NOLINTNEXTLINE(readability-misleading-indentation) remove when clang-tidy-13 is required
     if constexpr (softcoreType == KernelSoftcoreType::Beutler)
     {
         /* only use softcore if one of the states has a zero endstate - softcore is for avoiding infinities!*/
@@ -282,7 +279,6 @@ static real free_energy_evaluate_single(real                                    
             alpha_coul_eff = scParams.alphaCoulomb;
         }
     }
-    // NOLINTNEXTLINE(readability-misleading-indentation) remove when clang-tidy-13 is required
     if constexpr (softcoreType == KernelSoftcoreType::Gapsys)
     {
         /* only use softcore if one of the states has a zero endstate - softcore is for avoiding infinities!*/
@@ -299,7 +295,6 @@ static real free_energy_evaluate_single(real                                    
     }
 
     /* Loop over A and B states again */
-    // NOLINTNEXTLINE(readability-misleading-indentation) remove when clang-tidy-13 is required
     for (i = 0; i < 2; i++)
     {
         fscal_elec[i] = 0;
@@ -326,7 +321,6 @@ static real free_energy_evaluate_single(real                                    
                 r_coul = r;
             }
 
-            // NOLINTNEXTLINE(readability-misleading-indentation) remove when clang-tidy-13 is required
             if constexpr (softcoreType == KernelSoftcoreType::Gapsys)
             {
                 if ((facel != 0) && (LFC[i] < 1))
@@ -346,7 +340,6 @@ static real free_energy_evaluate_single(real                                    
                 }
             }
 
-            // NOLINTNEXTLINE(readability-misleading-indentation) remove when clang-tidy-13 is required
             if ((softcoreType == KernelSoftcoreType::Gapsys) && (r < rQ))
             {
                 real rInvQ    = one / rQ;
@@ -411,7 +404,6 @@ static real free_energy_evaluate_single(real                                    
                 }
             }
 
-            // NOLINTNEXTLINE(readability-misleading-indentation) remove when clang-tidy-13 is required
             if ((softcoreType == KernelSoftcoreType::Gapsys) && (r < rLJ))
             {
                 // scaled values for c6 and c12
@@ -502,7 +494,6 @@ static real free_energy_evaluate_single(real                                    
             dvdl_coul_sum += dvdl_elec[i];
             dvdl_vdw_sum += dvdl_vdw[i];
         }
-        // NOLINTNEXTLINE(readability-misleading-indentation) remove when clang-tidy-13 is required
         dvdl_coul_sum += velec[i] * DLF[i];
         dvdl_vdw_sum += vvdw[i] * DLF[i];
         if constexpr (softcoreType == KernelSoftcoreType::Beutler)
@@ -523,7 +514,7 @@ static real free_energy_evaluate_single(real                                    
 
 /*! \brief Calculate pair interactions, supports all types and conditions. */
 template<BondedKernelFlavor flavor>
-static real do_pairs_general(int                                 ftype,
+static real do_pairs_general(InteractionFunction                 ftype,
                              int                                 nbonds,
                              const t_iatom                       iatoms[],
                              const t_iparams                     iparams[],
@@ -559,19 +550,19 @@ static real do_pairs_general(int                                 ftype,
 
     switch (ftype)
     {
-        case F_LJ14:
-        case F_LJC14_Q:
+        case InteractionFunction::LennardJones14:
+        case InteractionFunction::LennardJonesCoulomb14Q:
             energygrp_elec = grppener->energyGroupPairTerms[NonBondedEnergyTerms::Coulomb14].data();
             energygrp_vdw  = grppener->energyGroupPairTerms[NonBondedEnergyTerms::LJ14].data();
             break;
-        case F_LJC_PAIRS_NB:
+        case InteractionFunction::LennardJonesCoulombNonBondedPairs:
             energygrp_elec = grppener->energyGroupPairTerms[NonBondedEnergyTerms::CoulombSR].data();
             energygrp_vdw  = grppener->energyGroupPairTerms[NonBondedEnergyTerms::LJSR].data();
             break;
         default:
             energygrp_elec = nullptr; /* Keep compiler happy */
             energygrp_vdw  = nullptr; /* Keep compiler happy */
-            gmx_fatal(FARGS, "Unknown function type %d in do_nonbonded14", ftype);
+            gmx_fatal(FARGS, "Unknown function type %d in do_nonbonded14", static_cast<int>(ftype));
     }
 
     if (fr->efep != FreeEnergyPerturbationType::No)
@@ -620,7 +611,7 @@ static real do_pairs_general(int                                 ftype,
             fr->pairsTable->interaction_ == TableInteraction::ElectrostaticVdwRepulsionVdwDispersion,
             "Pair interaction kernels need a table with Coulomb, repulsion and dispersion entries");
 
-    const real epsfac = fr->ic->epsfac;
+    const real epsfac = fr->ic->coulomb.epsfac;
 
     bFreeEnergy = FALSE;
     for (i = 0; (i < nbonds);)
@@ -633,7 +624,7 @@ static real do_pairs_general(int                                 ftype,
         /* Get parameters */
         switch (ftype)
         {
-            case F_LJ14:
+            case InteractionFunction::LennardJones14:
                 bFreeEnergy =
                         (fr->efep != FreeEnergyPerturbationType::No
                          && ((!atomIsPerturbed.empty() && (atomIsPerturbed[ai] || atomIsPerturbed[aj]))
@@ -643,13 +634,13 @@ static real do_pairs_general(int                                 ftype,
                 c6  = iparams[itype].lj14.c6A;
                 c12 = iparams[itype].lj14.c12A;
                 break;
-            case F_LJC14_Q:
+            case InteractionFunction::LennardJonesCoulomb14Q:
                 qq = iparams[itype].ljc14.qi * iparams[itype].ljc14.qj * epsfac
                      * iparams[itype].ljc14.fqq;
                 c6  = iparams[itype].ljc14.c6;
                 c12 = iparams[itype].ljc14.c12;
                 break;
-            case F_LJC_PAIRS_NB:
+            case InteractionFunction::LennardJonesCoulombNonBondedPairs:
                 qq  = iparams[itype].ljcnb.qi * iparams[itype].ljcnb.qj * epsfac;
                 c6  = iparams[itype].ljcnb.c6;
                 c12 = iparams[itype].ljcnb.c12;
@@ -694,7 +685,7 @@ static real do_pairs_general(int                                 ftype,
 
         if (bFreeEnergy)
         {
-            /* Currently free energy is only supported for F_LJ14, so no need to check for that if we got here */
+            /* Currently free energy is only supported for InteractionFunction::LennardJones14, so no need to check for that if we got here */
             qqB  = chargeB[ai] * chargeB[aj] * epsfac * fr->fudgeQQ;
             c6B  = iparams[itype].lj14.c6B * 6.0;
             c12B = iparams[itype].lj14.c12B * 12.0;
@@ -706,7 +697,7 @@ static real do_pairs_general(int                                 ftype,
                 {
                     fscal = free_energy_evaluate_single<KernelSoftcoreType::None>(
                             r2,
-                            fr->ic->rcoulomb,
+                            fr->ic->coulomb.cutoff,
                             *fr->ic->softCoreParameters,
                             fr->pairsTable->scale,
                             fr->pairsTable->data.data(),
@@ -733,7 +724,7 @@ static real do_pairs_general(int                                 ftype,
                 {
                     fscal = free_energy_evaluate_single<KernelSoftcoreType::Beutler>(
                             r2,
-                            fr->ic->rcoulomb,
+                            fr->ic->coulomb.cutoff,
                             *fr->ic->softCoreParameters,
                             fr->pairsTable->scale,
                             fr->pairsTable->data.data(),
@@ -763,7 +754,7 @@ static real do_pairs_general(int                                 ftype,
                 {
                     fscal = free_energy_evaluate_single<KernelSoftcoreType::None>(
                             r2,
-                            fr->ic->rcoulomb,
+                            fr->ic->coulomb.cutoff,
                             *fr->ic->softCoreParameters,
                             fr->pairsTable->scale,
                             fr->pairsTable->data.data(),
@@ -790,7 +781,7 @@ static real do_pairs_general(int                                 ftype,
                 {
                     fscal = free_energy_evaluate_single<KernelSoftcoreType::Gapsys>(
                             r2,
-                            fr->ic->rcoulomb,
+                            fr->ic->coulomb.cutoff,
                             *fr->ic->softCoreParameters,
                             fr->pairsTable->scale,
                             fr->pairsTable->data.data(),
@@ -957,7 +948,7 @@ static void do_pairs_simple(int                       nbonds,
 }
 
 /*! \brief Calculate all listed pair interactions */
-void do_pairs(int                                 ftype,
+void do_pairs(InteractionFunction                 ftype,
               int                                 nbonds,
               const t_iatom                       iatoms[],
               const t_iparams                     iparams[],
@@ -978,8 +969,8 @@ void do_pairs(int                                 ftype,
               gmx_grppairener_t*                  grppener,
               int*                                global_atom_index)
 {
-    if (ftype == F_LJ14 && fr->ic->vdwtype != VanDerWaalsType::User
-        && !usingUserTableElectrostatics(fr->ic->eeltype) && !havePerturbedInteractions
+    if (ftype == InteractionFunction::LennardJones14 && fr->ic->vdw.type != VanDerWaalsType::User
+        && !usingUserTableElectrostatics(fr->ic->coulomb.type) && !havePerturbedInteractions
         && (!stepWork.computeVirial && !stepWork.computeEnergy))
     {
         /* We use a fast code-path for plain LJ 1-4 without FEP.
@@ -997,7 +988,7 @@ void do_pairs(int                                 ftype,
             set_pbc_simd(pbc, pbc_simd);
 
             do_pairs_simple<SimdReal, GMX_SIMD_REAL_WIDTH, const real*>(
-                    nbonds, iatoms, iparams, x, f, pbc_simd, chargeA, fr->ic->epsfac * fr->fudgeQQ);
+                    nbonds, iatoms, iparams, x, f, pbc_simd, chargeA, fr->ic->coulomb.epsfac * fr->fudgeQQ);
         }
         else
 #endif
@@ -1017,7 +1008,7 @@ void do_pairs(int                                 ftype,
             }
 
             do_pairs_simple<real, 1, const t_pbc*>(
-                    nbonds, iatoms, iparams, x, f, pbc_nonnull, chargeA, fr->ic->epsfac * fr->fudgeQQ);
+                    nbonds, iatoms, iparams, x, f, pbc_nonnull, chargeA, fr->ic->coulomb.epsfac * fr->fudgeQQ);
         }
     }
     else if (stepWork.computeVirial)

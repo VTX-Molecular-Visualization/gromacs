@@ -53,13 +53,13 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
-#include "gromacs/math/vectypes.h"
 #include "gromacs/topology/ifunc.h"
 #include "gromacs/trajectory/trajectoryframe.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/real.h"
 #include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "testutils/mpitest.h"
 #include "testutils/simulationdatabase.h"
@@ -138,10 +138,10 @@ TEST_P(AccelerationGroupTest, WithinTolerances)
     mdpFieldValues["rvdw"]                    = "0.8";
     mdpFieldValues["verlet-buffer-tolerance"] = "-1";
     mdpFieldValues["rlist"]                   = "0.9";
-    // Couple the (non-)accelerated groups separately, so their velocties are independent
+    // Couple the (non-)accelerated groups separately, so their velocities are independent
     mdpFieldValues["tc-grps"] = "firstWaterMolecule secondWaterMolecule";
     mdpFieldValues["ref-t"]   = "0.001 0.001";
-    // Use weak coupling so we can check vecolities of atoms with a tight tolerance
+    // Use weak coupling so we can check velocities of atoms with a tight tolerance
     mdpFieldValues["tau-t"]      = "10.0 10.0";
     const RVec c_acceleration    = { 2.0, 3.0, 1.5 };
     mdpFieldValues["acc-grps"]   = "secondWaterMolecule";

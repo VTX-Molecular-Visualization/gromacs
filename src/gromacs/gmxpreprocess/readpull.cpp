@@ -52,8 +52,6 @@
 #include "gromacs/fileio/readinp.h"
 #include "gromacs/fileio/warninp.h"
 #include "gromacs/gmxpreprocess/readir.h"
-#include "gromacs/math/vec.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/mdlib/mdatoms.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
@@ -70,9 +68,12 @@
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/futil.h"
 #include "gromacs/utility/gmxassert.h"
+#include "gromacs/utility/mpicomm.h"
 #include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
 
 struct pull_t;
 
@@ -294,7 +295,7 @@ static void init_pull_coord(t_pull_coord*        pcrd,
     process_pull_dim(dim_buf, pcrd->dim, pcrd);
 
     string2dvec(origin_buf, origin);
-    if (pcrd->group[0] != 0 && dnorm(origin) > 0)
+    if (pcrd->eGeom != PullGroupGeometry::Transformation && pcrd->group[0] != 0 && dnorm(origin) > 0)
     {
         gmx_fatal(FARGS, "The pull origin can only be set with an absolute reference");
     }
@@ -686,8 +687,9 @@ pull_t* set_pull_init(t_inputrec*                    ir,
     t_pbc   pbc;
 
     pull_params_t*           pull = ir->pull.get();
+    const gmx::MpiComm       mpiComm(gmx::MpiComm(gmx::MpiComm::SingleRank{}));
     gmx::LocalAtomSetManager atomSets;
-    pull_work     = init_pull(nullptr, pull, ir, mtop, nullptr, &atomSets, lambda);
+    pull_work     = init_pull(nullptr, pull, ir, mtop, mpiComm, nullptr, &atomSets, lambda);
     auto  mdAtoms = gmx::makeMDAtoms(nullptr, mtop, *ir, false);
     auto* md      = mdAtoms->mdatoms();
     atoms2md(mtop, *ir, -1, {}, mtop.natoms, mdAtoms.get());
@@ -702,9 +704,9 @@ pull_t* set_pull_init(t_inputrec*                    ir,
 
     if (pull->bSetPbcRefToPrevStepCOM)
     {
-        initPullComFromPrevStep(nullptr, pull_work, md->massT, pbc, x);
+        initPullComFromPrevStep(mpiComm, pull_work, md->massT, pbc, x);
     }
-    pull_calc_coms(nullptr, pull_work, md->massT, pbc, t_start, x, {});
+    pull_calc_coms(mpiComm, pull_work, md->massT, pbc, t_start, x, {});
 
     for (int g = 0; g < pull->ngroup; g++)
     {
@@ -765,11 +767,14 @@ pull_t* set_pull_init(t_inputrec*                    ir,
         real init = 0;
 
         t_pull_coord* pcrd = &pull->coord[c];
-
-        t_pull_group* pgrp0 = &pull->group[pcrd->group[0]];
-        t_pull_group* pgrp1 = &pull->group[pcrd->group[1]];
-        fprintf(stderr, "%8d  %8zu  %8d\n", pcrd->group[0], pgrp0->ind.size(), pgrp0->pbcatom + 1);
-        fprintf(stderr, "%8d  %8zu  %8d ", pcrd->group[1], pgrp1->ind.size(), pgrp1->pbcatom + 1);
+        if (pcrd->eGeom != PullGroupGeometry::Transformation)
+        {
+            // Only pull cordinates with non-transformation geometry have groups to dump
+            t_pull_group* pgrp0 = &pull->group[pcrd->group[0]];
+            t_pull_group* pgrp1 = &pull->group[pcrd->group[1]];
+            fprintf(stderr, "%8d  %8zu  %8d\n", pcrd->group[0], pgrp0->ind.size(), pgrp0->pbcatom + 1);
+            fprintf(stderr, "%8d  %8zu  %8d ", pcrd->group[1], pgrp1->ind.size(), pgrp1->pbcatom + 1);
+        }
 
         if (pcrd->bStart)
         {

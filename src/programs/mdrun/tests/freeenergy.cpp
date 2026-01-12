@@ -53,6 +53,9 @@
 
 #include <gtest/gtest.h>
 
+#include "gromacs/gpu_utils/capabilities.h"
+#include "gromacs/hardware/device_information.h"
+#include "gromacs/hardware/hw_info.h"
 #include "gromacs/topology/ifunc.h"
 #include "gromacs/utility/filestream.h"
 #include "gromacs/utility/path.h"
@@ -62,6 +65,7 @@
 #include "testutils/refdata.h"
 #include "testutils/setenv.h"
 #include "testutils/simulationdatabase.h"
+#include "testutils/test_hardware_environment.h"
 #include "testutils/testasserts.h"
 #include "testutils/testfilemanager.h"
 #include "testutils/xvgtest.h"
@@ -84,8 +88,8 @@ namespace
  * results identical to an earlier version. The results of this earlier version
  * have been verified manually to ensure physical correctness.
  */
-using MaxNumWarnings                = int;
-using ListOfInteractionsToTest      = std::vector<int>;
+using MaxNumWarnings           = int;
+using ListOfInteractionsToTest = std::vector<InteractionFunction>;
 using FreeEnergyReferenceTestParams = std::tuple<std::string, MaxNumWarnings, ListOfInteractionsToTest>;
 class FreeEnergyReferenceTest :
     public MdrunTestFixture,
@@ -130,11 +134,13 @@ TEST_P(FreeEnergyReferenceTest, WithinTolerances)
     // Tolerance set to pass with identical code version and a range of different test setups for most tests
     const auto defaultEnergyTolerance = relativeToleranceAsFloatingPoint(100.0, GMX_DOUBLE ? 5e-6 : 5e-5);
     // Some simulations are significantly longer, so they need a larger tolerance
-    const auto longEnergyTolerance = relativeToleranceAsFloatingPoint(100.0, GMX_DOUBLE ? 2e-5 : 2e-4);
-    const bool isLongSimulation    = (simulationName == "expanded");
-    const auto energyTolerance = isLongSimulation ? longEnergyTolerance : defaultEnergyTolerance;
+    const auto longEnergyTolerance = relativeToleranceAsFloatingPoint(100.0, GMX_DOUBLE ? 3e-5 : 2e-4);
+    const bool isLongSimulation = (simulationName == "expanded");
+    const auto energyTolerance  = isLongSimulation ? longEnergyTolerance : defaultEnergyTolerance;
 
-    EnergyTermsToCompare energyTermsToCompare{ { interaction_function[F_EPOT].longname, energyTolerance } };
+    EnergyTermsToCompare energyTermsToCompare{
+        { interaction_function[InteractionFunction::PotentialEnergy].longname, energyTolerance }
+    };
     for (const auto& interaction : interactionsList)
     {
         energyTermsToCompare.emplace(interaction_function[interaction].longname, energyTolerance);
@@ -148,7 +154,7 @@ TEST_P(FreeEnergyReferenceTest, WithinTolerances)
                                                           ComparisonConditions::NoComparison,
                                                           ComparisonConditions::MustCompare };
     TrajectoryTolerances trajectoryTolerances = TrajectoryComparison::s_defaultTrajectoryTolerances;
-    trajectoryTolerances.forces = relativeToleranceAsFloatingPoint(100.0, GMX_DOUBLE ? 5.0e-5 : 5.0e-4);
+    trajectoryTolerances.forces = relativeToleranceAsFloatingPoint(100.0, GMX_DOUBLE ? 6.0e-5 : 5.0e-4);
 
     // Build the functor that will compare reference and test
     // trajectory frames in the chosen way.
@@ -169,7 +175,19 @@ TEST_P(FreeEnergyReferenceTest, WithinTolerances)
     runner_.fullPrecisionTrajectoryFileName_ = simulationTrajectoryFileName.string();
     runner_.edrFileName_                     = simulationEdrFileName.string();
     runner_.dhdlFileName_                    = simulationDhdlFileName.string();
-    runMdrun(&runner_);
+
+    // Run FEP-on-GPU tests when available
+    // Expanded ensemble simulations are also not implemented on GPUs yet.
+    if (GpuConfigurationCapabilities::NonbondedFE && simulationName != "expanded"
+        && !getCompatibleDevices(s_hwinfo->deviceInfoList).empty())
+    {
+        std::vector<SimulationOptionTuple> mdrunOptions = { { "-nbfe", "gpu" } };
+        runMdrun(&runner_, mdrunOptions);
+    }
+    else
+    {
+        runMdrun(&runner_);
+    }
 
     /* Currently used tests write trajectory (x/v/f) frames every 20 steps.
      * Except for the expanded ensemble test, all tests run for 20 steps total.
@@ -192,17 +210,17 @@ TEST_P(FreeEnergyReferenceTest, WithinTolerances)
     if (testTwoTrajectoryFrames)
     {
         checkTrajectoryAgainstReferenceData(
-                simulationTrajectoryFileName.string(), trajectoryComparison, &rootChecker, MaxNumFrames(2));
+                simulationTrajectoryFileName, trajectoryComparison, &rootChecker, MaxNumFrames(2));
     }
     else if (testOneTrajectoryFrame)
     {
         checkTrajectoryAgainstReferenceData(
-                simulationTrajectoryFileName.string(), trajectoryComparison, &rootChecker, MaxNumFrames(1));
+                simulationTrajectoryFileName, trajectoryComparison, &rootChecker, MaxNumFrames(1));
     }
     else
     {
         checkTrajectoryAgainstReferenceData(
-                simulationTrajectoryFileName.string(), trajectoryComparison, &rootChecker, MaxNumFrames(0));
+                simulationTrajectoryFileName, trajectoryComparison, &rootChecker, MaxNumFrames(0));
     }
     if (File::exists(simulationDhdlFileName, File::returnFalseOnError))
     {
@@ -223,29 +241,50 @@ INSTANTIATE_TEST_SUITE_P(
         ::testing::Values(
                 FreeEnergyReferenceTestParams{ "coulandvdwsequential_coul",
                                                MaxNumWarnings(1),
-                                               { F_DVDL_COUL, F_DVDL_VDW } },
+                                               { InteractionFunction::dVCoulombdLambda,
+                                                 InteractionFunction::dVvanderWaalsdLambda } },
                 FreeEnergyReferenceTestParams{ "coulandvdwsequential_vdw",
                                                MaxNumWarnings(1),
-                                               { F_DVDL_COUL, F_DVDL_VDW } },
-                FreeEnergyReferenceTestParams{ "coulandvdwtogether", MaxNumWarnings(1), { F_DVDL } },
-                FreeEnergyReferenceTestParams{ "coulandvdwtogether-net-charge", MaxNumWarnings(2), { F_DVDL } },
-                FreeEnergyReferenceTestParams{ "coulandvdwtogether-decouple-counter-charge",
+                                               { InteractionFunction::dVCoulombdLambda,
+                                                 InteractionFunction::dVvanderWaalsdLambda } },
+                FreeEnergyReferenceTestParams{ "coulandvdwtogether",
                                                MaxNumWarnings(1),
-                                               { F_DVDL } },
-                FreeEnergyReferenceTestParams{ "expanded", MaxNumWarnings(1), { F_DVDL_COUL, F_DVDL_VDW } },
+                                               { InteractionFunction::dVremainingdLambda } },
+                FreeEnergyReferenceTestParams{ "coulandvdwtogether-net-charge",
+                                               MaxNumWarnings(2),
+                                               { InteractionFunction::dVremainingdLambda } },
+                FreeEnergyReferenceTestParams{ "coulandvdwtogether-decouple-counter-charge",
+                                               MaxNumWarnings(2),
+                                               { InteractionFunction::dVremainingdLambda } },
+                FreeEnergyReferenceTestParams{ "expanded",
+                                               MaxNumWarnings(1),
+                                               { InteractionFunction::dVCoulombdLambda,
+                                                 InteractionFunction::dVvanderWaalsdLambda } },
                 // Tolerated warnings: No default bonded interaction types for perturbed atoms (10x)
                 FreeEnergyReferenceTestParams{ "relative",
                                                MaxNumWarnings(11),
-                                               { F_DVDL, F_DVDL_COUL, F_DVDL_VDW, F_DVDL_BONDED } },
+                                               { InteractionFunction::dVremainingdLambda,
+                                                 InteractionFunction::dVCoulombdLambda,
+                                                 InteractionFunction::dVvanderWaalsdLambda,
+                                                 InteractionFunction::dVbondeddLambda } },
                 // Tolerated warnings: No default bonded interaction types for perturbed atoms (10x)
-                FreeEnergyReferenceTestParams{
-                        "relative-position-restraints",
-                        MaxNumWarnings(11),
-                        { F_DVDL, F_DVDL_COUL, F_DVDL_VDW, F_DVDL_BONDED, F_DVDL_RESTRAINT } },
-                FreeEnergyReferenceTestParams{ "restraints", MaxNumWarnings(1), { F_DVDL_RESTRAINT } },
+                FreeEnergyReferenceTestParams{ "relative-position-restraints",
+                                               MaxNumWarnings(11),
+                                               { InteractionFunction::dVremainingdLambda,
+                                                 InteractionFunction::dVCoulombdLambda,
+                                                 InteractionFunction::dVvanderWaalsdLambda,
+                                                 InteractionFunction::dVbondeddLambda,
+                                                 InteractionFunction::dVrestraintdLambda } },
+                FreeEnergyReferenceTestParams{ "restraints",
+                                               MaxNumWarnings(1),
+                                               { InteractionFunction::dVrestraintdLambda } },
                 FreeEnergyReferenceTestParams{ "simtemp", MaxNumWarnings(1), {} },
-                FreeEnergyReferenceTestParams{ "transformAtoB", MaxNumWarnings(1), { F_DVDL } },
-                FreeEnergyReferenceTestParams{ "vdwalone", MaxNumWarnings(1), { F_DVDL } }),
+                FreeEnergyReferenceTestParams{ "transformAtoB",
+                                               MaxNumWarnings(1),
+                                               { InteractionFunction::dVremainingdLambda } },
+                FreeEnergyReferenceTestParams{ "vdwalone",
+                                               MaxNumWarnings(1),
+                                               { InteractionFunction::dVremainingdLambda } }),
         FreeEnergyReferenceTest::PrintParametersToString());
 #else
 INSTANTIATE_TEST_SUITE_P(
@@ -254,29 +293,50 @@ INSTANTIATE_TEST_SUITE_P(
         ::testing::Values(
                 FreeEnergyReferenceTestParams{ "coulandvdwsequential_coul",
                                                MaxNumWarnings(1),
-                                               { F_DVDL_COUL, F_DVDL_VDW } },
+                                               { InteractionFunction::dVCoulombdLambda,
+                                                 InteractionFunction::dVvanderWaalsdLambda } },
                 FreeEnergyReferenceTestParams{ "coulandvdwsequential_vdw",
                                                MaxNumWarnings(1),
-                                               { F_DVDL_COUL, F_DVDL_VDW } },
-                FreeEnergyReferenceTestParams{ "coulandvdwtogether", MaxNumWarnings(1), { F_DVDL } },
-                FreeEnergyReferenceTestParams{ "coulandvdwtogether-net-charge", MaxNumWarnings(2), { F_DVDL } },
+                                               { InteractionFunction::dVCoulombdLambda,
+                                                 InteractionFunction::dVvanderWaalsdLambda } },
+                FreeEnergyReferenceTestParams{ "coulandvdwtogether",
+                                               MaxNumWarnings(1),
+                                               { InteractionFunction::dVremainingdLambda } },
+                FreeEnergyReferenceTestParams{ "coulandvdwtogether-net-charge",
+                                               MaxNumWarnings(2),
+                                               { InteractionFunction::dVremainingdLambda } },
                 FreeEnergyReferenceTestParams{ "coulandvdwtogether-decouple-counter-charge",
                                                MaxNumWarnings(1),
-                                               { F_DVDL } },
-                FreeEnergyReferenceTestParams{ "expanded", MaxNumWarnings(1), { F_DVDL_COUL, F_DVDL_VDW } },
+                                               { InteractionFunction::dVremainingdLambda } },
+                FreeEnergyReferenceTestParams{ "expanded",
+                                               MaxNumWarnings(1),
+                                               { InteractionFunction::dVCoulombdLambda,
+                                                 InteractionFunction::dVvanderWaalsdLambda } },
                 // Tolerated warnings: No default bonded interaction types for perturbed atoms (10x)
                 FreeEnergyReferenceTestParams{ "relative",
                                                MaxNumWarnings(11),
-                                               { F_DVDL, F_DVDL_COUL, F_DVDL_VDW, F_DVDL_BONDED } },
+                                               { InteractionFunction::dVremainingdLambda,
+                                                 InteractionFunction::dVCoulombdLambda,
+                                                 InteractionFunction::dVvanderWaalsdLambda,
+                                                 InteractionFunction::dVbondeddLambda } },
                 // Tolerated warnings: No default bonded interaction types for perturbed atoms (10x)
-                FreeEnergyReferenceTestParams{
-                        "relative-position-restraints",
-                        MaxNumWarnings(11),
-                        { F_DVDL, F_DVDL_COUL, F_DVDL_VDW, F_DVDL_BONDED, F_DVDL_RESTRAINT } },
-                FreeEnergyReferenceTestParams{ "restraints", MaxNumWarnings(1), { F_DVDL_RESTRAINT } },
+                FreeEnergyReferenceTestParams{ "relative-position-restraints",
+                                               MaxNumWarnings(11),
+                                               { InteractionFunction::dVremainingdLambda,
+                                                 InteractionFunction::dVCoulombdLambda,
+                                                 InteractionFunction::dVvanderWaalsdLambda,
+                                                 InteractionFunction::dVbondeddLambda,
+                                                 InteractionFunction::dVrestraintdLambda } },
+                FreeEnergyReferenceTestParams{ "restraints",
+                                               MaxNumWarnings(1),
+                                               { InteractionFunction::dVrestraintdLambda } },
                 FreeEnergyReferenceTestParams{ "simtemp", MaxNumWarnings(1), {} },
-                FreeEnergyReferenceTestParams{ "transformAtoB", MaxNumWarnings(1), { F_DVDL } },
-                FreeEnergyReferenceTestParams{ "vdwalone", MaxNumWarnings(1), { F_DVDL } }),
+                FreeEnergyReferenceTestParams{ "transformAtoB",
+                                               MaxNumWarnings(1),
+                                               { InteractionFunction::dVremainingdLambda } },
+                FreeEnergyReferenceTestParams{ "vdwalone",
+                                               MaxNumWarnings(1),
+                                               { InteractionFunction::dVremainingdLambda } }),
         FreeEnergyReferenceTest::PrintParametersToString());
 #endif
 

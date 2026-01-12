@@ -246,7 +246,7 @@ void please_cite(FILE* fp, const char* key)
           "10.1002/prot.20310" },
         { "Okabe2001a",
           "T. Okabe, M. Kawata, Y. Okamoto, M. Mikami",
-          "Replica-exchange {M}onte {C}arlo method for the isobaric-isothermal ensemble",
+          "Replica-exchange Monte Carlo method for the isobaric-isothermal ensemble",
           "Chem. Phys. Lett.",
           2001,
           "10.1016/S0009-2614(01)00055-0" },
@@ -382,7 +382,7 @@ void please_cite(FILE* fp, const char* key)
           2009,
           "10.1063/1.3216473" },
         { "Hub2014a",
-          "J. S. Hub, B. L. de Groot, H. Grubmueller, G. Groenhof",
+          "J. S. Hub, B. L. de Groot, H. Grubmüller, G. Groenhof",
           "Quantifying Artifacts in Ewald Simulations of Inhomogeneous Systems with a Net Charge",
           "J. Chem. Theory Comput.",
           2014,
@@ -453,7 +453,7 @@ void please_cite(FILE* fp, const char* key)
     }
 
     int index = 0;
-    for (; index < NSTR && (strcmp(citedb[index].key, key) != 0); index++) {}
+    for (; index < NSTR && (std::strcmp(citedb[index].key, key) != 0); index++) {}
 
     fprintf(fp, "\n++++ PLEASE READ AND CITE THE FOLLOWING REFERENCE ++++\n");
     if (index < NSTR)
@@ -462,7 +462,7 @@ void please_cite(FILE* fp, const char* key)
         char* author = wrap_lines(citedb[index].author, sc_lineWidth, 0, FALSE);
         char* title  = wrap_lines(citedb[index].title, sc_lineWidth, 0, FALSE);
         fprintf(fp,
-                "%s\n%s\n%s (%d)\nDOI: %s\n",
+                "%s\n%s\n%s (%d)\nhttps://doi.org/%s\n",
                 author,
                 title,
                 citedb[index].journal,
@@ -476,7 +476,7 @@ void please_cite(FILE* fp, const char* key)
         fprintf(fp, "Entry %s not found in citation database\n", key);
     }
     fprintf(fp, "-------- -------- --- Thank You --- -------- --------\n\n");
-    fflush(fp);
+    std::fflush(fp);
 }
 
 namespace
@@ -489,7 +489,7 @@ void writeSourceDoi(FILE* fp)
      * TODO The check should properly target something else than
      * the string being empty
      */
-    if (strlen(gmxDOI()) == 0)
+    if (std::strlen(gmxDOI()) == 0)
     {
         /* Not a release build, return without printing anything */
         return;
@@ -506,7 +506,7 @@ void writeSourceDoi(FILE* fp)
     fprintf(fp, "\n++++ PLEASE CITE THE DOI FOR THIS VERSION OF GROMACS ++++\n");
     fprintf(fp, "%s%s\n", "https://doi.org/", doiString.c_str());
     fprintf(fp, "-------- -------- --- Thank You --- -------- --------\n\n");
-    fflush(fp);
+    std::fflush(fp);
 }
 
 } // namespace

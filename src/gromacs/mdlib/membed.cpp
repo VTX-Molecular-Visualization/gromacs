@@ -50,7 +50,6 @@
 #include "gromacs/fileio/readinp.h"
 #include "gromacs/fileio/warninp.h"
 #include "gromacs/gmxlib/network.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/mdtypes/commrec.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
@@ -75,6 +74,7 @@
 #include "gromacs/utility/futil.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/vec.h"
 
 /* information about scaling center */
 typedef struct
@@ -567,7 +567,7 @@ static int gen_rm_list(rm_t*             rm_p,
                        int               low_up_rm,
                        gmx_bool          bALLOW_ASYMMETRY)
 {
-    int      i, j, k, l, at, at2, mol_id;
+    int      i, j, at, at2, mol_id;
     int      type = 0, block = 0;
     int      nrm, nupper, nlower;
     real     r_min_rad, z_lip, min_norm;
@@ -594,7 +594,7 @@ static int gen_rm_list(rm_t*             rm_p,
             {
                 mol_id = get_mol_id(at2, mtop, &type, &block);
                 bRM    = TRUE;
-                for (l = 0; l < nrm; l++)
+                for (int l = 0; l < nrm; l++)
                 {
                     if (rm_p->mol[l] == mol_id)
                     {
@@ -608,7 +608,7 @@ static int gen_rm_list(rm_t*             rm_p,
                     rm_p->block[nrm] = block;
                     nrm++;
                     z_lip = 0.0;
-                    for (l = 0; l < mem_p->nmol; l++)
+                    for (int l = 0; l < mem_p->nmol; l++)
                     {
                         if (mol_id == mem_p->mol_id[l])
                         {
@@ -645,7 +645,7 @@ static int gen_rm_list(rm_t*             rm_p,
             {
                 /*minimum dr value*/
                 min_norm = norm2(dr);
-                for (k = 1; k < pos_ins->pieces; k++)
+                for (int k = 1; k < pos_ins->pieces; k++)
                 {
                     pbc_dx(pbc, r[at], pos_ins->geom_cent[k], dr_tmp);
                     if (norm2(dr_tmp) < min_norm)
@@ -671,7 +671,7 @@ static int gen_rm_list(rm_t*             rm_p,
             mol_id = mem_p->mol_id[order[i]];
             block  = get_molblock(mol_id, mtop.molblock);
             bRM    = TRUE;
-            for (l = 0; l < nrm; l++)
+            for (int l = 0; l < nrm; l++)
             {
                 if (rm_p->mol[l] == mol_id)
                 {
@@ -906,12 +906,16 @@ static int rm_bonded(t_block* ins_at, gmx_mtop_t* mtop)
     {
         if (bRM[i])
         {
-            for (j = 0; j < F_LJ; j++)
+            for (j = static_cast<int>(InteractionFunction::Bonds);
+                 j <= static_cast<int>(InteractionFunction::LennardJonesCoulombNonBondedPairs);
+                 j++)
             {
                 mtop->moltype[i].ilist[j].iatoms.clear();
             }
 
-            for (j = F_POSRES; j <= F_VSITEN; j++)
+            for (j = static_cast<int>(InteractionFunction::PositionRestraints);
+                 j <= static_cast<int>(InteractionFunction::VirtualSiteN);
+                 j++)
             {
                 mtop->moltype[i].ilist[j].iatoms.clear();
             }
@@ -928,26 +932,26 @@ static void top_update(const char* topfile, rm_t* rm_p, gmx_mtop_t* mtop)
     int   bMolecules = 0;
     FILE *fpin, *fpout;
     char  buf[STRLEN], buf2[STRLEN], *temp;
-    int   i, *nmol_rm, nmol;
+    int * nmol_rm, nmol;
     char  temporary_filename[STRLEN];
 
     fpin = gmx_ffopen(topfile, "r");
-    strncpy(temporary_filename, "temp.topXXXXXX", STRLEN);
+    std::strncpy(temporary_filename, "temp.topXXXXXX", STRLEN);
     gmx_tmpnam(temporary_filename);
     fpout = gmx_ffopen(temporary_filename, "w");
 
     snew(nmol_rm, mtop->moltype.size());
-    for (i = 0; i < rm_p->nr; i++)
+    for (int i = 0; i < rm_p->nr; i++)
     {
         nmol_rm[rm_p->block[i]]++;
     }
 
-    while (fgets(buf, STRLEN, fpin))
+    while (std::fgets(buf, STRLEN, fpin))
     {
         if (buf[0] != ';')
         {
-            strcpy(buf2, buf);
-            if ((temp = strchr(buf2, '\n')) != nullptr)
+            std::strcpy(buf2, buf);
+            if ((temp = std::strchr(buf2, '\n')) != nullptr)
             {
                 temp[0] = '\0';
             }
@@ -955,14 +959,14 @@ static void top_update(const char* topfile, rm_t* rm_p, gmx_mtop_t* mtop)
             if (buf2[0] == '[')
             {
                 buf2[0] = ' ';
-                if ((temp = strchr(buf2, '\n')) != nullptr)
+                if ((temp = std::strchr(buf2, '\n')) != nullptr)
                 {
                     temp[0] = '\0';
                 }
                 rtrim(buf2);
-                if (buf2[strlen(buf2) - 1] == ']')
+                if (buf2[std::strlen(buf2) - 1] == ']')
                 {
-                    buf2[strlen(buf2) - 1] = '\0';
+                    buf2[std::strlen(buf2) - 1] = '\0';
                     ltrim(buf2);
                     rtrim(buf2);
                     if (gmx_strcasecmp(buf2, "molecules") == 0)
@@ -1001,7 +1005,7 @@ static void top_update(const char* topfile, rm_t* rm_p, gmx_mtop_t* mtop)
     /* use gmx_ffopen to generate backup of topinout */
     fpout = gmx_ffopen(topfile, "w");
     gmx_ffclose(fpout);
-    rename(temporary_filename, topfile);
+    std::rename(temporary_filename, topfile);
 }
 
 void rescale_membed(int step_rel, gmx_membed_t* membed, rvec* x)
@@ -1029,8 +1033,8 @@ gmx_membed_t* init_membed(FILE*          fplog,
                           real*          cpt)
 {
     char*             ins;
-    int               i, rm_bonded_at, fr_id, fr_i = 0, tmp_id, warn = 0;
-    int               ng, j, max_lip_rm, ins_grp_id, ntype, lip_rm;
+    int               rm_bonded_at, fr_id, fr_i = 0, tmp_id, warn = 0;
+    int               ng, max_lip_rm, ins_grp_id, ntype, lip_rm;
     real              prot_area;
     rvec*             r_ins = nullptr;
     t_block *         ins_at, *rest_at;
@@ -1070,7 +1074,7 @@ gmx_membed_t* init_membed(FILE*          fplog,
     snew(ins_at, 1);
     snew(pos_ins, 1);
 
-    if (MAIN(cr))
+    if (cr->commMySim.isMainRank())
     {
         fprintf(fplog,
                 "Note: it is expected that in future gmx mdrun -membed will not be the "
@@ -1098,7 +1102,7 @@ gmx_membed_t* init_membed(FILE*          fplog,
             gmx_input("Change integrator to a dynamics integrator in mdp file (e.g. md or sd).");
         }
 
-        if (PAR(cr))
+        if (cr->commMySim.isParallel())
         {
             gmx_input("Sorry, parallel membed is not yet fully functional.");
         }
@@ -1123,9 +1127,10 @@ gmx_membed_t* init_membed(FILE*          fplog,
         fprintf(stderr, "\nSelect a group to embed in the membrane:\n");
         get_index(&atoms, opt2fn_null("-mn", nfile, fnm), 1, &(ins_at->nr), &(ins_at->index), &ins);
 
-        auto found = std::find_if(gnames.begin(), gnames.end(), [&ins](const auto& name) {
-            return gmx::equalCaseInsensitive(ins, name);
-        });
+        auto found = std::find_if(gnames.begin(),
+                                  gnames.end(),
+                                  [&ins](const auto& name)
+                                  { return gmx::equalCaseInsensitive(ins, name); });
 
         if (found == gnames.end())
         {
@@ -1221,7 +1226,7 @@ gmx_membed_t* init_membed(FILE*          fplog,
             gmx_fatal(FARGS, "You did not specify \"%s\" as a freezegroup.", ins);
         }
 
-        for (i = 0; i < inputrec->opts.ngfrz; i++)
+        for (int i = 0; i < inputrec->opts.ngfrz; i++)
         {
             tmp_id = mtop->groups.groups[SimulationAtomGroupType::Freeze][i];
             if (ins_grp_id == tmp_id)
@@ -1236,7 +1241,7 @@ gmx_membed_t* init_membed(FILE*          fplog,
             gmx_fatal(FARGS, "\"%s\" not as freezegroup defined in the mdp-file.", ins);
         }
 
-        for (i = 0; i < DIM; i++)
+        for (int i = 0; i < DIM; i++)
         {
             if (inputrec->opts.nFreeze[fr_i][i] != 1)
             {
@@ -1252,9 +1257,9 @@ gmx_membed_t* init_membed(FILE*          fplog,
                     "freeze group");
         }
 
-        for (i = 0; i < ng; i++)
+        for (int i = 0; i < ng; i++)
         {
-            for (j = 0; j < ng; j++)
+            for (int j = 0; j < ng; j++)
             {
                 if (inputrec->opts.egp_flags[ng * i + j] == EGP_EXCL)
                 {
@@ -1354,7 +1359,7 @@ gmx_membed_t* init_membed(FILE*          fplog,
 
         if (fplog)
         {
-            for (i = 0; i < rm_p->nr; i++)
+            for (int i = 0; i < rm_p->nr; i++)
             {
                 fprintf(fplog, "rm mol %d\n", rm_p->mol[i]);
             }
@@ -1363,7 +1368,7 @@ gmx_membed_t* init_membed(FILE*          fplog,
         for (size_t i = 0; i < mtop->molblock.size(); i++)
         {
             ntype = 0;
-            for (j = 0; j < rm_p->nr; j++)
+            for (int j = 0; j < rm_p->nr; j++)
             {
                 if (rm_p->block[j] == static_cast<int>(i))
                 {

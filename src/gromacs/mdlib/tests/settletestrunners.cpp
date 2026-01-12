@@ -53,12 +53,12 @@
 
 #include "gromacs/math/arrayrefwithpadding.h"
 #include "gromacs/math/paddedvector.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/mdlib/settle.h"
 #include "gromacs/mdlib/tests/settletestdata.h"
 #include "gromacs/topology/idef.h"
 #include "gromacs/topology/ifunc.h"
 #include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "testutils/testasserts.h"
 
@@ -75,8 +75,10 @@ void SettleHostTestRunner::applySettle(SettleTestData*    testData,
 {
     SettleData settled(testData->mtop_);
 
-    settled.setConstraints(
-            testData->idef_->il[F_SETTLE], testData->numAtoms_, testData->masses_, testData->inverseMasses_);
+    settled.setConstraints(testData->idef_->il[InteractionFunction::SETTLE],
+                           testData->numAtoms_,
+                           testData->masses_,
+                           testData->inverseMasses_);
 
     bool errorOccured;
     int  numThreads  = 1;

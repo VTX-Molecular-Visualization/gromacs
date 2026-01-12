@@ -53,7 +53,6 @@
 #include "gromacs/fileio/warninp.h"
 #include "gromacs/math/units.h"
 #include "gromacs/math/utilities.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/mdtypes/awh_params.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
@@ -62,6 +61,7 @@
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/pulling/pull.h"
 #include "gromacs/random/seed.h"
+#include "gromacs/serialization/iserializer.h"
 #include "gromacs/topology/mtop_util.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/basedefinitions.h"
@@ -69,8 +69,8 @@
 #include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/gmxassert.h"
-#include "gromacs/utility/iserializer.h"
 #include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/vec.h"
 
 #include "biasparams.h"
 #include "biassharing.h"
@@ -718,8 +718,8 @@ AwhDimParams::AwhDimParams(std::vector<t_inpfile>* inp, const std::string& prefi
         const double diffusion_default = 1e-5;
         auto         message           = formatString(
                 "%s not explicitly set by user. You can choose to use a default "
-                "value (%g nm^2/ps or rad^2/ps) but this may very well be "
-                "non-optimal for your system!",
+                                  "value (%g nm^2/ps or rad^2/ps) but this may very well be "
+                                  "non-optimal for your system!",
                 opt.c_str(),
                 diffusion_default);
         wi->addNote(message);
@@ -801,7 +801,16 @@ AwhBiasParams::AwhBiasParams(std::vector<t_inpfile>* inp, const std::string& pre
                              "distribution: no or yes");
     }
     opt                   = prefix + "-equilibrate-histogram";
-    equilibrateHistogram_ = (getEnum<Boolean>(inp, opt.c_str(), wi) != Boolean::No);
+    equilibrateHistogram_ = (getEnum<YesNoType>(inp, opt.c_str(), wi) == YesNoType::Yes);
+
+    if (bComment)
+    {
+        printStringNoNewline(inp,
+                             "Allow histogram to deviate by this fraction over 80% of the range "
+                             "when equilibrating");
+    }
+    opt                 = prefix + "-histogram-tolerance";
+    histogramTolerance_ = get_ereal(inp, opt, 0.3, wi);
 
     if (bComment)
     {
@@ -906,7 +915,8 @@ AwhBiasParams::AwhBiasParams(std::vector<t_inpfile>* inp, const std::string& pre
 
 AwhBiasParams::AwhBiasParams(ISerializer* serializer,
                              const bool   tprWithoutGrowthFactor,
-                             const bool   tprWithoutTargetMetricScaling)
+                             const bool   tprWithoutTargetMetricScaling,
+                             const bool   tprWithoutHistogramTolerance)
 {
     GMX_RELEASE_ASSERT(serializer->reading(),
                        "Can not use writing serializer to create datastructure");
@@ -941,6 +951,14 @@ AwhBiasParams::AwhBiasParams(ISerializer* serializer,
     serializer->doInt(&numDimensions);
     serializer->doInt(&shareGroup_);
     serializer->doBool(&equilibrateHistogram_);
+    if (tprWithoutHistogramTolerance)
+    {
+        histogramTolerance_ = 0.2;
+    }
+    else
+    {
+        serializer->doDouble(&histogramTolerance_);
+    }
 
     for (int k = 0; k < numDimensions; k++)
     {
@@ -966,6 +984,7 @@ void AwhBiasParams::serialize(ISerializer* serializer)
     serializer->doInt(&numDimensions);
     serializer->doInt(&shareGroup_);
     serializer->doBool(&equilibrateHistogram_);
+    serializer->doDouble(&histogramTolerance_);
 
     for (int k = 0; k < numDimensions; k++)
     {
@@ -1004,7 +1023,7 @@ AwhParams::AwhParams(std::vector<t_inpfile>* inp, WarningHandler* wi)
 
     printStringNoNewline(inp, "Free energy and bias update interval in number of samples");
     opt                         = "awh-nsamples-update";
-    numSamplesUpdateFreeEnergy_ = get_eint(inp, opt, 10, wi);
+    numSamplesUpdateFreeEnergy_ = get_eint(inp, opt, 100, wi);
 
     printStringNoNewline(
             inp, "When true, biases with share-group>0 are shared between multiple simulations");
@@ -1031,7 +1050,10 @@ AwhParams::AwhParams(std::vector<t_inpfile>* inp, WarningHandler* wi)
     checkInputConsistencyAwh(*this, wi);
 }
 
-AwhParams::AwhParams(ISerializer* serializer, const bool tprWithoutGrowthFactor, const bool tprWithoutTargetMetricScaling)
+AwhParams::AwhParams(ISerializer* serializer,
+                     const bool   tprWithoutGrowthFactor,
+                     const bool   tprWithoutTargetMetricScaling,
+                     const bool   tprWithoutHistogramTolerance)
 {
     GMX_RELEASE_ASSERT(serializer->reading(),
                        "Can not use writing serializer to read AWH parameters");
@@ -1048,7 +1070,10 @@ AwhParams::AwhParams(ISerializer* serializer, const bool tprWithoutGrowthFactor,
     {
         for (int k = 0; k < numberOfBiases; k++)
         {
-            awhBiasParams_.emplace_back(serializer, tprWithoutGrowthFactor, tprWithoutTargetMetricScaling);
+            awhBiasParams_.emplace_back(serializer,
+                                        tprWithoutGrowthFactor,
+                                        tprWithoutTargetMetricScaling,
+                                        tprWithoutHistogramTolerance);
         }
     }
 }
@@ -1341,7 +1366,7 @@ void setStateDependentAwhParams(AwhParams*           awhParams,
                                 const gmx_mtop_t&    mtop,
                                 WarningHandler*      wi)
 {
-    /* The temperature is not really state depenendent but is not known
+    /* The temperature is not really state dependent but is not known
      * when read_awhParams is called (in get ir).
      * It is known first after do_index has been called in grompp.cpp.
      */
@@ -1429,9 +1454,12 @@ void checkAwhParams(const AwhParams& awhParams, const t_inputrec& ir, WarningHan
         checkBiasParams(awhBiasParams[k], prefixawh, ir, wi);
         /* Check if there is a FEP lambda dimension. */
         const auto dimParams = awhBiasParams[k].dimParams();
-        haveFepLambdaDim = std::any_of(dimParams.begin(), dimParams.end(), [](const auto& dimParam) {
-            return dimParam.coordinateProvider() == AwhCoordinateProviderType::FreeEnergyLambda;
-        });
+        haveFepLambdaDim     = std::any_of(dimParams.begin(),
+                                       dimParams.end(),
+                                       [](const auto& dimParam) {
+                                           return dimParam.coordinateProvider()
+                                                  == AwhCoordinateProviderType::FreeEnergyLambda;
+                                       });
     }
 
     if (haveFepLambdaDim)

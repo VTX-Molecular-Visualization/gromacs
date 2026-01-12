@@ -37,18 +37,17 @@
 #include <cstdint>
 #include <cstdio>
 
-#include "gromacs/math/vectypes.h"
 #include "gromacs/timing/wallcycle.h"
 #include "gromacs/topology/atoms.h"
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/real.h"
+#include "gromacs/utility/vectypes.h"
 
 class DDBalanceRegionHandler;
 struct gmx_enerdata_t;
 struct gmx_enfrot;
 struct gmx_localtop_t;
-struct gmx_multisim_t;
 struct gmx_shellfc_t;
 struct gmx_mtop_t;
 class history_t;
@@ -72,6 +71,7 @@ class ForceBuffersView;
 class ImdSession;
 struct MDModulesNotifiers;
 class MdrunScheduleWorkload;
+class SimulationWorkload;
 class VirtualSitesHandler;
 } // namespace gmx
 
@@ -81,22 +81,22 @@ class VirtualSitesHandler;
  * \param mtop Pointer to a global system topology object.
  * \param nflexcon Number of flexible constraints.
  * \param nstcalcenergy How often are energies calculated. Must be provided for sanity check.
- * \param usingDomainDecomposition Whether domain decomposition is used. Must be provided for sanity check.
- * \param usingPmeOnGpu Set to true if GPU will be used for PME calculations. Necessary for proper buffer initialization.
+ * \param usingDomainDecomposition Whether domain decomposition is used.
+ *                                 Must be provided for sanity check.
+ * \param simulationWork The simulation workload.
  *
  * \returns a pointer to an initialized \c shellfc object.
  */
-gmx_shellfc_t* init_shell_flexcon(FILE*             fplog,
-                                  const gmx_mtop_t& mtop,
-                                  int               nflexcon,
-                                  int               nstcalcenergy,
-                                  bool              usingDomainDecomposition,
-                                  bool              usingPmeOnGpu);
+gmx_shellfc_t* init_shell_flexcon(FILE*                          fplog,
+                                  const gmx_mtop_t&              mtop,
+                                  int                            nflexcon,
+                                  int                            nstcalcenergy,
+                                  bool                           usingDomainDecomposition,
+                                  const gmx::SimulationWorkload& simulationWork);
 
 /* Optimize shell positions */
 void relax_shell_flexcon(FILE*                               log,
                          const t_commrec*                    cr,
-                         const gmx_multisim_t*               ms,
                          gmx_bool                            bVerbose,
                          gmx_enfrot*                         enforcedRotation,
                          int64_t                             mdstep,

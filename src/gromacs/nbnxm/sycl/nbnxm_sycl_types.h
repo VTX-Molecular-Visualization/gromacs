@@ -88,18 +88,22 @@ struct NbnxmGpu
     DeviceBuffer<int> cxy_na;
     /*! \brief number of elements in cxy_na */
     int ncxy_na = 0;
-    /*! \brief number of elements allocated allocated in device buffer */
+    /*! \brief number of elements allocated in device buffer */
     int ncxy_na_alloc = 0;
     /*! \brief x buf ops cell index mapping */
     DeviceBuffer<int> cxy_ind;
     /*! \brief number of elements in cxy_ind */
     int ncxy_ind = 0;
-    /*! \brief number of elements allocated allocated in device buffer */
+    /*! \brief number of elements allocated in device buffer */
     int ncxy_ind_alloc = 0;
     /*! \brief parameters required for the non-bonded calc. */
     NBParamGpu* nbparam = nullptr;
     /*! \brief pair-list data structures (local and non-local) */
     EnumerationArray<InteractionLocality, std::unique_ptr<GpuPairlist>> plist = { { nullptr } };
+    /*! \brief fep-list data structures (local and non-local) */
+    EnumerationArray<InteractionLocality, std::unique_ptr<GpuFeplist>> feplist = { { nullptr } };
+    /*! \brief host buffers required for the FEP H2D copies */
+    GpuFepHostData* fephostdata = nullptr;
     /*! \brief staging area where fshift/energies get downloaded. Will be removed in SYCL. */
     NBStagingData nbst;
     /*! \brief local and non-local GPU streams */
@@ -110,7 +114,7 @@ struct NbnxmGpu
     /*! \brief Dummy timers. */
     GpuTimers* timers = nullptr;
     /*! \brief Dummy timing data. */
-    gmx_wallclock_gpu_nbnxn_t* timings = nullptr;
+    std::unique_ptr<gmx_wallclock_gpu_nbnxn_t> timings;
 
     //! true when a pair-list transfer has been done at this step
     EnumerationArray<InteractionLocality, bool> didPairlistH2D = { { false } };

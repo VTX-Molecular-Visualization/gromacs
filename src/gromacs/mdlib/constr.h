@@ -49,11 +49,12 @@
 #include <memory>
 #include <vector>
 
-#include "gromacs/math/vectypes.h"
 #include "gromacs/topology/idef.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/real.h"
+#include "gromacs/utility/vectypes.h"
 
+struct gmx_domdec_t;
 struct gmx_edsam;
 struct gmx_localtop_t;
 struct gmx_moltype_t;
@@ -61,7 +62,6 @@ struct gmx_mtop_t;
 struct gmx_multisim_t;
 struct gmx_wallcycle;
 struct pull_t;
-struct t_commrec;
 struct t_ilist;
 struct t_inputrec;
 struct t_nrnb;
@@ -72,6 +72,7 @@ namespace gmx
 {
 template<typename T>
 class ArrayRefWithPadding;
+class MpiComm;
 template<typename>
 class ListOfLists;
 class ObservablesReducerBuilder;
@@ -104,7 +105,8 @@ private:
                 const t_inputrec&          ir,
                 pull_t*                    pull_work,
                 FILE*                      log,
-                const t_commrec*           cr,
+                const MpiComm&             mpiComm,
+                gmx_domdec_t*              dd,
                 bool                       useUpdateGroups,
                 const gmx_multisim_t*      ms,
                 t_nrnb*                    nrnb,
@@ -223,8 +225,8 @@ static inline bool isConstraintFlexible(ArrayRef<const t_iparams> iparams, int i
 
 /* The at2con t_blocka struct returned by the routines below
  * contains a list of constraints per atom.
- * The F_CONSTRNC constraints in this structure number consecutively
- * after the F_CONSTR constraints.
+ * The InteractionFunction::ConstraintsNoCoupling constraints in this structure number consecutively
+ * after the InteractionFunction::Constraints constraints.
  */
 
 /*! \brief Tells make_at2con how to treat flexible constraints */
@@ -240,8 +242,8 @@ FlexibleConstraintTreatment flexibleConstraintTreatment(bool haveDynamicsIntegra
 /*! \brief Returns a ListOfLists object to go from atoms to constraints
  *
  * The object will contain constraint indices with lower indices
- * directly matching the order in F_CONSTR and higher indices matching
- * the order in F_CONSTRNC offset by the number of constraints in F_CONSTR.
+ * directly matching the order in InteractionFunction::Constraints and higher indices matching
+ * the order in InteractionFunction::ConstraintsNoCoupling offset by the number of constraints in InteractionFunction::Constraints.
  *
  * \param[in]  moltype   The molecule data
  * \param[in]  iparams   Interaction parameters, can be null when
@@ -258,11 +260,11 @@ ListOfLists<int> make_at2con(const gmx_moltype_t&           moltype,
 /*! \brief Returns a ListOfLists object to go from atoms to constraints
  *
  * The object will contain constraint indices with lower indices
- * directly matching the order in F_CONSTR and higher indices matching
- * the order in F_CONSTRNC offset by the number of constraints in F_CONSTR.
+ * directly matching the order in InteractionFunction::Constraints and higher indices matching
+ * the order in InteractionFunction::ConstraintsNoCoupling offset by the number of constraints in InteractionFunction::Constraints.
  *
  * \param[in]  numAtoms  The number of atoms to construct the list for
- * \param[in]  ilist     Interaction list, size F_NRE
+ * \param[in]  ilist     Interaction list, size InteractionFunction::Count
  * \param[in]  iparams   Interaction parameters, can be null when
  *                       \p flexibleConstraintTreatment==Include
  * \param[in]  flexibleConstraintTreatment  The flexible constraint treatment,
@@ -270,17 +272,14 @@ ListOfLists<int> make_at2con(const gmx_moltype_t&           moltype,
  *
  * \returns a ListOfLists object with all constraints for each atom
  */
-ListOfLists<int> make_at2con(int                             numAtoms,
-                             ArrayRef<const InteractionList> ilist,
-                             ArrayRef<const t_iparams>       iparams,
-                             FlexibleConstraintTreatment     flexibleConstraintTreatment);
-
-//! Return the number of flexible constraints in the \c ilist and \c iparams.
-int countFlexibleConstraints(ArrayRef<const InteractionList> ilist, ArrayRef<const t_iparams> iparams);
+ListOfLists<int> make_at2con(int numAtoms,
+                             const gmx::EnumerationArray<InteractionFunction, InteractionList>& ilist,
+                             ArrayRef<const t_iparams>   iparams,
+                             FlexibleConstraintTreatment flexibleConstraintTreatment);
 
 /*! \brief Returns the constraint iatoms for a constraint number con
- * which comes from a list where F_CONSTR and F_CONSTRNC constraints
- * are concatenated. */
+ * which comes from a list where InteractionFunction::Constraints and
+ * InteractionFunction::ConstraintsNoCoupling constraints are concatenated. */
 inline const int* constr_iatomptr(gmx::ArrayRef<const int> iatom_constr,
                                   gmx::ArrayRef<const int> iatom_constrnc,
                                   int                      con)
@@ -299,7 +298,6 @@ inline const int* constr_iatomptr(gmx::ArrayRef<const int> iatom_constr,
 void do_constrain_first(FILE*                     log,
                         gmx::Constraints*         constr,
                         const t_inputrec&         inputrec,
-                        int                       numAtoms,
                         int                       numHomeAtoms,
                         ArrayRefWithPadding<RVec> x,
                         ArrayRefWithPadding<RVec> v,
@@ -349,6 +347,9 @@ void constrain_coordinates(gmx::Constraints*         constr,
                            real*                     dhdlambda,
                            bool                      computeVirial,
                            tensor                    constraintsVirial);
+
+/*! \brief Returns True if there is at least one triangular constraint. */
+bool hasTriangleConstraints(const gmx_mtop_t& mtop, FlexibleConstraintTreatment flexibleConstraintTreatment);
 
 } // namespace gmx
 

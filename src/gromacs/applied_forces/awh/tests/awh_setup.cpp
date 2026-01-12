@@ -51,8 +51,8 @@
 #include "gromacs/applied_forces/awh/correlationgrid.h"
 #include "gromacs/applied_forces/awh/pointstate.h"
 #include "gromacs/mdtypes/awh_params.h"
+#include "gromacs/serialization/inmemoryserializer.h"
 #include "gromacs/utility/arrayref.h"
-#include "gromacs/utility/inmemoryserializer.h"
 #include "gromacs/utility/stringutil.h"
 
 #include "testutils/refdata.h"
@@ -110,14 +110,14 @@ std::vector<char> awhDimParamSerialized(AwhCoordinateProviderType inputCoordinat
  * \param[in] eTargetType Target distribution type.
  * \param[in] scaleTargetByMetric Whether to scale the target distribution based on the friction metric.
  */
-static std::vector<char> awhBiasParamSerialized(AwhHistogramGrowthType            eawhgrowth,
-                                                double                            beta,
-                                                double                            inputErrorScaling,
+static std::vector<char> awhBiasParamSerialized(AwhHistogramGrowthType eawhgrowth,
+                                                double                 beta,
+                                                double                 inputErrorScaling,
                                                 ArrayRef<const std::vector<char>> dimensionParameterBuffers,
-                                                int                               shareGroup,
-                                                bool                              inputUserData,
-                                                AwhTargetType                     eTargetType,
-                                                bool scaleTargetByMetric)
+                                                int           shareGroup,
+                                                bool          inputUserData,
+                                                AwhTargetType eTargetType,
+                                                bool          scaleTargetByMetric)
 {
     int                    ndim                     = dimensionParameterBuffers.size();
     double                 targetBetaScaling        = 0;
@@ -127,6 +127,7 @@ static std::vector<char> awhBiasParamSerialized(AwhHistogramGrowthType          
     bool                   bUserData                = inputUserData;
     double                 errorInitial             = inputErrorScaling / beta;
     bool                   equilibrateHistogram     = false;
+    double                 histogramTolerance       = 0.2;
     double                 targetMetricScalingLimit = 10;
 
     gmx::InMemorySerializer serializer;
@@ -143,6 +144,7 @@ static std::vector<char> awhBiasParamSerialized(AwhHistogramGrowthType          
     serializer.doInt(&ndim);
     serializer.doInt(&shareGroup);
     serializer.doBool(&equilibrateHistogram);
+    serializer.doDouble(&histogramTolerance);
 
     auto awhDimBuffer  = awhDimParamSerialized();
     auto awhBiasBuffer = serializer.finishAndGetBuffer();
@@ -167,16 +169,16 @@ static std::vector<char> awhBiasParamSerialized(AwhHistogramGrowthType          
  * \param[in] eTargetType Target distribution type.
  * \param[in] scaleTargetByMetric Whether to scale the target distribution based on the friction metric.
  */
-static std::vector<char> awhParamSerialized(AwhHistogramGrowthType            eawhgrowth,
-                                            AwhPotentialType                  eawhpotential,
-                                            double                            beta,
-                                            double                            inputErrorScaling,
-                                            int64_t                           inputSeed,
+static std::vector<char> awhParamSerialized(AwhHistogramGrowthType eawhgrowth,
+                                            AwhPotentialType       eawhpotential,
+                                            double                 beta,
+                                            double                 inputErrorScaling,
+                                            int64_t                inputSeed,
                                             ArrayRef<const std::vector<char>> dimensionParameterBuffers,
-                                            int                               biasShareGroup,
-                                            bool                              inputUserData,
-                                            AwhTargetType                     eTargetType,
-                                            bool                              scaleTargetByMetric)
+                                            int           biasShareGroup,
+                                            bool          inputUserData,
+                                            AwhTargetType eTargetType,
+                                            bool          scaleTargetByMetric)
 {
     int              numBias                    = 1;
     int64_t          seed                       = inputSeed;
@@ -210,7 +212,8 @@ static std::vector<char> awhParamSerialized(AwhHistogramGrowthType            ea
     return awhParamBuffer;
 }
 
-AwhTestParameters::AwhTestParameters(ISerializer* serializer) : awhParams(serializer, false, false)
+AwhTestParameters::AwhTestParameters(ISerializer* serializer) :
+    awhParams(serializer, false, false, false)
 {
 }
 /*! \brief
@@ -287,7 +290,7 @@ TEST(SerializationTest, CanSerializeBiasParams)
     auto awhBiasBuffer  = awhBiasParamSerialized(
             AwhHistogramGrowthType::ExponentialLinear, 0.4, 0.5, awhDimArrayRef, 0, false, AwhTargetType::Constant, false);
     gmx::InMemoryDeserializer deserializer(awhBiasBuffer, false);
-    AwhBiasParams             awhBiasParams(&deserializer, false, false);
+    AwhBiasParams             awhBiasParams(&deserializer, false, false, false);
     EXPECT_EQ(awhBiasParams.ndim(), 1);
     EXPECT_EQ(awhBiasParams.targetDistribution(), AwhTargetType::Constant);
     EXPECT_FLOAT_EQ(awhBiasParams.targetBetaScaling(), 0);
@@ -299,6 +302,7 @@ TEST(SerializationTest, CanSerializeBiasParams)
     EXPECT_FLOAT_EQ(awhBiasParams.initialErrorEstimate(), 0.5 / 0.4);
     EXPECT_EQ(awhBiasParams.shareGroup(), 0);
     EXPECT_EQ(awhBiasParams.equilibrateHistogram(), false);
+    EXPECT_EQ(awhBiasParams.histogramTolerance(), 0.2);
     const auto& awhDimParams = awhBiasParams.dimParams(0);
     EXPECT_EQ(awhDimParams.coordinateProvider(), AwhCoordinateProviderType::Pull);
     EXPECT_EQ(awhDimParams.coordinateIndex(), 0);
@@ -330,7 +334,7 @@ TEST(SerializationTest, CanSerializeAwhParams)
                                              AwhTargetType::Constant,
                                              false);
     gmx::InMemoryDeserializer deserializer(awhParamBuffer, false);
-    AwhParams                 awhParams(&deserializer, false, false);
+    AwhParams                 awhParams(&deserializer, false, false, false);
     EXPECT_EQ(awhParams.numBias(), 1);
     EXPECT_EQ(awhParams.seed(), 1337);
     EXPECT_EQ(awhParams.nstout(), 0);
@@ -348,6 +352,7 @@ TEST(SerializationTest, CanSerializeAwhParams)
     EXPECT_FLOAT_EQ(awhBiasParams.initialErrorEstimate(), 0.5 / 0.4);
     EXPECT_EQ(awhBiasParams.shareGroup(), 0);
     EXPECT_EQ(awhBiasParams.equilibrateHistogram(), false);
+    EXPECT_EQ(awhBiasParams.histogramTolerance(), 0.2);
     const auto& awhDimParams = awhBiasParams.dimParams(0);
     EXPECT_EQ(awhDimParams.coordinateProvider(), AwhCoordinateProviderType::Pull);
     EXPECT_EQ(awhDimParams.coordinateIndex(), 0);

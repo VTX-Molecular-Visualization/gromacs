@@ -41,6 +41,7 @@ target_include_directories(mdrun_objlib SYSTEM BEFORE PRIVATE ${PROJECT_SOURCE_D
 target_include_directories(mdrun_objlib SYSTEM PRIVATE ${PROJECT_SOURCE_DIR}/src/external)
 target_link_libraries(mdrun_objlib PRIVATE
         common
+        hardware
         legacy_api
         legacy_modules
         utility
@@ -73,6 +74,12 @@ else()
                           libgromacs
                           ${GMX_COMMON_LIBRARIES}
                           ${GMX_EXE_LINKER_FLAGS})
+    # Ensure that libsycl is properly linked when libgromacs needs it.
+    if(GMX_GPU_SYCL)
+        # There are no source files to gmx that need to compile as
+        # SYCL, so none are provided here.
+        add_sycl_to_target(TARGET gmx)
+    endif()
     # Ensure that on Windows the application code page is set to utf8 mode so the behavior is
     # like Linux. For proper UTF8 console output, the user needs to enable utf8 (chcp 65001).
     if (MSVC)

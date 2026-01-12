@@ -58,7 +58,6 @@
 #include "gromacs/math/multidimarray.h"
 #include "gromacs/mdlib/broadcaststructs.h"
 #include "gromacs/mdrunutility/mdmodulesnotifiers.h"
-#include "gromacs/mdtypes/commrec.h"
 #include "gromacs/mdtypes/iforceprovider.h"
 #include "gromacs/mdtypes/imdmodule.h"
 #include "gromacs/mdtypes/imdoutputprovider.h"
@@ -67,6 +66,7 @@
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/keyvaluetreebuilder.h"
 #include "gromacs/utility/logger.h"
+#include "gromacs/utility/mpicomm.h"
 
 #include "qmmmforceprovider.h"
 #include "qmmmoptions.h"
@@ -169,11 +169,23 @@ public:
     //! Get the logger instance
     const MDLogger& logger() const
     {
-        if (logger_ == nullptr)
-        {
-            GMX_THROW(InternalError("Logger not set for QMMM simulation."));
-        }
+        GMX_RELEASE_ASSERT(logger_, "Logger not set for QMMM.");
         return *logger_;
+    }
+
+    /*! \brief Set the MPI communicator for QMMM during mdrun startup
+     * \param[in] mpiComm MPI communicator to be used for simulation
+     */
+    void setMpiComm(const MpiComm& mpiComm) { mpiComm_ = std::make_unique<MpiComm>(mpiComm); }
+
+    //! Get the MPI communicator
+    const MpiComm& mpiComm() const
+    {
+        if (mpiComm_ == nullptr)
+        {
+            GMX_THROW(InternalError("MPI communicator not set for QMMM simulation."));
+        }
+        return *mpiComm_;
     }
 
 private:
@@ -183,8 +195,14 @@ private:
     std::unique_ptr<LocalAtomSet> localMMAtomSet_;
     //! The type of periodic boundary conditions in the simulation
     std::unique_ptr<PbcType> pbcType_;
-    //! MDLogger for notifications during mdrun
+    /*! \brief MDLogger during mdrun
+     *
+     * This is a pointer only because we need an "optional reference"
+     * to a const MDLogger before the notification always provides the
+     * actual reference. */
     const MDLogger* logger_ = nullptr;
+    //! MPI communicator for simulation
+    std::unique_ptr<MpiComm> mpiComm_;
 
     GMX_DISALLOW_COPY_AND_ASSIGN(QMMMSimulationParameterSetup);
 };
@@ -228,7 +246,7 @@ public:
 
     /*! \brief Requests to be notified during pre-processing.
      *
-     * \param[in] notifier allows the module to subscribe to notifications from MdModules.
+     * \param[in] notifiers allows the module to subscribe to notifications from MdModules.
      *
      * The QMMM code subscribes to these notifications:
      *   - setting atom group indices in the qmmmOptions_ from an
@@ -237,13 +255,12 @@ public:
      *     key-value-tree during pre-processing by a function taking a
      *     KeyValueTreeObjectBuilder as parameter
      *   - Modify topology according to QMMM rules using gmx_mtop_t notification
-     *     and utilizing QMMMTopologyPreprocessor class
      *   - Access MDLogger for notifications output
      *   - Access warninp for for grompp warnings output
      *   - Coordinates, PBC and box for CP2K input generation
      *   - QM Input file provided with -qmi option of grompp
      */
-    void subscribeToPreProcessingNotifications(MDModulesNotifiers* notifier) override
+    void subscribeToPreProcessingNotifications(MDModulesNotifiers* notifiers) override
     {
         if (!qmmmOptions_.active())
         {
@@ -251,44 +268,38 @@ public:
         }
 
         // Writing internal parameters during pre-processing
-        const auto writeInternalParametersFunction = [this](KeyValueTreeObjectBuilder treeBuilder) {
-            qmmmOptions_.writeInternalParametersToKvt(treeBuilder);
-        };
-        notifier->preProcessingNotifier_.subscribe(writeInternalParametersFunction);
+        const auto writeInternalParametersFunction = [this](KeyValueTreeObjectBuilder treeBuilder)
+        { qmmmOptions_.writeInternalParametersToKvt(treeBuilder); };
+        notifiers->preProcessingNotifier_.subscribe(writeInternalParametersFunction);
 
         // Setting atom group indices
-        const auto setQMMMGroupIndicesFunction = [this](const IndexGroupsAndNames& indexGroupsAndNames) {
-            qmmmOptions_.setQMMMGroupIndices(indexGroupsAndNames);
-        };
-        notifier->preProcessingNotifier_.subscribe(setQMMMGroupIndicesFunction);
+        const auto setQMMMGroupIndicesFunction = [this](const IndexGroupsAndNames& indexGroupsAndNames)
+        { qmmmOptions_.setQMMMGroupIndices(indexGroupsAndNames); };
+        notifiers->preProcessingNotifier_.subscribe(setQMMMGroupIndicesFunction);
 
         // Set Logger during pre-processing
-        const auto setLoggerFunction = [this](const MDLogger& logger) {
-            qmmmOptions_.setLogger(logger);
-        };
-        notifier->preProcessingNotifier_.subscribe(setLoggerFunction);
+        const auto setLoggerFunction = [this](const MDLogger& logger)
+        { qmmmOptions_.setLogger(logger); };
+        notifiers->preProcessingNotifier_.subscribe(setLoggerFunction);
 
         // Set warning output during pre-processing
         const auto setWarninpFunction = [this](WarningHandler* wi) { qmmmOptions_.setWarninp(wi); };
-        notifier->preProcessingNotifier_.subscribe(setWarninpFunction);
+        notifiers->preProcessingNotifier_.subscribe(setWarninpFunction);
 
         // Notification of the Coordinates, box and pbc during pre-processing
-        const auto processCoordinatesFunction = [this](const CoordinatesAndBoxPreprocessed& coord) {
-            qmmmOptions_.processCoordinates(coord);
-        };
-        notifier->preProcessingNotifier_.subscribe(processCoordinatesFunction);
+        const auto processCoordinatesFunction = [this](const CoordinatesAndBoxPreprocessed& coord)
+        { qmmmOptions_.processCoordinates(coord); };
+        notifiers->preProcessingNotifier_.subscribe(processCoordinatesFunction);
 
         // Modification of the topology during pre-processing
-        const auto modifyQMMMTopologyFunction = [this](gmx_mtop_t* mtop) {
-            qmmmOptions_.modifyQMMMTopology(mtop);
-        };
-        notifier->preProcessingNotifier_.subscribe(modifyQMMMTopologyFunction);
+        const auto modifyQMMMTopologyFunction = [this](gmx_mtop_t* mtop)
+        { qmmmOptions_.modifyQMMMTopology(mtop); };
+        notifiers->preProcessingNotifier_.subscribe(modifyQMMMTopologyFunction);
 
         // Notification of the QM input file provided via -qmi option of grompp
-        const auto setQMExternalInputFileNameFunction = [this](const QMInputFileName& qmInputFileName) {
-            qmmmOptions_.setQMExternalInputFile(qmInputFileName);
-        };
-        notifier->preProcessingNotifier_.subscribe(setQMExternalInputFileNameFunction);
+        const auto setQMExternalInputFileNameFunction = [this](const QMInputFileName& qmInputFileName)
+        { qmmmOptions_.setQMExternalInputFile(qmInputFileName); };
+        notifiers->preProcessingNotifier_.subscribe(setQMExternalInputFileNameFunction);
     }
 
     /*! \brief Requests to be notified during simulation setup.
@@ -301,10 +312,11 @@ public:
      *   - the type of periodic boundary conditions that are used
      *     by taking a PeriodicBoundaryConditionType as parameter
      *   - Access MDLogger for notifications output
+     *   - Access MPI communicator for simulation
      *   - Disable PME-only ranks for QMMM runs
      *   - Request QM energy output to md.log
      */
-    void subscribeToSimulationSetupNotifications(MDModulesNotifiers* notifier) override
+    void subscribeToSimulationSetupNotifications(MDModulesNotifiers* notifiers) override
     {
         if (!qmmmOptions_.active())
         {
@@ -312,51 +324,66 @@ public:
         }
 
         // Reading internal parameters during simulation setup
-        const auto readInternalParametersFunction = [this](const KeyValueTreeObject& tree) {
-            qmmmOptions_.readInternalParametersFromKvt(tree);
-        };
-        notifier->simulationSetupNotifier_.subscribe(readInternalParametersFunction);
+        const auto readInternalParametersFunction = [this](const KeyValueTreeObject& tree)
+        { qmmmOptions_.readInternalParametersFromKvt(tree); };
+        notifiers->simulationSetupNotifier_.subscribe(readInternalParametersFunction);
 
         // Process tpr filename
-        const auto setTprFileNameFunction = [this](const MdRunInputFilename& tprName) {
-            qmmmOptions_.processTprFilename(tprName);
-        };
-        notifier->simulationSetupNotifier_.subscribe(setTprFileNameFunction);
+        const auto setTprFileNameFunction = [this](const MdRunInputFilename& tprName)
+        { qmmmOptions_.processTprFilename(tprName); };
+        notifiers->simulationSetupNotifier_.subscribe(setTprFileNameFunction);
 
         // constructing local atom sets during simulation setup
-        const auto setLocalAtomSetFunction = [this](LocalAtomSetManager* localAtomSetManager) {
+        const auto setLocalAtomSetFunction = [this](LocalAtomSetManager* localAtomSetManager)
+        {
             LocalAtomSet atomSet1 = localAtomSetManager->add(qmmmOptions_.parameters().qmIndices_);
             this->qmmmSimulationParameters_.setLocalQMAtomSet(atomSet1);
             LocalAtomSet atomSet2 = localAtomSetManager->add(qmmmOptions_.parameters().mmIndices_);
             this->qmmmSimulationParameters_.setLocalMMAtomSet(atomSet2);
         };
-        notifier->simulationSetupNotifier_.subscribe(setLocalAtomSetFunction);
+        notifiers->simulationSetupNotifier_.subscribe(setLocalAtomSetFunction);
 
         // Reading PBC parameters during simulation setup
-        const auto setPeriodicBoundaryContionsFunction = [this](const PbcType& pbc) {
-            this->qmmmSimulationParameters_.setPeriodicBoundaryConditionType(pbc);
-        };
-        notifier->simulationSetupNotifier_.subscribe(setPeriodicBoundaryContionsFunction);
+        const auto setPeriodicBoundaryContionsFunction = [this](const PbcType& pbc)
+        { this->qmmmSimulationParameters_.setPeriodicBoundaryConditionType(pbc); };
+        notifiers->simulationSetupNotifier_.subscribe(setPeriodicBoundaryContionsFunction);
 
         // Saving MDLogger during simulation setup
-        const auto setLoggerFunction = [this](const MDLogger& logger) {
-            this->qmmmSimulationParameters_.setLogger(logger);
-        };
-        notifier->simulationSetupNotifier_.subscribe(setLoggerFunction);
+        const auto setLoggerFunction = [this](const MDLogger& logger)
+        { this->qmmmSimulationParameters_.setLogger(logger); };
+        notifiers->simulationSetupNotifier_.subscribe(setLoggerFunction);
+
+        // Saving MPI communicator during simulation setup
+        const auto setMpiCommFunction = [this](const MpiComm& mpiComm)
+        { this->qmmmSimulationParameters_.setMpiComm(mpiComm); };
+        notifiers->simulationSetupNotifier_.subscribe(setMpiCommFunction);
 
         // Adding output to energy file
-        const auto requestEnergyOutput = [](MDModulesEnergyOutputToQMMMRequestChecker* energyOutputRequest) {
-            energyOutputRequest->energyOutputToQMMM_ = true;
-        };
-        notifier->simulationSetupNotifier_.subscribe(requestEnergyOutput);
+        const auto requestEnergyOutput = [](MDModulesEnergyOutputToQMMMRequestChecker* energyOutputRequest)
+        { energyOutputRequest->energyOutputToQMMM_ = true; };
+        notifiers->simulationSetupNotifier_.subscribe(requestEnergyOutput);
 
         // Request to disable PME-only ranks, which are not compatible with CP2K
-        const auto requestPmeRanks = [](SeparatePmeRanksPermitted* pmeRanksPermitted) {
+        const auto requestPmeRanks = [](SeparatePmeRanksPermitted* pmeRanksPermitted)
+        {
             pmeRanksPermitted->disablePmeRanks(
                     "Separate PME-only ranks are not compatible with QMMM MdModule");
         };
-        notifier->simulationSetupNotifier_.subscribe(requestPmeRanks);
+        notifiers->simulationSetupNotifier_.subscribe(requestPmeRanks);
+
+        // writing checkpoint data
+        const auto checkpointDataWriting = [this](MDModulesWriteCheckpointData checkpointData)
+        { forceProvider_->writeCheckpointData(checkpointData, QMMMModuleInfo::sc_name); };
+        notifiers->checkpointingNotifier_.subscribe(checkpointDataWriting);
+
+        // reading checkpoint data
+        const auto checkpointDataReading = [this](MDModulesCheckpointReadingDataOnMain checkpointData)
+        { state_.readState(checkpointData.checkpointedData_, QMMMModuleInfo::sc_name); };
+        notifiers->checkpointingNotifier_.subscribe(checkpointDataReading);
     }
+
+    //! No subscriptions to run notifications
+    void subscribeToSimulationRunNotifications(MDModulesNotifiers* /* notifiers */) override {}
 
     //! From IMDModule
     IMdpOptionProvider* mdpOptionProvider() override { return &qmmmOptions_; }
@@ -375,8 +402,10 @@ public:
                 qmmmSimulationParameters_.localQMAtomSet(),
                 qmmmSimulationParameters_.localMMAtomSet(),
                 qmmmSimulationParameters_.periodicBoundaryConditionType(),
-                qmmmSimulationParameters_.logger());
-        forceProviders->addForceProvider(forceProvider_.get());
+                qmmmSimulationParameters_.logger(),
+                qmmmSimulationParameters_.mpiComm(),
+                state_);
+        forceProviders->addForceProvider(forceProvider_.get(), "QMMM");
     }
 
     //! QMMM Module should not use OutputProvider as it will be removed in the future
@@ -393,6 +422,8 @@ private:
      * simulation setup time.
      */
     QMMMSimulationParameterSetup qmmmSimulationParameters_;
+    //! Object holding the information stored in the checkpoint file
+    QMMMForceProviderState state_;
 
     GMX_DISALLOW_COPY_AND_ASSIGN(QMMM);
 };
@@ -403,7 +434,5 @@ std::unique_ptr<IMDModule> QMMMModuleInfo::create()
 {
     return std::make_unique<QMMM>();
 }
-
-const std::string QMMMModuleInfo::name_ = c_qmmmCP2KModuleName;
 
 } // namespace gmx

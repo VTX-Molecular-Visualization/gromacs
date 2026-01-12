@@ -61,8 +61,6 @@
 #include "gromacs/gmxana/gstat.h"
 #include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
-#include "gromacs/math/vec.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/mdlib/energyoutput.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
@@ -83,6 +81,8 @@
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/strconvert.h"
 #include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
 
 struct gmx_output_env_t;
 
@@ -152,7 +152,7 @@ static int* select_by_name(int nre, gmx_enxnm_t* nm, int* nset)
     const char* fm2   = "%3d  %-34s";
     char**      newnm = nullptr;
 
-    if ((getenv("GMX_ENER_VERBOSE")) != nullptr)
+    if ((std::getenv("GMX_ENER_VERBOSE")) != nullptr)
     {
         bVerbose = FALSE;
     }
@@ -1777,70 +1777,70 @@ int gmx_energy(int argc, char* argv[])
     };
     static gmx_bool bSum = FALSE, bFee = FALSE, bPrAll = FALSE, bFluct = FALSE, bDriftCorr = FALSE;
     static gmx_bool bDp = FALSE, bMutot = FALSE, bOrinst = FALSE, bOvec = FALSE, bFluctProps = FALSE;
-    static int      nmol = 1, nbmin = 5, nbmax = 5;
-    static real     reftemp = 300.0, ezero = 0;
-    static int      einsteinRestarts = 100;
-    static int      einsteinBlocks   = 4;
-    t_pargs         pa[]             = {
+    static int  nmol = 1, nbmin = 5, nbmax = 5;
+    static real reftemp = 300.0, ezero = 0;
+    static int  einsteinRestarts = 100;
+    static int  einsteinBlocks   = 4;
+    t_pargs     pa[]             = {
         { "-fee", FALSE, etBOOL, { &bFee }, "Do a free energy estimate" },
         { "-fetemp",
-          FALSE,
-          etREAL,
-          { &reftemp },
-          "Reference temperature for free energy calculation" },
+                          FALSE,
+                          etREAL,
+                          { &reftemp },
+                          "Reference temperature for free energy calculation" },
         { "-zero", FALSE, etREAL, { &ezero }, "Subtract a zero-point energy" },
         { "-sum",
-          FALSE,
-          etBOOL,
-          { &bSum },
-          "Sum the energy terms selected rather than display them all" },
+                          FALSE,
+                          etBOOL,
+                          { &bSum },
+                          "Sum the energy terms selected rather than display them all" },
         { "-dp", FALSE, etBOOL, { &bDp }, "Print energies in high precision" },
         { "-nbmin", FALSE, etINT, { &nbmin }, "Minimum number of blocks for error estimate" },
         { "-nbmax", FALSE, etINT, { &nbmax }, "Maximum number of blocks for error estimate" },
         { "-mutot",
-          FALSE,
-          etBOOL,
-          { &bMutot },
-          "Compute the total dipole moment from the components" },
+                          FALSE,
+                          etBOOL,
+                          { &bMutot },
+                          "Compute the total dipole moment from the components" },
         { "-aver",
-          FALSE,
-          etBOOL,
-          { &bPrAll },
-          "Also print the exact average and rmsd stored in the energy frames (only when 1 term is "
-          "requested)" },
+                          FALSE,
+                          etBOOL,
+                          { &bPrAll },
+                          "Also print the exact average and rmsd stored in the energy frames (only when 1 term is "
+                                          "requested)" },
         { "-nmol",
-          FALSE,
-          etINT,
-          { &nmol },
-          "Number of molecules in your sample: the energies are divided by this number" },
+                          FALSE,
+                          etINT,
+                          { &nmol },
+                          "Number of molecules in your sample: the energies are divided by this number" },
         { "-fluct_props",
-          FALSE,
-          etBOOL,
-          { &bFluctProps },
-          "Compute properties based on energy fluctuations, like heat capacity" },
+                          FALSE,
+                          etBOOL,
+                          { &bFluctProps },
+                          "Compute properties based on energy fluctuations, like heat capacity" },
         { "-driftcorr",
-          FALSE,
-          etBOOL,
-          { &bDriftCorr },
-          "Useful only for calculations of fluctuation properties. The drift in the observables "
-          "will be subtracted before computing the fluctuation properties." },
+                          FALSE,
+                          etBOOL,
+                          { &bDriftCorr },
+                          "Useful only for calculations of fluctuation properties. The drift in the observables "
+                                          "will be subtracted before computing the fluctuation properties." },
         { "-fluc",
-          FALSE,
-          etBOOL,
-          { &bFluct },
-          "Calculate autocorrelation of energy fluctuations rather than energy itself" },
+                          FALSE,
+                          etBOOL,
+                          { &bFluct },
+                          "Calculate autocorrelation of energy fluctuations rather than energy itself" },
         { "-orinst", FALSE, etBOOL, { &bOrinst }, "Analyse instantaneous orientation data" },
         { "-ovec", FALSE, etBOOL, { &bOvec }, "Also plot the eigenvectors with [TT]-oten[tt]" },
         { "-einstein_restarts",
-          FALSE,
-          etINT,
-          { &einsteinRestarts },
-          "Number of restarts for computing the viscosity using the Einstein relation" },
+                          FALSE,
+                          etINT,
+                          { &einsteinRestarts },
+                          "Number of restarts for computing the viscosity using the Einstein relation" },
         { "-einstein_blocks",
-          FALSE,
-          etINT,
-          { &einsteinBlocks },
-          "Number of averaging windows for computing the viscosity using the Einstein relation" }
+                          FALSE,
+                          etINT,
+                          { &einsteinBlocks },
+                          "Number of averaging windows for computing the viscosity using the Einstein relation" }
     };
     static const char* setnm[] = { "Pres-XX", "Pres-XY",     "Pres-XZ", "Pres-YX",
                                    "Pres-YY", "Pres-YZ",     "Pres-ZX", "Pres-ZY",
@@ -1987,7 +1987,9 @@ int gmx_energy(int argc, char* argv[])
         for (i = 0; (i < nset); i++)
         {
             bIsEner[i] = FALSE;
-            for (j = 0; (j <= F_ETOT); j++)
+            for (j = static_cast<int>(InteractionFunction::Bonds);
+                 (j <= static_cast<int>(InteractionFunction::TotalEnergy));
+                 j++)
             {
                 bIsEner[i] = bIsEner[i]
                              || (gmx_strcasecmp(interaction_function[j].longname, leg[i].c_str()) == 0);

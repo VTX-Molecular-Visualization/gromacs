@@ -43,15 +43,13 @@
 
 #include "gromacs/hardware/hw_info.h"
 #include "gromacs/mdrunutility/threadaffinity.h"
-#include "gromacs/mdtypes/commrec.h"
-#include "gromacs/utility/basedefinitions.h"
+#include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/logger.h"
+#include "gromacs/utility/mpicomm.h"
 #include "gromacs/utility/physicalnodecommunicator.h"
 #include "gromacs/utility/stringutil.h"
 
 #include "testutils/loggertest.h"
-
-struct t_commrec;
 
 namespace gmx
 {
@@ -65,7 +63,6 @@ class MockThreadAffinityAccess : public IThreadAffinityAccess
 {
 public:
     MockThreadAffinityAccess();
-    ~MockThreadAffinityAccess() override;
 
     void setSupported(bool supported) { supported_ = supported; }
 
@@ -97,6 +94,13 @@ public:
 
     void setLogicalProcessorCount(int logicalProcessorCount);
 
+    void setExternalAffinitySet(const std::vector<int>& cores);
+
+    // Load topology from saved mock filesystem root with external affinity mask
+    void setTopologyFromSavedMock(const std::string&      filesystemRoot,
+                                  const std::vector<int>& allowedProcessors,
+                                  const std::vector<int>& externalAffinitySet);
+
     void setTotNumThreadsIsAuto(bool isAuto) { hwOpt_.totNumThreadsIsAuto = isAuto; }
 
     void expectAffinitySet(int core)
@@ -104,6 +108,13 @@ public:
         EXPECT_CALL(affinityAccess_, setCurrentThreadAffinityToCore(core));
     }
     void expectAffinitySet(std::initializer_list<int> cores)
+    {
+        for (int core : cores)
+        {
+            expectAffinitySet(core);
+        }
+    }
+    void expectAffinitySet(gmx::ArrayRef<const int> cores)
     {
         for (int core : cores)
         {
@@ -153,21 +164,12 @@ public:
             setLogicalProcessorCount(1);
         }
         gmx::PhysicalNodeCommunicator comm(MPI_COMM_WORLD, physicalNodeId_);
-        int                           numThreadsOnThisNode, indexWithinNodeOfFirstThreadOnThisRank;
-        analyzeThreadsOnThisNode(
-                comm, numThreadsOnThisRank, &numThreadsOnThisNode, &indexWithinNodeOfFirstThreadOnThisRank);
-        gmx_set_thread_affinity(logHelper_.logger(),
-                                &cr_,
-                                &hwOpt_,
-                                *hwTop_,
-                                numThreadsOnThisRank,
-                                numThreadsOnThisNode,
-                                indexWithinNodeOfFirstThreadOnThisRank,
-                                &affinityAccess_);
+        gmx_set_thread_affinity(
+                logHelper_.logger(), mpiComm_, comm, &hwOpt_, *hwTop_, numThreadsOnThisRank, &affinityAccess_);
     }
 
 private:
-    t_commrec                         cr_;
+    MpiComm                           mpiComm_;
     gmx_hw_opt_t                      hwOpt_;
     std::unique_ptr<HardwareTopology> hwTop_;
     MockThreadAffinityAccess          affinityAccess_;

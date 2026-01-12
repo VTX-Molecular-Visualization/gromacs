@@ -44,8 +44,6 @@
 
 #include "gromacs/math/units.h"
 #include "gromacs/math/utilities.h"
-#include "gromacs/math/vec.h"
-#include "gromacs/topology/ifunc.h"
 #include "gromacs/trajectory/energyframe.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/basedefinitions.h"
@@ -54,6 +52,7 @@
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/vec.h"
 
 t_ebin* mk_ebin()
 {
@@ -80,7 +79,7 @@ void done_ebin(t_ebin* eb)
 int get_ebin_space(t_ebin* eb, int nener, const char* const enm[], const char* unit)
 {
     int         index;
-    int         i, f;
+    int         i;
     const char* u;
 
     index = eb->nener;
@@ -110,18 +109,21 @@ int get_ebin_space(t_ebin* eb, int nener, const char* const enm[], const char* u
              * entries would be removed from the ifunc array.
              */
             u = unit_energy;
-            for (f = 0; f < F_NRE; f++)
+            for (const auto f : gmx::EnumerationWrapper<InteractionFunction>{})
             {
-                if (strcmp(eb->enm[i].name, interaction_function[f].longname) == 0)
+                if (std::strcmp(eb->enm[i].name, interaction_function[f].longname) == 0)
                 {
                     /* Only the terms in this list are not energies */
                     switch (f)
                     {
-                        case F_DISRESVIOL: u = unit_length; break;
-                        case F_ORIRESDEV: u = "obs"; break;
-                        case F_TEMP: u = unit_temp_K; break;
-                        case F_PDISPCORR:
-                        case F_PRES: u = unit_pres_bar; break;
+                        case InteractionFunction::DistanceRestraintViolations:
+                            u = unit_length;
+                            break;
+                        case InteractionFunction::OrientationRestraintDeviations: u = "obs"; break;
+                        case InteractionFunction::Temperature: u = unit_temp_K; break;
+                        case InteractionFunction::PressureDispersionCorrection:
+                        case InteractionFunction::Pressure: u = unit_pres_bar; break;
+                        default: break;
                     }
                 }
             }
@@ -292,7 +294,7 @@ void pr_ebin(FILE* fp, t_ebin* eb, int entryIndex, int nener, int nperline, int 
             i0 = i;
             for (j = 0; (j < nperline) && (i < end) && rc >= 0; j++, i++)
             {
-                if (strncmp(eb->enm[i].name, "Pres", 4) == 0)
+                if (std::strncmp(eb->enm[i].name, "Pres", 4) == 0)
                 {
                     /* Print the pressure unit to avoid confusion */
                     sprintf(buf, "%s (%s)", eb->enm[i].name, unit_pres_bar);

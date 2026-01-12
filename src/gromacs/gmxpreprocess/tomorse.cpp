@@ -116,7 +116,7 @@ static int nequal(const char* a1, const char* a2)
      */
     for (i = 0; (a1[i] != '\0') && (a2[i] != '\0'); i++)
     {
-        if (toupper(a1[i]) != toupper(a2[i]))
+        if (std::toupper(a1[i]) != std::toupper(a2[i]))
         {
             break;
         }
@@ -212,9 +212,9 @@ void convert_harmonics(gmx::ArrayRef<MoleculeInformation> mols, PreprocessingAto
         /* Check how many morse and harmonic BONDSs there are, increase size of
          * morse with the number of harmonics
          */
-        for (int bb = 0; (bb < F_NRE); bb++)
+        for (const auto bb : gmx::EnumerationWrapper<InteractionFunction>{})
         {
-            if ((interaction_function[bb].flags & IF_BTYPE) && (bb != F_MORSE))
+            if ((interaction_function[bb].flags & IF_BTYPE) && (bb != InteractionFunction::MorsePotential))
             {
                 int nrharm = mol.interactions[bb].size();
 
@@ -236,7 +236,7 @@ void convert_harmonics(gmx::ArrayRef<MoleculeInformation> mols, PreprocessingAto
                         real              beta       = std::sqrt(kb / (2 * edis));
                         std::vector<int>  atoms      = { ni, nj };
                         std::vector<real> forceParam = { b0, edis, beta };
-                        mol.interactions[F_MORSE].interactionTypes.emplace_back(
+                        mol.interactions[InteractionFunction::MorsePotential].interactionTypes.emplace_back(
                                 InteractionOfType(atoms, forceParam));
                         harmonic = mol.interactions[bb].interactionTypes.erase(harmonic);
                     }

@@ -85,7 +85,7 @@ namespace
 
 TEST(EmptyArrayRefTest, IsEmpty)
 {
-    ArrayRef<SimdReal> empty = ArrayRef<real>();
+    ArrayRef<SimdReal> empty = ArrayRef<real>{};
 
     EXPECT_EQ(0U, empty.size());
     EXPECT_TRUE(empty.empty());
@@ -173,7 +173,7 @@ TYPED_TEST(ArrayRefTest, ConstructFromArrayRefWorks)
 
     std::iota(a.begin(), a.end(), 0);
     ArrayRef<std::remove_const_t<typename TestFixture::ValueType>> ref(a.data(), a.data() + a.size());
-    typename TestFixture::ArrayRefType                             arrayRef(ref);
+    typename TestFixture::ArrayRefType arrayRef(ref);
     this->runReadOnlyTests(a.data(), 3, arrayRef);
 }
 
@@ -196,23 +196,25 @@ TYPED_TEST_SUITE(ArrayRefReadWriteTest, ArrayRefReadWriteTypes);
 
 TYPED_TEST(ArrayRefReadWriteTest, Assignment)
 {
-    constexpr int width = TestFixture::width;
+    constexpr int testWidth = TestFixture::width;
 
-    alignas(width * sizeof(typename TestFixture::ElementType)) std::array<typename TestFixture::ElementType, width * 4> a;
+    alignas(testWidth * sizeof(typename TestFixture::ElementType))
+            std::array<typename TestFixture::ElementType, testWidth * 4>
+                    a;
 
     typename TestFixture::ArrayRefType arrayRef(a.data(), a.data() + a.size());
 
     arrayRef.front() = 1;
-    EXPECT_EQ(1, a[0 * width]);
+    EXPECT_EQ(1, a[0 * testWidth]);
     (arrayRef.front() = 1) = 2;
-    EXPECT_EQ(2, a[0 * width]);
+    EXPECT_EQ(2, a[0 * testWidth]);
 
     arrayRef[1] = 2;
-    EXPECT_EQ(2, a[1 * width]);
+    EXPECT_EQ(2, a[1 * testWidth]);
     *(arrayRef.begin() + 2) = 3;
-    EXPECT_EQ(3, a[2 * width]);
+    EXPECT_EQ(3, a[2 * testWidth]);
     arrayRef.back() = 4;
-    EXPECT_EQ(4, a[3 * width]);
+    EXPECT_EQ(4, a[3 * testWidth]);
 }
 
 template<typename TypeParam>
@@ -228,20 +230,20 @@ TYPED_TEST_SUITE(ArrayRefArithmeticTest, ArrayRefArithmeticTypes);
 
 TYPED_TEST(ArrayRefArithmeticTest, Basic)
 {
-    constexpr int width = TestFixture::width;
+    constexpr int testWidth = TestFixture::width;
 
-    alignas(width * sizeof(typename TestFixture::ElementType)) std::array<typename TestFixture::ElementType, width> a;
+    alignas(testWidth * sizeof(typename TestFixture::ElementType)) std::array<typename TestFixture::ElementType, testWidth> a;
 
     typename TestFixture::ArrayRefType arrayRef(a.data(), a.data() + a.size());
 
     arrayRef.front() = 1;
-    ASSERT_EQ(1, a[0 * width]);
+    ASSERT_EQ(1, a[0 * testWidth]);
     arrayRef.front() += 1;
-    ASSERT_EQ(2, a[0 * width]);
+    ASSERT_EQ(2, a[0 * testWidth]);
     arrayRef.front() *= 2;
-    ASSERT_EQ(4, a[0 * width]);
+    ASSERT_EQ(4, a[0 * testWidth]);
     arrayRef.front() -= 3;
-    ASSERT_EQ(1, a[0 * width]);
+    ASSERT_EQ(1, a[0 * testWidth]);
 }
 
 #    endif // GTEST_HAS_TYPED_TEST

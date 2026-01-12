@@ -46,26 +46,15 @@
 #include <string>
 #include <vector>
 
-#include "gromacs/math/vectypes.h"
+#include "gromacs/topology/embedded_system_preprocessing.h"
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/classhelpers.h"
 #include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/real.h"
+#include "gromacs/utility/vectypes.h"
 
 namespace gmx
 {
-
-/*! \internal
- * \brief Helper structure with indexes of broken bonds between QM and MM
- * Used to determine and store pair of QM and MM atoms between which chemical bond is broken
- */
-struct LinkFrontier
-{
-    //! Global index of QM atom at Frontier
-    Index qm;
-    //! Global index of MM atom at Frontier
-    Index mm;
-};
 
 /*! \brief Enumerator for supported QM methods
  * Also could be INPUT which means external input file provided
@@ -110,8 +99,8 @@ struct QMMMParameters
     std::vector<Index> qmIndices_;
     //! Indices of the atoms that are part of the MM region (default no MM atoms)
     std::vector<Index> mmIndices_;
-    //! Vector with pairs of indicies defining broken bonds in QMMM (default determined from topology)
-    std::vector<LinkFrontier> link_;
+    //! Vector with pairs of indices defining broken bonds in QMMM (default determined from topology)
+    std::vector<LinkFrontierAtom> link_;
     //! Vector with atomic numbers of all atoms in the system (default determined from topology)
     std::vector<int> atomNumbers_;
     //! Total charge of QM system (default 0)
@@ -138,8 +127,6 @@ struct QMMMParameters
         qmBox_{ { 0.0, 0.0, 0.0 }, { 0.0, 0.0, 0.0 }, { 0.0, 0.0, 0.0 } }, qmTrans_{ 0.0, 0.0, 0.0 }
     {
     }
-
-    GMX_DISALLOW_COPY_AND_ASSIGN(QMMMParameters);
 };
 
 } // namespace gmx

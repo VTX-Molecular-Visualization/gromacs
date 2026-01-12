@@ -57,7 +57,7 @@
 #include "gromacs/gpu_utils/gpu_utils.h"
 #include "gromacs/gpu_utils/gpueventsynchronizer.h"
 #include "gromacs/gpu_utils/typecasts_cuda_hip.h"
-#include "gromacs/gpu_utils/vectype_ops.cuh"
+#include "gromacs/gpu_utils/vectype_ops_cuda.h"
 #include "gromacs/hardware/device_information.h"
 #include "gromacs/mdtypes/simulation_workload.h"
 #include "gromacs/nbnxm/atomdata.h"
@@ -73,6 +73,7 @@
 #include "gromacs/utility/gmxassert.h"
 
 #include "nbnxm_cuda.h"
+#include "nbnxm_cuda_kernel_utils.cuh"
 #include "nbnxm_cuda_types.h"
 
 /***** The kernel declarations/definitions come here *****/
@@ -207,7 +208,18 @@ static const nbnxn_cu_kfunc_ptr_t nb_kfunc_noener_noprune_ptr[c_numElecTypes][c_
       nbnxn_kernel_ElecEwTwinCut_VdwLJFsw_F_cuda,
       nbnxn_kernel_ElecEwTwinCut_VdwLJPsw_F_cuda,
       nbnxn_kernel_ElecEwTwinCut_VdwLJEwCombGeom_F_cuda,
-      nbnxn_kernel_ElecEwTwinCut_VdwLJEwCombLB_F_cuda }
+      nbnxn_kernel_ElecEwTwinCut_VdwLJEwCombLB_F_cuda },
+#if GMX_USE_EXT_FMM
+    { nbnxn_kernel_ElecNone_VdwLJ_F_cuda,
+      nbnxn_kernel_ElecNone_VdwLJCombGeom_F_cuda,
+      nbnxn_kernel_ElecNone_VdwLJCombLB_F_cuda,
+      nbnxn_kernel_ElecNone_VdwLJFsw_F_cuda,
+      nbnxn_kernel_ElecNone_VdwLJPsw_F_cuda,
+      nbnxn_kernel_ElecNone_VdwLJEwCombGeom_F_cuda,
+      nbnxn_kernel_ElecNone_VdwLJEwCombLB_F_cuda }
+#else
+    { nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr }
+#endif
 };
 
 /*! Force + energy kernel function pointers. */
@@ -253,7 +265,18 @@ static const nbnxn_cu_kfunc_ptr_t nb_kfunc_ener_noprune_ptr[c_numElecTypes][c_nu
       nbnxn_kernel_ElecEwTwinCut_VdwLJFsw_VF_cuda,
       nbnxn_kernel_ElecEwTwinCut_VdwLJPsw_VF_cuda,
       nbnxn_kernel_ElecEwTwinCut_VdwLJEwCombGeom_VF_cuda,
-      nbnxn_kernel_ElecEwTwinCut_VdwLJEwCombLB_VF_cuda }
+      nbnxn_kernel_ElecEwTwinCut_VdwLJEwCombLB_VF_cuda },
+#if GMX_USE_EXT_FMM
+    { nbnxn_kernel_ElecNone_VdwLJ_VF_cuda,
+      nbnxn_kernel_ElecNone_VdwLJCombGeom_VF_cuda,
+      nbnxn_kernel_ElecNone_VdwLJCombLB_VF_cuda,
+      nbnxn_kernel_ElecNone_VdwLJFsw_VF_cuda,
+      nbnxn_kernel_ElecNone_VdwLJPsw_VF_cuda,
+      nbnxn_kernel_ElecNone_VdwLJEwCombGeom_VF_cuda,
+      nbnxn_kernel_ElecNone_VdwLJEwCombLB_VF_cuda }
+#else
+    { nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr }
+#endif
 };
 
 /*! Force + pruning kernel function pointers. */
@@ -299,7 +322,18 @@ static const nbnxn_cu_kfunc_ptr_t nb_kfunc_noener_prune_ptr[c_numElecTypes][c_nu
       nbnxn_kernel_ElecEwTwinCut_VdwLJFsw_F_prune_cuda,
       nbnxn_kernel_ElecEwTwinCut_VdwLJPsw_F_prune_cuda,
       nbnxn_kernel_ElecEwTwinCut_VdwLJEwCombGeom_F_prune_cuda,
-      nbnxn_kernel_ElecEwTwinCut_VdwLJEwCombLB_F_prune_cuda }
+      nbnxn_kernel_ElecEwTwinCut_VdwLJEwCombLB_F_prune_cuda },
+#if GMX_USE_EXT_FMM
+    { nbnxn_kernel_ElecNone_VdwLJ_F_prune_cuda,
+      nbnxn_kernel_ElecNone_VdwLJCombGeom_F_prune_cuda,
+      nbnxn_kernel_ElecNone_VdwLJCombLB_F_prune_cuda,
+      nbnxn_kernel_ElecNone_VdwLJFsw_F_prune_cuda,
+      nbnxn_kernel_ElecNone_VdwLJPsw_F_prune_cuda,
+      nbnxn_kernel_ElecNone_VdwLJEwCombGeom_F_prune_cuda,
+      nbnxn_kernel_ElecNone_VdwLJEwCombLB_F_prune_cuda }
+#else
+    { nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr }
+#endif
 };
 
 /*! Force + energy + pruning kernel function pointers. */
@@ -345,27 +379,38 @@ static const nbnxn_cu_kfunc_ptr_t nb_kfunc_ener_prune_ptr[c_numElecTypes][c_numV
       nbnxn_kernel_ElecEwTwinCut_VdwLJFsw_VF_prune_cuda,
       nbnxn_kernel_ElecEwTwinCut_VdwLJPsw_VF_prune_cuda,
       nbnxn_kernel_ElecEwTwinCut_VdwLJEwCombGeom_VF_prune_cuda,
-      nbnxn_kernel_ElecEwTwinCut_VdwLJEwCombLB_VF_prune_cuda }
+      nbnxn_kernel_ElecEwTwinCut_VdwLJEwCombLB_VF_prune_cuda },
+#if GMX_USE_EXT_FMM
+    { nbnxn_kernel_ElecNone_VdwLJ_VF_prune_cuda,
+      nbnxn_kernel_ElecNone_VdwLJCombGeom_VF_prune_cuda,
+      nbnxn_kernel_ElecNone_VdwLJCombLB_VF_prune_cuda,
+      nbnxn_kernel_ElecNone_VdwLJFsw_VF_prune_cuda,
+      nbnxn_kernel_ElecNone_VdwLJPsw_VF_prune_cuda,
+      nbnxn_kernel_ElecNone_VdwLJEwCombGeom_VF_prune_cuda,
+      nbnxn_kernel_ElecNone_VdwLJEwCombLB_VF_prune_cuda }
+#else
+    { nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr }
+#endif
 };
 
 /*! Return a pointer to the kernel version to be executed at the current step. */
-static inline nbnxn_cu_kfunc_ptr_t select_nbnxn_kernel(enum ElecType           elecType,
-                                                       enum VdwType            vdwType,
-                                                       bool                    bDoEne,
-                                                       bool                    bDoPrune,
+static inline nbnxn_cu_kfunc_ptr_t select_nbnxn_kernel(enum ElecType elecType,
+                                                       enum VdwType  vdwType,
+                                                       bool          bDoEne,
+                                                       bool          bDoPrune,
                                                        const DeviceInformation gmx_unused* deviceInfo)
 {
     const int elecTypeIdx = static_cast<int>(elecType);
     const int vdwTypeIdx  = static_cast<int>(vdwType);
 
-    GMX_ASSERT(elecTypeIdx < c_numElecTypes,
+    GMX_ASSERT(elecTypeIdx < c_numElecTypes && elecTypeIdx != static_cast<int>(ElecType::Fmm)
+                       && (!GMX_USE_EXT_FMM && elecTypeIdx != static_cast<int>(ElecType::None)),
                "The electrostatics type requested is not implemented in the CUDA kernels.");
     GMX_ASSERT(vdwTypeIdx < c_numVdwTypes,
                "The VdW type requested is not implemented in the CUDA kernels.");
 
     /* assert assumptions made by the kernels */
-    GMX_ASSERT(c_nbnxnGpuClusterSize * c_nbnxnGpuClusterSize / c_nbnxnGpuClusterpairSplit
-                       == deviceInfo->prop.warpSize,
+    GMX_ASSERT(c_clusterSize * c_clusterSize / c_clusterSplitSize == deviceInfo->prop.warpSize,
                "The CUDA kernels require the "
                "cluster_size_i*cluster_size_j/nbnxn_gpu_clusterpair_split to match the warp size "
                "of the architecture targeted.");
@@ -395,7 +440,7 @@ static inline nbnxn_cu_kfunc_ptr_t select_nbnxn_kernel(enum ElecType           e
 }
 
 /*! \brief Calculates the amount of shared memory required by the nonbonded kernel in use. */
-static inline int calc_shmem_required_nonbonded(const int               num_threads_z,
+static inline int calc_shmem_required_nonbonded(const int                           num_threads_z,
                                                 const DeviceInformation gmx_unused* deviceInfo,
                                                 const NBParamGpu*                   nbp)
 {
@@ -406,19 +451,19 @@ static inline int calc_shmem_required_nonbonded(const int               num_thre
     /* size of shmem (force-buffers/xq/atom type preloading) */
     /* NOTE: with the default kernel on sm3.0 we need shmem only for pre-loading */
     /* i-atom x+q in shared memory */
-    shmem = c_nbnxnGpuNumClusterPerSupercluster * c_clSize * sizeof(float4);
+    shmem = c_superClusterSize * c_clusterSize * sizeof(float4);
     /* cj in shared memory, for each warp separately */
-    shmem += num_threads_z * c_nbnxnGpuClusterpairSplit * c_nbnxnGpuJgroupSize * sizeof(int);
+    shmem += num_threads_z * c_clusterSplitSize * c_jGroupSize * sizeof(int);
 
     if (nbp->vdwType == VdwType::CutCombGeom || nbp->vdwType == VdwType::CutCombLB)
     {
         /* i-atom LJ combination parameters in shared memory */
-        shmem += c_nbnxnGpuNumClusterPerSupercluster * c_clSize * sizeof(float2);
+        shmem += c_superClusterSize * c_clusterSize * sizeof(float2);
     }
     else
     {
         /* i-atom types in shared memory */
-        shmem += c_nbnxnGpuNumClusterPerSupercluster * c_clSize * sizeof(int);
+        shmem += c_superClusterSize * c_clusterSize * sizeof(int);
     }
     /* for reducing prunedPairListCount over all warps in the block, to be used in plist sorting */
     shmem += 1 * sizeof(int);
@@ -529,8 +574,8 @@ void gpu_launch_kernel(NbnxmGpu* nb, const gmx::StepWorkload& stepWork, const In
 
 
     KernelLaunchConfig config;
-    config.blockSize[0] = c_clSize;
-    config.blockSize[1] = c_clSize;
+    config.blockSize[0] = c_clusterSize;
+    config.blockSize[1] = c_clusterSize;
     config.blockSize[2] = num_threads_z;
     config.gridSize[0]  = nblock;
     config.sharedMemorySize =
@@ -547,8 +592,8 @@ void gpu_launch_kernel(NbnxmGpu* nb, const gmx::StepWorkload& stepWork, const In
                 config.blockSize[2],
                 config.gridSize[0],
                 config.gridSize[1],
-                plist->numSci * c_nbnxnGpuNumClusterPerSupercluster,
-                c_nbnxnGpuNumClusterPerSupercluster,
+                plist->numSci * c_superClusterSize,
+                c_superClusterSize,
                 plist->numAtomsPerCluster,
                 config.sharedMemorySize);
     }
@@ -584,14 +629,34 @@ void gpu_launch_kernel(NbnxmGpu* nb, const gmx::StepWorkload& stepWork, const In
 }
 
 /*! Calculates the amount of shared memory required by the CUDA kernel in use. */
-static inline int calc_shmem_required_prune(const int num_threads_z)
+static inline int calc_shmem_required_prune(const int num_threads_z, const DeviceInformation* deviceInfo)
 {
-    int shmem;
+    /* We might use kernel built for a different architecture if we are not explicitly targeting
+     * the current device during compilation. In this case, if we are using kernels built for CC<7.0
+     * to run on a more modern device, we risk under-allocating shared memory. To prevent this, use
+     * the following (overly conservative) check: if we are JIT-compiling kernels from a different
+     * architecture *and* we are using CUDA<13, we assume we might be using old kernels.
+     * CUDA 13+ dropped support for CC<7.5, so this problem cannot arise).
+     */
+#if (!defined(CUDART_VERSION) || CUDART_VERSION < 13000)
+    const bool weMightAccidentallyUseOldKernels = !deviceInfo->haveNativeKernels;
+#else
+    const bool weMightAccidentallyUseOldKernels = false;
+#endif
+
+    const int  archMajor = deviceInfo->prop.major;
+    const bool preloadCj = archMajor < 7;
+    int        shmem;
 
     /* i-atom x in shared memory */
-    shmem = c_nbnxnGpuNumClusterPerSupercluster * c_clSize * sizeof(float4);
-    /* cj in shared memory, for each warp separately */
-    shmem += num_threads_z * c_nbnxnGpuClusterpairSplit * c_nbnxnGpuJgroupSize * sizeof(int);
+    shmem = c_superClusterSize * c_clusterSize * sizeof(float4);
+    if (preloadCj || weMightAccidentallyUseOldKernels)
+    {
+        /* cj in shared memory, for each warp separately */
+        shmem += num_threads_z * c_clusterSplitSize * c_jGroupSize * sizeof(int);
+    }
+    /* add 1 int for pruned pair count */
+    shmem += sizeof(int);
 
     return shmem;
 }
@@ -631,7 +696,7 @@ void gpu_launch_kernel_pruneonly(NbnxmGpu* nb, const InteractionLocality iloc, c
      * Also note that this CUDA implementation (parts tracking on device) differs from the
      * other backends (parts tracking on host, passed as kernel argument).
      */
-    int numSciInPartMax = (plist->numSci) / numParts;
+    const int numSciInPartMax = (plist->numSci + numParts - 1) / numParts;
 
     /* Don't launch the kernel if there is no work to do (not allowed with CUDA) */
     if (numSciInPartMax <= 0)
@@ -663,11 +728,12 @@ void gpu_launch_kernel_pruneonly(NbnxmGpu* nb, const InteractionLocality iloc, c
     int nblock        = calc_nb_kernel_nblock(numSciInPartMax, &nb->deviceContext_->deviceInfo());
 
     KernelLaunchConfig config;
-    config.blockSize[0]     = c_clSize;
-    config.blockSize[1]     = c_clSize;
-    config.blockSize[2]     = num_threads_z;
-    config.gridSize[0]      = nblock;
-    config.sharedMemorySize = calc_shmem_required_prune(num_threads_z);
+    config.blockSize[0] = c_clusterSize;
+    config.blockSize[1] = c_clusterSize;
+    config.blockSize[2] = num_threads_z;
+    config.gridSize[0]  = nblock;
+    config.sharedMemorySize =
+            calc_shmem_required_prune(num_threads_z, &nb->deviceContext_->deviceInfo());
 
     if (debug)
     {
@@ -680,8 +746,8 @@ void gpu_launch_kernel_pruneonly(NbnxmGpu* nb, const InteractionLocality iloc, c
                 config.blockSize[2],
                 config.gridSize[0],
                 config.gridSize[1],
-                numSciInPartMax * c_nbnxnGpuNumClusterPerSupercluster,
-                c_nbnxnGpuNumClusterPerSupercluster,
+                numSciInPartMax * c_superClusterSize,
+                c_superClusterSize,
                 plist->numAtomsPerCluster,
                 config.sharedMemorySize);
     }
@@ -730,6 +796,12 @@ void cuda_set_cacheconfig()
 
     for (int i = 0; i < c_numElecTypes; i++)
     {
+        if (i == static_cast<int>(ElecType::Fmm)
+            || (!GMX_USE_EXT_FMM && i == static_cast<int>(ElecType::None)))
+        {
+            // Avoid configuring a cache for a missing kernel
+            continue;
+        }
         for (int j = 0; j < c_numVdwTypes; j++)
         {
             /* Default kernel 32/32 kB Shared/L1 */

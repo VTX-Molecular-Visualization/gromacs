@@ -40,11 +40,11 @@
 #include <memory>
 #include <vector>
 
-#include "gromacs/math/vectypes.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/real.h"
+#include "gromacs/utility/vectypes.h"
 
 class DDBalanceRegionHandler;
 struct gmx_edsam;
@@ -52,7 +52,6 @@ struct gmx_enerdata_t;
 struct gmx_enfrot;
 struct SimulationGroups;
 struct gmx_localtop_t;
-struct gmx_multisim_t;
 struct gmx_wallcycle;
 struct gmx_pme_t;
 class history_t;
@@ -109,7 +108,6 @@ namespace gmx
  */
 void do_force(FILE*                         log,
               const t_commrec*              cr,
-              const gmx_multisim_t*         ms,
               const t_inputrec&             inputrec,
               const MDModulesNotifiers&     mdModulesNotifiers,
               Awh*                          awh,

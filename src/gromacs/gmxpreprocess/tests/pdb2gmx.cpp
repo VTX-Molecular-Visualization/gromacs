@@ -119,6 +119,38 @@ public:
             setOutputFile("-o", "conf.gro", ConfMatch().matchFullConfiguration(std::get<7>(GetParam())));
         }
         setOutputFile("-p", "topol.top", TextFileMatch(c_textMatcher));
+        std::string inputFileName = std::get<5>(GetParam());
+        std::string mergeChoice   = std::get<4>(GetParam());
+        if (inputFileName.find("mult-cyc-pep-1") != std::string::npos and mergeChoice == "no")
+        {
+            for (const auto& fileName : { "topol_Protein_chain_C.itp", "topol_Protein_chain_A.itp" })
+            {
+                setOutputFileWithGeneratedName(fileName,
+                                               fileManager().getTemporaryFilePath(fileName),
+                                               TextFileMatch(c_textMatcher));
+            }
+        }
+        if (inputFileName.find("mult-cyc-pep-2") != std::string::npos and mergeChoice == "no")
+        {
+            for (const auto& fileName : { "topol_Protein_chain_C.itp",
+                                          "topol_Protein_chain_E.itp",
+                                          "topol_Protein_chain_F.itp" })
+            {
+                setOutputFileWithGeneratedName(fileName,
+                                               fileManager().getTemporaryFilePath(fileName),
+                                               TextFileMatch(c_textMatcher));
+            }
+        }
+        if (inputFileName.find("cyc-rna") != std::string::npos and mergeChoice == "no")
+        {
+            for (const auto& fileName :
+                 { "topol_Ion_chain_Q2.itp", "topol_RNA_chain_Q.itp", "topol_RNA_chain_P.itp" })
+            {
+                setOutputFileWithGeneratedName(fileName,
+                                               fileManager().getTemporaryFilePath(fileName),
+                                               TextFileMatch(c_textMatcher));
+            }
+        }
     }
 
     void runTest(const CommandLine& args)
@@ -252,6 +284,29 @@ INSTANTIATE_TEST_SUITE_P(AmberTip4p,
                                             ::testing::Values(efGRO),
                                             ::testing::Values(true)),
                          namesOfTests);
+INSTANTIATE_TEST_SUITE_P(
+        Amber14Sb,
+        Pdb2gmxTest,
+        ::testing::Combine(::testing::Values("amber14sb"),
+                           ::testing::Values("tip3p", "opc3"),
+                           ::testing::Values("none"),
+                           ::testing::Values("id_or_ter"),
+                           ::testing::Values("no"),
+                           ::testing::Values("A.pdb", "B.pdb", "C.pdb", "D.pdb", "E.pdb"),
+                           ::testing::Values(efGRO),
+                           ::testing::Values(false)),
+        namesOfTests);
+INSTANTIATE_TEST_SUITE_P(Amber19SbHo4,
+                         Pdb2gmxTest,
+                         ::testing::Combine(::testing::Values("amber19sb"),
+                                            ::testing::Values("opc", "tip4pew"),
+                                            ::testing::Values("none"),
+                                            ::testing::Values("id_or_ter"),
+                                            ::testing::Values("no"),
+                                            ::testing::Values("tip4p.pdb"),
+                                            ::testing::Values(efGRO),
+                                            ::testing::Values(true)),
+                         namesOfTests);
 #endif
 
 #if CHARMM
@@ -304,6 +359,19 @@ INSTANTIATE_TEST_SUITE_P(Cyclic,
                                             ::testing::Values("id_or_ter"),
                                             ::testing::Values("no", "all"),
                                             ::testing::Values("cyc-rna.pdb", "cyc-prot.pdb"),
+                                            ::testing::Values(efGRO),
+                                            ::testing::Values(false)),
+                         namesOfTests);
+
+INSTANTIATE_TEST_SUITE_P(MultipleCyclic,
+                         Pdb2gmxTest,
+                         ::testing::Combine(::testing::Values("amber96"),
+                                            ::testing::Values("tip3p"),
+                                            ::testing::Values("none"),
+                                            ::testing::Values("id_or_ter"),
+                                            ::testing::Values("no", "all"),
+                                            ::testing::Values("mult-cyc-pep-1.pdb",
+                                                              "mult-cyc-pep-2.pdb"),
                                             ::testing::Values(efGRO),
                                             ::testing::Values(false)),
                          namesOfTests);

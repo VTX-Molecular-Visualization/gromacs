@@ -85,6 +85,7 @@ using mode = sycl::access_mode;
  * \tparam updateVelocities        Whether velocities should be updated this step.
  * \tparam computeVirial           Whether virial tensor should be computed this step.
  * \tparam haveCoupledConstraints  If there are coupled constraints (i.e. LINCS iterations are needed).
+ * \tparam CommandGroupHandler     Type of real or dummy command group handler
  *
  * \param[in]     cgh                            SYCL handler.
  * \param[in]     numConstraintsThreads          Total number of threads.
@@ -105,9 +106,9 @@ using mode = sycl::access_mode;
  *                                               Will be updated if \c updateVirial.
  * \param[in]     pbcAiuc                        Periodic boundary data.
  */
-template<bool updateVelocities, bool computeVirial, bool haveCoupledConstraints>
-auto lincsKernel(sycl::handler& cgh,
-                 const int      numConstraintsThreads,
+template<bool updateVelocities, bool computeVirial, bool haveCoupledConstraints, typename CommandGroupHandler>
+auto lincsKernel(CommandGroupHandler& cgh,
+                 const int            numConstraintsThreads,
                  const AtomPair* __restrict__ gm_constraints,
                  const float* __restrict__ gm_constraintsTargetLengths,
                  const int* __restrict__ gm_coupledConstraintsCounts,
@@ -130,11 +131,20 @@ auto lincsKernel(sycl::handler& cgh,
      * sm_threadVirial: six floats per thread.
      * So, without virials we need max(1*3, 2) floats, and with virials we need max(1*3, 2, 6) floats.
      */
-    static constexpr int           smBufferElementsPerThread = computeVirial ? 6 : 3;
-    sycl::local_accessor<float, 1> sm_buffer{ sycl::range<1>(c_threadsPerBlock * smBufferElementsPerThread),
-                                              cgh };
+    static constexpr int smBufferElementsPerThread = computeVirial ? 6 : 3;
 
-    return [=](sycl::nd_item<1> itemIdx) {
+    using Buffer = StaticLocalStorage<float, c_threadsPerBlock * smBufferElementsPerThread>;
+    // These declarations must be made on the host
+    auto sm_bufferHostStorage = Buffer::makeHostStorage(cgh);
+
+    return [=](sycl::nd_item<1> itemIdx)
+    {
+        // These declarations work on the device.
+        typename Buffer::DeviceStorage sm_bufferDeviceStorage;
+        // Extract the valid pointer to local storage
+        sycl::local_ptr<float> sm_buffer =
+                Buffer::get_pointer(sm_bufferHostStorage, sm_bufferDeviceStorage);
+
         const int threadIndex   = itemIdx.get_global_linear_id();
         const int threadInBlock = itemIdx.get_local_linear_id(); // Work-item index in work-group
 
@@ -181,7 +191,7 @@ auto lincsKernel(sycl::handler& cgh,
             xj = gm_x[j];
 
             Float3 dx;
-            pbcDxAiucSycl(pbcAiuc, xi, xj, dx);
+            pbcDxAiucGpu(pbcAiuc, xi, xj, dx);
 
             float rlen = sycl::rsqrt(dx[XX] * dx[XX] + dx[YY] * dx[YY] + dx[ZZ] * dx[ZZ]);
             rc         = rlen * dx;
@@ -225,7 +235,7 @@ auto lincsKernel(sycl::handler& cgh,
         }
 
         Float3 dx;
-        pbcDxAiucSycl(pbcAiuc, xi, xj, dx);
+        pbcDxAiucGpu(pbcAiuc, xi, xj, dx);
 
         float sol = sqrtReducedMass * ((rc[XX] * dx[XX] + rc[YY] * dx[YY] + rc[ZZ] * dx[ZZ]) - targetLength);
 
@@ -302,7 +312,7 @@ auto lincsKernel(sycl::handler& cgh,
             }
 
             Float3 dx;
-            pbcDxAiucSycl(pbcAiuc, xi, xj, dx);
+            pbcDxAiucGpu(pbcAiuc, xi, xj, dx);
 
             float len2  = targetLength * targetLength;
             float dlen2 = 2.0F * len2 - (dx[XX] * dx[XX] + dx[YY] * dx[YY] + dx[ZZ] * dx[ZZ]);
@@ -431,7 +441,7 @@ auto lincsKernel(sycl::handler& cgh,
                 }
                 else
                 {
-                    subGroupBarrier(itemIdx);
+                    sycl::group_barrier(itemIdx.get_sub_group());
                 }
             }
             // First 6 threads in the block add the 6 components of virial to the global memory address
@@ -454,13 +464,14 @@ static void launchLincsKernel(const DeviceStream& deviceStream, const int numCon
     using kernelNameType = LincsKernelName<updateVelocities, computeVirial, haveCoupledConstraints>;
 
     const sycl::nd_range<1> rangeAllLincs(numConstraintsThreads, c_threadsPerBlock);
-    sycl::queue             q = deviceStream.stream();
 
-    q.submit(GMX_SYCL_DISCARD_EVENT[&](sycl::handler & cgh) {
-        auto kernel = lincsKernel<updateVelocities, computeVirial, haveCoupledConstraints>(
-                cgh, numConstraintsThreads, std::forward<Args>(args)...);
-        cgh.parallel_for<kernelNameType>(rangeAllLincs, kernel);
-    });
+    auto kernelFunctionBuilder =
+            lincsKernel<updateVelocities, computeVirial, haveCoupledConstraints, CommandGroupHandler>;
+    syclSubmitWithoutEvent<kernelNameType>(deviceStream.stream(),
+                                           kernelFunctionBuilder,
+                                           rangeAllLincs,
+                                           numConstraintsThreads,
+                                           std::forward<Args>(args)...);
 }
 
 /*! \brief Select templated kernel and launch it. */
@@ -469,7 +480,8 @@ static inline void
 launchLincsKernel(bool updateVelocities, bool computeVirial, bool haveCoupledConstraints, Args&&... args)
 {
     dispatchTemplatedFunction(
-            [&](auto updateVelocities_, auto computeVirial_, auto haveCoupledConstraints_) {
+            [&](auto updateVelocities_, auto computeVirial_, auto haveCoupledConstraints_)
+            {
                 return launchLincsKernel<updateVelocities_, computeVirial_, haveCoupledConstraints_>(
                         std::forward<Args>(args)...);
             },

@@ -31,113 +31,17 @@
 # To help us fund GROMACS development, we humbly ask that you cite
 # the research papers on the package. Check out https://www.gromacs.org.
 
-function (gmx_test_clang_cuda_support)
-    if (NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        message(FATAL_ERROR "Clang is required with GMX_CLANG_CUDA=ON!")
-    endif()
-
-    # NOTE: we'd ideally like to use a compile check here, but the link-stage
-    # fails as the clang invocation generated seems to not handle well some
-    # (GPU code) in the object file generated during compilation.
-    # SET(CMAKE_REQUIRED_FLAGS ${FLAGS})
-    # SET(CMAKE_REQUIRED_LIBRARIES ${LIBS})
-    # CHECK_CXX_SOURCE_COMPILES("int main() { int c; cudaGetDeviceCount(&c); return 0; }" _CLANG_CUDA_COMPILES)
-endfunction ()
-
-if (GMX_CUDA_TARGET_COMPUTE)
-    message(WARNING "Values passed in GMX_CUDA_TARGET_COMPUTE will be ignored; clang will by default include PTX in the binary.")
+if (NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    message(FATAL_ERROR "Clang is required with GMX_CLANG_CUDA=ON!")
 endif()
 
-# At the time of writing, the latest released versions are Clang 17 and CUDA 12.2.
-# Clang <14 support only CUDA 7.0-10.1; Clang 14-15 support CUDA 7.0-11.5;
-# Clang 16 supports CUDA SDK 7.0-11.8; Clang 17 supports CUDA SDK 12.1;
-# GROMACS requires CUDA 11.0, so no need to check for earlier versions
-set(_cuda_version_warning "")
-if (CMAKE_CXX_COMPILER_VERSION VERSION_LESS 14.0)
-    set(_cuda_version_warning "officially incompatible")
-elseif ((CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 17.0) OR (CUDAToolkit_VERSION VERSION_GREATER 12.1))
-    # We don't know the future; so far Clang, 17 state that CUDA 7.0-12.1 are supported.
-    set(_cuda_version_warning "possibly incompatible")
-elseif ((CMAKE_CXX_COMPILER_VERSION VERSION_LESS 16.0) AND (CUDAToolkit_VERSION VERSION_GREATER 11.5))
-    set(_cuda_version_warning "officially incompatible (but likely working)")
-elseif ((CMAKE_CXX_COMPILER_VERSION VERSION_LESS 17.0) AND (CUDAToolkit_VERSION VERSION_GREATER 11.8))
-    set(_cuda_version_warning "officially incompatible (but likely working)")
+
+if(DEFINED GMX_CUDA_CLANG_FLAGS)
+    list(APPEND GMX_CUDA_FLAGS ${GMX_CUDA_CLANG_FLAGS})
 endif()
-if(NOT CUDA_CLANG_WARNING_DISPLAYED STREQUAL _cuda_version_warning)
-    message(NOTICE "Using ${_cuda_version_warning} version of CUDA ${CUDAToolkit_VERSION} "
-      "with Clang ${CMAKE_CXX_COMPILER_VERSION}.")
-    message(NOTICE "If Clang fails to recognize CUDA version, consider creating doing "
-      "`echo \"CUDA Version ${CUDAToolkit_VERSION}\" | sudo tee \"${CUDAToolkit_TARGET_DIR}/version.txt\"`")
-endif()
-set(CUDA_CLANG_WARNING_DISPLAYED "${_cuda_version_warning}" CACHE INTERNAL
-    "Don't warn about this Clang CUDA compatibility issue again" FORCE)
-if(CUDA_CLANG_WARNING_DISPLAYED)
-    list(APPEND _CUDA_CLANG_FLAGS "-Wno-unknown-cuda-version")
-endif()
+# Don't warn about unknown CUDA version; this is developer-facing build, and we hope developers know what they are doing
+gmx_add_cuda_flag_if_supported(HAS_NO_UNKNOWN_CUDA_VERSION -Wno-unknown-cuda-version)
 
-if (GMX_CUDA_TARGET_SM)
-    set(_CUDA_CLANG_GENCODE_FLAGS)
-    set(_target_sm_list ${GMX_CUDA_TARGET_SM})
-    foreach(_target ${_target_sm_list})
-        list(APPEND _CUDA_CLANG_GENCODE_FLAGS "${_target};")
-    endforeach()
-else()
-    if(CUDAToolkit_VERSION VERSION_LESS 12.0)
-        list(APPEND _CUDA_CLANG_GENCODE_FLAGS "35;")
-        list(APPEND _CUDA_CLANG_GENCODE_FLAGS "37;")
-    endif()
-    list(APPEND _CUDA_CLANG_GENCODE_FLAGS "50;")
-    list(APPEND _CUDA_CLANG_GENCODE_FLAGS "52;")
-    list(APPEND _CUDA_CLANG_GENCODE_FLAGS "60;")
-    list(APPEND _CUDA_CLANG_GENCODE_FLAGS "61;")
-    list(APPEND _CUDA_CLANG_GENCODE_FLAGS "70;")
-    list(APPEND _CUDA_CLANG_GENCODE_FLAGS "75;")
-    if(NOT CMAKE_CXX_COMPILER_VERSION VERSION_LESS 14.0) # Clang 13 and earlier fail to recognize the flags below
-        if(NOT CUDAToolkit_VERSION VERSION_LESS 11.0)
-            list(APPEND _CUDA_CLANG_GENCODE_FLAGS "80;")
-        endif()
-        if(NOT CUDAToolkit_VERSION VERSION_LESS 11.1)
-            list(APPEND _CUDA_CLANG_GENCODE_FLAGS "86;")
-        endif()
-    endif()
-    if(NOT CMAKE_CXX_COMPILER_VERSION VERSION_LESS 16.0) # Clang 15 and earlier fail to recognize the flags below
-        if(NOT CUDAToolkit_VERSION VERSION_LESS 11.4)
-            list(APPEND _CUDA_CLANG_GENCODE_FLAGS "87;")
-        endif()
-        if(NOT CUDAToolkit_VERSION VERSION_LESS 11.8)
-            list(APPEND _CUDA_CLANG_GENCODE_FLAGS "89;")
-        endif()
-        if(NOT CUDAToolkit_VERSION VERSION_LESS 12.0)
-            list(APPEND _CUDA_CLANG_GENCODE_FLAGS "90;")
-        endif()
-    endif()
-endif()
-if (GMX_CUDA_TARGET_SM)
-    set_property(CACHE GMX_CUDA_TARGET_SM PROPERTY HELPSTRING "List of CUDA GPU architecture codes to compile for (without the sm_ prefix)")
-    set_property(CACHE GMX_CUDA_TARGET_SM PROPERTY TYPE STRING)
-endif()
-
-# default flags
-list(APPEND _CUDA_CLANG_FLAGS "-ffast-math" "-fcuda-flush-denormals-to-zero")
-if (CMAKE_CXX_COMPILER_VERSION VERSION_LESS 11.0)
-    # Workaround for clang 9-10 (Bug 45533).
-    list(APPEND _CUDA_CLANG_FLAGS "-fno-openmp")
-endif()
-# CUDA toolkit
-list(APPEND _CUDA_CLANG_FLAGS "--cuda-path=${CUDAToolkit_TARGET_DIR}")
-
-set(GMX_CUDA_CLANG_FLAGS ${_CUDA_CLANG_FLAGS})
-
-
-if (CUDA_USE_STATIC_CUDA_RUNTIME)
-    set(GMX_CUDA_CLANG_LINK_LIBS "cudart_static")
-else()
-    set(GMX_CUDA_CLANG_LINK_LIBS "cudart")
-endif()
-set(GMX_CUDA_CLANG_LINK_LIBS "${GMX_CUDA_CLANG_LINK_LIBS}" "dl" "rt")
-
-set(GMX_CUDA_CLANG_LINK_DIRS "${CUDAToolkit_LIBRARY_DIR}")
-
-set(CMAKE_CUDA_COMPILER ${CMAKE_CXX_COMPILER})
-
-gmx_test_clang_cuda_support()
+# Default flags
+gmx_add_cuda_flag_if_supported(HAS_FFAST_MATH -ffast_math)
+gmx_add_cuda_flag_if_supported(HAS_FCUDA_FLUSH_DENORMALS_TO_ZERO_FLUSH_DENORMALS_TO_ZERO -fcuda-flush-denormals-to-zero)

@@ -31,6 +31,10 @@
  * To help us fund GROMACS development, we humbly ask that you cite
  * the research papers on the package. Check out https://www.gromacs.org.
  */
+/*!
+ * \defgroup module_preprocessing Module Preprocessing
+ * \brief A brief description for Module Preprocessing
+ */
 #include "gmxpre.h"
 
 #include "gpp_atomtype.h"
@@ -51,7 +55,6 @@
 #include "gromacs/gmxpreprocess/notset.h"
 #include "gromacs/gmxpreprocess/topdirs.h"
 #include "gromacs/gmxpreprocess/toputil.h"
-#include "gromacs/math/vecdump.h"
 #include "gromacs/topology/atoms.h"
 #include "gromacs/topology/forcefieldparameters.h"
 #include "gromacs/topology/ifunc.h"
@@ -62,6 +65,7 @@
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/smalloc.h"
+#include "gromacs/utility/vecdump.h"
 
 struct AtomTypeData
 {
@@ -228,7 +232,7 @@ static int search_atomtypes(const PreprocessingAtomTypes*          ga,
                             gmx::ArrayRef<int>                     typelist,
                             int                                    thistype,
                             gmx::ArrayRef<const InteractionOfType> interactionTypes,
-                            int                                    ftype)
+                            InteractionFunction                    ftype)
 {
     int nn    = *n;
     int nrfp  = NRFP(ftype);
@@ -282,12 +286,13 @@ static int search_atomtypes(const PreprocessingAtomTypes*          ga,
     return i;
 }
 
-void PreprocessingAtomTypes::renumberTypes(gmx::ArrayRef<InteractionsOfType> plist,
-                                           gmx_mtop_t*                       mtop,
-                                           int*                              wall_atomtype,
-                                           bool                              bVerbose)
+void PreprocessingAtomTypes::renumberTypes(gmx::EnumerationArray<InteractionFunction, InteractionsOfType>& plist,
+                                           gmx_mtop_t* mtop,
+                                           int*        wall_atomtype,
+                                           bool        bVerbose)
 {
-    int nat, ftype, ntype;
+    int                 nat, ntype;
+    InteractionFunction ftype;
 
     ntype = size();
     std::vector<int> typelist(ntype);
@@ -306,13 +311,13 @@ void PreprocessingAtomTypes::renumberTypes(gmx::ArrayRef<InteractionsOfType> pli
      */
 
     /* Get nonbonded interaction type */
-    if (plist[F_LJ].size() > 0)
+    if (plist[InteractionFunction::LennardJonesShortRange].size() > 0)
     {
-        ftype = F_LJ;
+        ftype = InteractionFunction::LennardJonesShortRange;
     }
     else
     {
-        ftype = F_BHAM;
+        ftype = InteractionFunction::BuckinghamShortRange;
     }
 
     /* Renumber atomtypes by first making a list of which ones are actually used.
@@ -355,7 +360,7 @@ void PreprocessingAtomTypes::renumberTypes(gmx::ArrayRef<InteractionsOfType> pli
         int mi = typelist[i];
         for (int j = 0; (j < nat); j++)
         {
-            int                      mj              = typelist[j];
+            int mj = typelist[j];
             const InteractionOfType& interactionType = plist[ftype].interactionTypes[ntype * mi + mj];
             nbsnew.emplace_back(interactionType.atoms(),
                                 interactionType.forceParam(),

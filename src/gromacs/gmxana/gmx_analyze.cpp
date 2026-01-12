@@ -58,7 +58,6 @@
 #include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
 #include "gromacs/math/utilities.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/statistics/statistics.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/arraysize.h"
@@ -69,6 +68,7 @@
 #include "gromacs/utility/pleasecite.h"
 #include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
+#include "gromacs/utility/vec.h"
 
 struct gmx_output_env_t;
 
@@ -174,14 +174,13 @@ static void plot_coscont(const char* ccfile, int n, int nset, real** val, const 
 
 static void regression_analysis(int n, gmx_bool bXYdy, real* x, int nset, real** val)
 {
-    real S, chi2, a, b, da, db, r = 0;
-
     if (bXYdy || (nset == 1))
     {
         printf("Fitting data to a function f(x) = ax + b\n");
         printf("Minimizing residual chi2 = Sum_i w_i [f(x_i) - y_i]2\n");
         printf("Error estimates will be given if w_i (sigma) values are given\n");
         printf("(use option -xydy).\n\n");
+        real S, a, b, da, db, r = 0;
         if (bXYdy)
         {
             lsq_y_ax_b_error(n, x, val[0], val[1], &a, &b, &da, &db, &r, &S);
@@ -190,7 +189,7 @@ static void regression_analysis(int n, gmx_bool bXYdy, real* x, int nset, real**
         {
             lsq_y_ax_b(n, x, val[0], &a, &b, &r, &S);
         }
-        chi2 = gmx::square((n - 2) * S);
+        real chi2 = gmx::square((n - 2) * S);
         printf("Chi2                    = %g\n", chi2);
         printf("S (Sqrt(Chi2/(n-2))     = %g\n", S);
         printf("Correlation coefficient = %.1f%%\n", 100 * r);
@@ -368,7 +367,7 @@ static void average(const char* avfile, int avbar_opt, int n, int nset, real** v
                 {
                     tmp[s] = val[s][i];
                 }
-                qsort(tmp, nset, sizeof(tmp[0]), real_comp);
+                std::qsort(tmp, nset, sizeof(tmp[0]), real_comp);
                 fprintf(fp, " %g %g", tmp[nset - 1 - edge] - av, av - tmp[edge]);
             }
             else
@@ -1316,7 +1315,7 @@ int gmx_analyze(int argc, char* argv[])
                 if (j % 100 == 0)
                 {
                     fprintf(stderr, "\r%d", j);
-                    fflush(stderr);
+                    std::fflush(stderr);
                 }
                 tot = 0;
                 for (i = 0; i < n - j; i++)
@@ -1333,7 +1332,7 @@ int gmx_analyze(int argc, char* argv[])
         }
         xvgrclose(out);
         fprintf(stderr, "\r%d, time=%g\n", j - 1, (j - 1) * dt);
-        fflush(stderr);
+        std::fflush(stderr);
     }
     if (ccfile)
     {

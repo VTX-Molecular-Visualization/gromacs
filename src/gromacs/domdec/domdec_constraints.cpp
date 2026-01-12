@@ -57,15 +57,12 @@
 #include "gromacs/domdec/domdec_struct.h"
 #include "gromacs/domdec/ga2la.h"
 #include "gromacs/domdec/hashedmap.h"
-#include "gromacs/math/vec.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/mdlib/constr.h"
 #include "gromacs/mdlib/gmx_omp_nthreads.h"
 #include "gromacs/mdtypes/atominfo.h"
 #include "gromacs/mdtypes/commrec.h"
 #include "gromacs/pbcutil/ishift.h"
 #include "gromacs/topology/idef.h"
-#include "gromacs/topology/ifunc.h"
 #include "gromacs/topology/mtop_lookup.h"
 #include "gromacs/topology/topology.h"
 #include "gromacs/utility/basedefinitions.h"
@@ -73,6 +70,8 @@
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/listoflists.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "domdec_internal.h"
 #include "domdec_specatomcomm.h"
@@ -206,7 +205,7 @@ static void atoms_to_settles(gmx_domdec_t*                         dd,
                              std::vector<int>*                     ireq)
 {
     const gmx_ga2la_t& ga2la = *dd->ga2la;
-    int                nral  = NRAL(F_SETTLE);
+    int                nral  = NRAL(InteractionFunction::SETTLE);
 
     int mb = 0;
     for (int a = cg_start; a < cg_end; a++)
@@ -224,7 +223,8 @@ static void atoms_to_settles(gmx_domdec_t*                         dd,
             {
                 int offset = a_gl - a_mol;
 
-                const int* ia1 = mtop.moltype[molb->type].ilist[F_SETTLE].iatoms.data();
+                const int* ia1 =
+                        mtop.moltype[molb->type].ilist[InteractionFunction::SETTLE].iatoms.data();
 
                 int      a_gls[3];
                 gmx_bool bAssign = FALSE;
@@ -300,8 +300,10 @@ static void atoms_to_constraints(gmx_domdec_t*                         dd,
 
             const gmx_molblock_t& molb = mtop.molblock[mb];
 
-            gmx::ArrayRef<const int> ia1 = mtop.moltype[molb.type].ilist[F_CONSTR].iatoms;
-            gmx::ArrayRef<const int> ia2 = mtop.moltype[molb.type].ilist[F_CONSTRNC].iatoms;
+            gmx::ArrayRef<const int> ia1 =
+                    mtop.moltype[molb.type].ilist[InteractionFunction::Constraints].iatoms;
+            gmx::ArrayRef<const int> ia2 =
+                    mtop.moltype[molb.type].ilist[InteractionFunction::ConstraintsNoCoupling].iatoms;
 
             /* Calculate the global constraint number offset for the molecule.
              * This is only required for the global index to make sure
@@ -371,13 +373,13 @@ static void atoms_to_constraints(gmx_domdec_t*                         dd,
     }
 }
 
-int dd_make_local_constraints(gmx_domdec_t*                  dd,
-                              int                            at_start,
-                              const struct gmx_mtop_t&       mtop,
-                              gmx::ArrayRef<const int32_t>   atomInfo,
-                              gmx::Constraints*              constr,
-                              int                            nrec,
-                              gmx::ArrayRef<InteractionList> il_local)
+int dd_make_local_constraints(gmx_domdec_t*                                                dd,
+                              int                                                          at_start,
+                              const struct gmx_mtop_t&                                     mtop,
+                              gmx::ArrayRef<const int32_t>                                 atomInfo,
+                              gmx::Constraints*                                            constr,
+                              int                                                          nrec,
+                              gmx::EnumerationArray<InteractionFunction, InteractionList>& il_local)
 {
     // This code should not be called unless this condition is true,
     // because that's the only time init_domdec_constraints is
@@ -396,8 +398,8 @@ int dd_make_local_constraints(gmx_domdec_t*                  dd,
 
     gmx_domdec_constraints_t* dc = dd->constraints.get();
 
-    InteractionList* ilc_local = &il_local[F_CONSTR];
-    InteractionList* ils_local = &il_local[F_SETTLE];
+    InteractionList* ilc_local = &il_local[InteractionFunction::Constraints];
+    InteractionList* ils_local = &il_local[InteractionFunction::SETTLE];
 
     dc->ncon = 0;
     gmx::ArrayRef<const ListOfLists<int>> at2con_mt;
@@ -499,7 +501,7 @@ int dd_make_local_constraints(gmx_domdec_t*                  dd,
         /* Fill in the missing indices */
         gmx::HashedMap<int>* ga2la_specat = dd->constraints->ga2la.get();
 
-        int nral1 = 1 + NRAL(F_CONSTR);
+        int nral1 = 1 + NRAL(InteractionFunction::Constraints);
         for (int i = 0; i < ilc_local->size(); i += nral1)
         {
             int* iap = ilc_local->iatoms.data() + i;
@@ -514,7 +516,7 @@ int dd_make_local_constraints(gmx_domdec_t*                  dd,
             }
         }
 
-        nral1 = 1 + NRAL(F_SETTLE);
+        nral1 = 1 + NRAL(InteractionFunction::SETTLE);
         for (int i = 0; i < ils_local->size(); i += nral1)
         {
             int* iap = ils_local->iatoms.data() + i;
@@ -556,8 +558,9 @@ void init_domdec_constraints(gmx_domdec_t* dd, const gmx_mtop_t& mtop)
     {
         const gmx_molblock_t* molb = &mtop.molblock[mb];
         dc->molb_con_offset[mb]    = ncon;
-        dc->molb_ncon_mol[mb]      = mtop.moltype[molb->type].ilist[F_CONSTR].size() / 3
-                                + mtop.moltype[molb->type].ilist[F_CONSTRNC].size() / 3;
+        dc->molb_ncon_mol[mb] =
+                mtop.moltype[molb->type].ilist[InteractionFunction::Constraints].size() / 3
+                + mtop.moltype[molb->type].ilist[InteractionFunction::ConstraintsNoCoupling].size() / 3;
         ncon += molb->nmol * dc->molb_ncon_mol[mb];
     }
 
@@ -570,7 +573,8 @@ void init_domdec_constraints(gmx_domdec_t* dd, const gmx_mtop_t& mtop)
      * The number of keys is a rough estimate, it will be optimized later.
      */
     int numKeysEstimate = std::min(mtop.natoms / 20, mtop.natoms / (2 * dd->nnodes));
-    dc->ga2la           = std::make_unique<gmx::HashedMap<int>>(numKeysEstimate);
+    dc->ga2la           = std::make_unique<gmx::HashedMap<int>>(
+            numKeysEstimate, gmx_omp_nthreads_get(ModuleMultiThread::Domdec));
 
     dc->nthread = gmx_omp_nthreads_get(ModuleMultiThread::Domdec);
     dc->ils.resize(dc->nthread);

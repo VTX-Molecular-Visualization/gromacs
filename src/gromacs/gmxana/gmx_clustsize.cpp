@@ -53,8 +53,6 @@
 #include "gromacs/gmxana/gstat.h"
 #include "gromacs/gmxlib/nrnb.h"
 #include "gromacs/math/units.h"
-#include "gromacs/math/vec.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/topology/block.h"
@@ -71,6 +69,8 @@
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
 
 struct gmx_output_env_t;
 
@@ -388,9 +388,9 @@ static void clust_size(const char*             ndx,
                 {
                     GMX_RELEASE_ASSERT(mols.numBlocks() > 0,
                                        "Cannot access index[] from empty mols");
-                    for (int j : mols.block(i))
+                    for (int l : mols.block(i))
                     {
-                        fprintf(fp, "%d\n", j + 1);
+                        fprintf(fp, "%d\n", l + 1);
                     }
                 }
                 else

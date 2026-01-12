@@ -42,24 +42,28 @@
 #include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
 #include "gromacs/math/utilities.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/mdtypes/interaction_const.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/mdtypes/simulation_workload.h"
 #include "gromacs/nbnxm/atomdata.h"
 #include "gromacs/nbnxm/nbnxm.h"
+#include "gromacs/nbnxm/nbnxm_enums.h"
 #include "gromacs/nbnxm/pairlist.h"
 #include "gromacs/pbcutil/ishift.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/vec.h"
 
 namespace gmx
 {
 
-static constexpr int c_clSize = c_nbnxnGpuClusterSize;
+static constexpr auto refPairlistLayoutType = PairlistType::Hierarchical8x8x8;
+
+static constexpr int c_clSize = sc_gpuClusterSize(refPairlistLayoutType);
+
 
 void nbnxn_kernel_gpu_ref(const NbnxnPairlistGpu*    nbl,
                           const nbnxn_atomdata_t*    nbat,
-                          const interaction_const_t* iconst,
+                          const interaction_const_t& iconst,
                           ArrayRef<const RVec>       shiftvec,
                           const StepWorkload&        stepWork,
                           int                        clearF,
@@ -68,9 +72,10 @@ void nbnxn_kernel_gpu_ref(const NbnxnPairlistGpu*    nbl,
                           real*                      Vc,
                           real*                      Vvdw)
 {
+
     real                fscal = NAN;
     real                vcoul = 0;
-    const nbnxn_excl_t* excl[c_nbnxnGpuClusterpairSplit];
+    const nbnxn_excl_t* excl[sc_gpuClusterPairSplit(refPairlistLayoutType)];
 
     if (nbl->na_ci != c_clSize)
     {
@@ -89,15 +94,15 @@ void nbnxn_kernel_gpu_ref(const NbnxnPairlistGpu*    nbl,
         }
     }
 
-    const bool bEwald = usingFullElectrostatics(iconst->eeltype);
+    const bool bEwald = usingFullElectrostatics(iconst.coulomb.type);
 
-    const real rcut2 = iconst->rcoulomb * iconst->rcoulomb;
-    const real rvdw2 = iconst->rvdw * iconst->rvdw;
+    const real rcut2 = gmx::square(iconst.coulomb.cutoff);
+    const real rvdw2 = gmx::square(iconst.vdw.cutoff);
 
     const real rlist2 = nbl->rlist * nbl->rlist;
 
     const int*  type     = nbat->params().type.data();
-    const real  facel    = iconst->epsfac;
+    const real  facel    = iconst.coulomb.epsfac;
     const real* vdwparam = nbat->params().nbfp.data();
     const int   ntype    = nbat->params().numTypes;
 
@@ -121,14 +126,15 @@ void nbnxn_kernel_gpu_ref(const NbnxnPairlistGpu*    nbl,
         real       Vvdwtot       = 0;
 
         if (nbln.shift == c_centralShiftIndex
-            && nbl->cjPacked.list_[cjPackedBegin].cj[0] == sci * c_nbnxnGpuNumClusterPerSupercluster)
+            && nbl->cjPacked.list_[cjPackedBegin].cj[0]
+                       == sci * sc_gpuClusterPerSuperCluster(refPairlistLayoutType))
         {
             /* we have the diagonal:
              * add the charge self interaction energy term
              */
-            for (int im = 0; im < c_nbnxnGpuNumClusterPerSupercluster; im++)
+            for (int im = 0; im < sc_gpuClusterPerSuperCluster(refPairlistLayoutType); im++)
             {
-                const int ci = sci * c_nbnxnGpuNumClusterPerSupercluster + im;
+                const int ci = sci * sc_gpuClusterPerSuperCluster(refPairlistLayoutType) + im;
                 for (int ic = 0; ic < c_clSize; ic++)
                 {
                     const int ia = ci * c_clSize + ic;
@@ -138,36 +144,36 @@ void nbnxn_kernel_gpu_ref(const NbnxnPairlistGpu*    nbl,
             }
             if (!bEwald)
             {
-                vctot *= -facel * 0.5 * iconst->reactionFieldShift;
+                vctot *= -facel * 0.5 * iconst.coulomb.reactionFieldShift;
             }
             else
             {
                 /* last factor 1/sqrt(pi) */
-                vctot *= -facel * iconst->ewaldcoeff_q * M_1_SQRTPI;
+                vctot *= -facel * iconst.coulomb.ewaldCoeff * M_1_SQRTPI;
             }
         }
 
         for (int cjPacked = cjPackedBegin; (cjPacked < cjPackedEnd); cjPacked++)
         {
-            for (int splitIdx = 0; splitIdx < c_nbnxnGpuClusterpairSplit; splitIdx++)
+            for (int splitIdx = 0; splitIdx < sc_gpuClusterPairSplit(refPairlistLayoutType); splitIdx++)
             {
                 excl[splitIdx] = &nbl->excl[nbl->cjPacked.list_[cjPacked].imei[splitIdx].excl_ind];
             }
 
-            for (int jm = 0; jm < c_nbnxnGpuJgroupSize; jm++)
+            for (int jm = 0; jm < sc_gpuJgroupSize(refPairlistLayoutType); jm++)
             {
                 const int cj = nbl->cjPacked.list_[cjPacked].cj[jm];
 
-                for (int im = 0; im < c_nbnxnGpuNumClusterPerSupercluster; im++)
+                for (int im = 0; im < sc_gpuClusterPerSuperCluster(refPairlistLayoutType); im++)
                 {
                     /* We're only using the first imask,
                      * but here imei[1].imask is identical.
                      */
                     if ((nbl->cjPacked.list_[cjPacked].imei[0].imask
-                         >> (jm * c_nbnxnGpuNumClusterPerSupercluster + im))
+                         >> (jm * sc_gpuClusterPerSuperCluster(refPairlistLayoutType) + im))
                         & 1)
                     {
-                        const int ci = sci * c_nbnxnGpuNumClusterPerSupercluster + im;
+                        const int ci = sci * sc_gpuClusterPerSuperCluster(refPairlistLayoutType) + im;
 
                         bool within_rlist = false;
                         int  npair        = 0;
@@ -197,10 +203,10 @@ void nbnxn_kernel_gpu_ref(const NbnxnPairlistGpu*    nbl,
                                 }
 
                                 constexpr int clusterPerSplit =
-                                        c_nbnxnGpuClusterSize / c_nbnxnGpuClusterpairSplit;
+                                        sc_gpuSplitJClusterSize(refPairlistLayoutType);
                                 const real int_bit = static_cast<real>(
                                         (excl[jc / clusterPerSplit]->pair[(jc & (clusterPerSplit - 1)) * c_clSize + ic]
-                                         >> (jm * c_nbnxnGpuNumClusterPerSupercluster + im))
+                                         >> (jm * sc_gpuClusterPerSuperCluster(refPairlistLayoutType) + im))
                                         & 1);
 
                                 int        js  = ja * nbat->xstride;
@@ -236,20 +242,20 @@ void nbnxn_kernel_gpu_ref(const NbnxnPairlistGpu*    nbl,
                                 if (!bEwald)
                                 {
                                     /* Reaction-field */
-                                    const real krsq = iconst->reactionFieldCoefficient * rsq;
+                                    const real krsq = iconst.coulomb.reactionFieldCoefficient * rsq;
                                     fscal           = qq * (int_bit * rinv - 2 * krsq) * rinvsq;
                                     if (stepWork.computeEnergy)
                                     {
-                                        vcoul = qq * (int_bit * rinv + krsq - iconst->reactionFieldShift);
+                                        vcoul = qq * (int_bit * rinv + krsq - iconst.coulomb.reactionFieldShift);
                                     }
                                 }
                                 else
                                 {
                                     const real  r    = rsq * rinv;
-                                    const real  rt   = r * iconst->coulombEwaldTables->scale;
+                                    const real  rt   = r * iconst.coulombEwaldTables->scale;
                                     const int   n0   = static_cast<int>(rt);
                                     const real  eps  = rt - static_cast<real>(n0);
-                                    const real* Ftab = iconst->coulombEwaldTables->tableF.data();
+                                    const real* Ftab = iconst.coulombEwaldTables->tableF.data();
 
                                     const real fexcl = (1 - eps) * Ftab[n0] + eps * Ftab[n0 + 1];
 
@@ -258,8 +264,8 @@ void nbnxn_kernel_gpu_ref(const NbnxnPairlistGpu*    nbl,
                                     if (stepWork.computeEnergy)
                                     {
                                         vcoul = qq
-                                                * ((int_bit - std::erf(iconst->ewaldcoeff_q * r)) * rinv
-                                                   - int_bit * iconst->sh_ewald);
+                                                * ((int_bit - std::erf(iconst.coulomb.ewaldCoeff * r)) * rinv
+                                                   - int_bit * iconst.coulomb.ewaldShift);
                                     }
                                 }
 
@@ -280,11 +286,12 @@ void nbnxn_kernel_gpu_ref(const NbnxnPairlistGpu*    nbl,
                                     {
                                         vctot += vcoul;
 
-                                        Vvdwtot +=
-                                                (Vvdw_rep + int_bit * c12 * iconst->repulsion_shift.cpot) / 12
-                                                - (Vvdw_disp
-                                                   + int_bit * c6 * iconst->dispersion_shift.cpot)
-                                                          / 6;
+                                        Vvdwtot += (Vvdw_rep
+                                                    + int_bit * c12 * iconst.vdw.repulsionShift.cpot)
+                                                           / 12
+                                                   - (Vvdw_disp
+                                                      + int_bit * c6 * iconst.vdw.dispersionShift.cpot)
+                                                             / 6;
                                     }
                                 }
 
@@ -309,7 +316,7 @@ void nbnxn_kernel_gpu_ref(const NbnxnPairlistGpu*    nbl,
                             /* Count in half work-units.
                              * In CUDA one work-unit is 2 warps.
                              */
-                            if ((ic + 1) % (c_clSize / c_nbnxnGpuClusterpairSplit) == 0)
+                            if ((ic + 1) % (c_clSize / sc_gpuClusterPairSplit(refPairlistLayoutType)) == 0)
                             {
                                 npair_tot += npair;
 

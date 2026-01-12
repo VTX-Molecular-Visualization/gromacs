@@ -222,6 +222,9 @@ if (SPHINX_FOUND)
         reference-manual/special/mimic-qmmm.rst
         reference-manual/special/density-guided-simulation.rst
         reference-manual/special/colvars.rst
+        reference-manual/special/plumed.rst
+        reference-manual/special/nnpot.rst
+        reference-manual/special/fmm.rst
         # Analysis chapter
         reference-manual/analysis/analysis.rst
         reference-manual/analysis/using-groups.rst
@@ -320,7 +323,7 @@ if (SPHINX_FOUND)
         reference-manual/analysis/plots/rama.pdf
         reference-manual/analysis/plots/rdfO-O.pdf
         reference-manual/analysis/plots/rdf.pdf
-        reference-manual/analysis/plots/sgangle.pdf 
+        reference-manual/analysis/plots/sgangle.pdf
         )
     set(SPHINX_SOURCE_FILES
         index.rst
@@ -364,6 +367,31 @@ if (SPHINX_FOUND)
         install-guide/exotic.rst
         reference-manual/plots/GMX_logos/gmx_logo_blue.svg
         release-notes/index.rst
+        release-notes/2027/major/highlights.rst
+        release-notes/2027/major/features.rst
+        release-notes/2027/major/performance.rst
+        release-notes/2027/major/tools.rst
+        release-notes/2027/major/bugs-fixed.rst
+        release-notes/2027/major/removed-functionality.rst
+        release-notes/2027/major/deprecated-functionality.rst
+        release-notes/2027/major/portability.rst
+        release-notes/2027/major/miscellaneous.rst
+        release-notes/2027/major/api.rst
+        release-notes/2026/major/highlights.rst
+        release-notes/2026/major/features.rst
+        release-notes/2026/major/performance.rst
+        release-notes/2026/major/tools.rst
+        release-notes/2026/major/bugs-fixed.rst
+        release-notes/2026/major/removed-functionality.rst
+        release-notes/2026/major/deprecated-functionality.rst
+        release-notes/2026/major/portability.rst
+        release-notes/2026/major/miscellaneous.rst
+        release-notes/2026/major/api.rst
+        release-notes/2025/2025.1.rst
+        release-notes/2025/2025.2.rst
+        release-notes/2025/2025.3.rst
+        release-notes/2025/2025.4.rst
+        release-notes/2025/2025.5.rst
         release-notes/2025/major/highlights.rst
         release-notes/2025/major/features.rst
         release-notes/2025/major/performance.rst
@@ -377,7 +405,10 @@ if (SPHINX_FOUND)
         release-notes/2024/2024.1.rst
         release-notes/2024/2024.2.rst
         release-notes/2024/2024.3.rst
-	release-notes/2024/2024.4.rst
+        release-notes/2024/2024.4.rst
+        release-notes/2024/2024.5.rst
+        release-notes/2024/2024.6.rst
+        release-notes/2024/2024.7.rst
         release-notes/2024/major/highlights.rst
         release-notes/2024/major/features.rst
         release-notes/2024/major/performance.rst
@@ -393,7 +424,6 @@ if (SPHINX_FOUND)
         release-notes/2023/2023.3.rst
         release-notes/2023/2023.4.rst
         release-notes/2023/2023.5.rst
-        release-notes/2023/2023.6.rst
         release-notes/2023/major/highlights.rst
         release-notes/2023/major/features.rst
         release-notes/2023/major/performance.rst
@@ -517,6 +547,7 @@ if (SPHINX_FOUND)
         user-guide/security.rst
         user-guide/system-preparation.rst
         user-guide/terminology.rst
+        user-guide/validation.rst
         )
 
     include(SphinxMacros.cmake)
@@ -570,6 +601,9 @@ if (SPHINX_FOUND)
             EXPECTED_DOXYGEN_VERSION
             EXPECTED_SPHINX_VERSION
             GMX_ADMIN_DIR
+            GMX_CLANG_MINIMUM_REQUIRED_VERSION
+            GMX_GCC_MINIMUM_REQUIRED_VERSION
+            GMX_HDF5_MINIMUM_REQUIRED_VERSION
             GMX_LMFIT_REQUIRED_VERSION
             GMX_MANUAL_DOI_STRING
             GMX_TNG_MINIMUM_REQUIRED_VERSION
@@ -577,8 +611,8 @@ if (SPHINX_FOUND)
             GMXAPI_PYTHON_STAGING_DIR
             IMAGE_CONVERT_STRING
             REGRESSIONTEST_VERSION
-            REQUIRED_CUDA_COMPUTE_CAPABILITY
-            REQUIRED_CUDA_VERSION
+            GMX_CUDA_MINIMUM_REQUIRED_COMPUTE_CAPABILITY
+            GMX_CUDA_MINIMUM_REQUIRED_VERSION
             REQUIRED_OPENCL_MIN_VERSION
             REGRESSIONTEST_MD5SUM_STRING
             RELENG_PATH
@@ -590,34 +624,26 @@ if (SPHINX_FOUND)
         COMMENT "Configuring Sphinx configuration file")
     gmx_add_sphinx_input_file(${SPHINX_CONFIG_FILE})
     gmx_add_sphinx_source_files(FILES ${SPHINX_SOURCE_FILES})
-    if (EXISTS ${RELENG_PATH}/docs/FileList.cmake)
-        include(${RELENG_PATH}/docs/FileList.cmake)
-        gmx_add_sphinx_source_files(
-            FROM ${RELENG_PATH}/docs TO dev-manual/releng PREFIX releng/docs/
-            FILES ${RELENG_SPHINX_FILES})
-    else()
-        gmx_add_sphinx_source_files(FILES
-            dev-manual/releng/index.rst
-            )
-    endif()
 
     gmx_add_sphinx_source_files(
             FILES
             gmxapi/index.rst
             gmxapi/userguide/install.rst
-            gmxapi/userguide/usage.rst
     )
 
     if (GMX_PYTHON_PACKAGE)
         gmx_add_sphinx_source_files(
             FILES
             gmxapi/userguide/pythonreference.rst
-            )
+            gmxapi/userguide/usage.rst
+        )
     else()
         gmx_add_sphinx_source_files(
             FROM ${CMAKE_CURRENT_SOURCE_DIR}/gmxapi/userguide-stub
-            TO gmxapi/userguide/ 
-            FILES pythonreference.rst 
+            TO gmxapi/userguide/
+            FILES
+            pythonreference.rst
+            usage.rst
             )
     endif ()
 

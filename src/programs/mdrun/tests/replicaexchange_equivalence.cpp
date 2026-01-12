@@ -191,15 +191,15 @@ TEST_P(ReplicaExchangeTest, Works)
                 !(tcoupl == TemperatureCoupling::No && pcoupl == PressureCoupling::No);
         // Tolerances copied from simulator tests
         EnergyTermsToCompare energyTermsToCompare{ {
-                { interaction_function[F_EPOT].longname,
+                { interaction_function[InteractionFunction::PotentialEnergy].longname,
                   relativeToleranceAsPrecisionDependentUlp(60.0, 200, doubleTolerance) },
-                { interaction_function[F_EKIN].longname,
+                { interaction_function[InteractionFunction::KineticEnergy].longname,
                   relativeToleranceAsPrecisionDependentUlp(60.0, 200, doubleTolerance) },
         } };
         if (hasConservedField)
         {
             energyTermsToCompare.emplace(
-                    interaction_function[F_ECONSERVED].longname,
+                    interaction_function[InteractionFunction::ConservedEnergy].longname,
                     relativeToleranceAsPrecisionDependentUlp(50.0, 100, doubleTolerance));
         }
         if (pcoupl != PressureCoupling::No)
@@ -256,7 +256,7 @@ TEST_P(ReplicaExchangeTest, Works)
             checkTrajectoryAgainstReferenceData(trajectoryFileName, trajectoryComparison, &simulationChecker);
 
         } // end loop over simulations
-    }     // end testing simulations on one rank
+    } // end testing simulations on one rank
 
 #if GMX_LIB_MPI
     // Make sure testing is complete before returning - ranks delete temporary files on exit

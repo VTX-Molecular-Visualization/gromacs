@@ -60,7 +60,7 @@ cases which already support GPU-resident steps (where all force and
 update calculations are GPU-accelerated). This offers performance
 advantages, especially for small cases, through reduction in both CPU
 and GPU side scheduling overheads. The feature can optionally be
-activated via the ``GMX_CUDA_GRAPH`` environment variable. 
+activated via the ``GMX_CUDA_GRAPH`` environment variable.
 
 :issue:`4277`
 
@@ -70,6 +70,6 @@ VkFFT support
 For AMD GPUs, VkFFT has been integrated to provide performance improvements.
 Using this library is supported in all non-decomposed PME simulations (either
 single rank or single separate PME rank) and can be enabled with ``-DGMX_GPU_FFT_LIBRARY=VKFFT``
-when using hipSYCL.
+when using AdaptiveCpp_ (hipSYCL).
 
 :issue:`4052`

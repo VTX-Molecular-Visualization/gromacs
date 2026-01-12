@@ -47,10 +47,16 @@
 #include "gromacs/domdec/dlbtiming.h"
 #include "gromacs/domdec/domdec.h"
 #include "gromacs/domdec/domdec_struct.h"
+#include "gromacs/gpu_utils/hostallocator.h"
 #include "gromacs/mdlib/updategroupscog.h"
 #include "gromacs/timing/cyclecounter.h"
 #include "gromacs/topology/block.h"
+#include "gromacs/utility/classhelpers.h"
+#include "gromacs/utility/defaultinitializationallocator.h"
+#include "gromacs/utility/fixedcapacityvector.h"
 #include "gromacs/utility/listoflists.h"
+#include "gromacs/utility/mpicomm.h"
+#include "gromacs/utility/vectypes.h"
 
 struct t_commrec;
 
@@ -76,12 +82,13 @@ struct gmx_domdec_ind_t
     int nrecv[gmx::sc_maxNumIZones + 2] = {};
     //! @}
     //! The charge groups to send
-    std::vector<int> index;
+    gmx::HostVector<int> index;
     //! @{
     /* The atom range for non-in-place communication */
     int cell2at0[gmx::sc_maxNumIZones] = {};
     int cell2at1[gmx::sc_maxNumIZones] = {};
     //! @}
+    gmx_domdec_ind_t() {}
 };
 
 //! Things relating to index communication
@@ -90,8 +97,6 @@ struct gmx_domdec_comm_dim_t
     /* Returns the number of grid pulses (the number of domains in the halo along this dimension) */
     int numPulses() const { return ind.size(); }
 
-    /**< For dlb, for use with edlbAUTO          */
-    int np_dlb = 0;
     /**< The indices to communicate, size np     */
     std::vector<gmx_domdec_ind_t> ind;
     /**< Can we receive data in place?            */
@@ -172,24 +177,22 @@ typedef struct domdec_load
 } domdec_load_t;
 
 /*! \brief Data needed to sort an atom to the desired location in the local state */
-typedef struct gmx_cgsort
+struct gmx_cgsort_t
 {
     /**< Local atom/charge group index */
     int ind = 0;
-} gmx_cgsort_t;
+};
 
 /*! \brief Temporary buffers for sorting atoms */
-typedef struct gmx_domdec_sort
+struct gmx_domdec_sort_t
 {
     /**< Sorted array of indices */
-    std::vector<gmx_cgsort_t> sorted;
-    /**< Array of stationary atom/charge group indices */
-    std::vector<gmx_cgsort_t> stationary;
+    gmx::FastVector<gmx_cgsort_t> sorted;
     /**< Array of moved atom/charge group indices */
-    std::vector<gmx_cgsort_t> moved;
+    gmx::FastVector<gmx_cgsort_t> moved;
     /**< Integer buffer for sorting */
-    std::vector<int> intBuffer;
-} gmx_domdec_sort_t;
+    gmx::FastVector<int> intBuffer;
+};
 
 /*! \brief Manages atom ranges and order for the local state atom vectors */
 class DDAtomRanges
@@ -366,8 +369,8 @@ private:
         isInUse_ = false;
     }
 
-    std::vector<T> buffer_;          /**< The actual memory buffer */
-    bool           isInUse_ = false; /**< Flag that tells whether the buffer is in use */
+    gmx::FastVector<T> buffer_;          /**< The actual memory buffer */
+    bool               isInUse_ = false; /**< Flag that tells whether the buffer is in use */
 
     friend class DDBufferAccess<T>;
 };
@@ -406,9 +409,9 @@ public:
 struct dd_comm_setup_work_t
 {
     /**< The local atom group indices to send */
-    std::vector<int> localAtomGroupBuffer;
+    gmx::FastVector<int> localAtomGroupBuffer;
     /**< Buffer for collecting the global atom group indices to send */
-    std::vector<int> atomGroupBuffer;
+    gmx::FastVector<int> atomGroupBuffer;
     /**< Buffer for collecting the atom group positions to send */
     std::vector<gmx::RVec> positionBuffer;
     /**< The number of atoms contained in the atom groups to send */
@@ -453,7 +456,7 @@ struct DDSystemInfo
     //! Whether to increase the multi-body cut-off beyond the minimum required
     bool increaseMultiBodyCutoff = false;
 
-    //! Whether we have continous box deformation
+    //! Whether we have continuous box deformation
     bool haveBoxDeformation;
     //! The box deformation rate in units of 1/ps
     matrix boxDeformationRate;
@@ -461,7 +464,7 @@ struct DDSystemInfo
 
 /*! \brief Settings that affect the behavior of the domain decomposition
  *
- * These settings depend on options chosen by the user, set by enviroment
+ * These settings depend on options chosen by the user, set by environment
  * variables, as well as hardware support. The initial DLB state also
  * depends on the integrator.
  *
@@ -558,8 +561,14 @@ struct CartesianRankSetup
  */
 struct gmx_domdec_comm_t // NOLINT (clang-analyzer-optin.performance.Padding)
 {
+    gmx_domdec_comm_t(const gmx::MpiComm& mpiCommMySim);
+    ~gmx_domdec_comm_t();
+
     /**< Constant parameters that control DD behavior */
     DDSettings ddSettings;
+
+    /**< Reference to the MPI communicator for the whole simulation */
+    gmx::MpiComm mpiCommMySim_;
 
     /**< Information on how the DD ranks are set up */
     DDRankSetup ddRankSetup;
@@ -583,6 +592,8 @@ struct gmx_domdec_comm_t // NOLINT (clang-analyzer-optin.performance.Padding)
     gmx_bool bCheckWhetherToTurnDlbOn = false;
     /* The first DD count since we are running without DLB */
     int ddPartioningCountFirstDlbOff = 0;
+    //! The maximum number of communication pulses allowed along the DD dimensions with DLB
+    gmx::FixedCapacityVector<int, DIM> maxNumPulsesDlb;
 
     /* Cell sizes for static load balancing, first index cartesian */
     std::array<std::vector<real>, DIM> slb_frac;
@@ -635,11 +646,6 @@ struct gmx_domdec_comm_t // NOLINT (clang-analyzer-optin.performance.Padding)
 
     /** The coordinate/force communication setup and indices */
     std::array<gmx_domdec_comm_dim_t, DIM> cd;
-    /** Restricts the maximum number of cells to communicate with in one dimension
-     *
-     * Dynamic load balancing is not permitted to change sizes if it
-     * would violate this restriction. */
-    int maxpulse = 0;
 
     /** The step interval for algorithms that require global communication
      *  such as DLB and the computation the extent of unbound dimensions
@@ -652,8 +658,14 @@ struct gmx_domdec_comm_t // NOLINT (clang-analyzer-optin.performance.Padding)
      */
     int64_t main_cg_ddp_count = 0;
 
+    /** Whether we put atoms on the NBNxM grid at the last partitioning */
+    bool putAtomsOnGridAtLastPartitioning = false;
+
     /** The atom ranges in the local state */
     DDAtomRanges atomRanges;
+
+    /** The number of home atoms without filler particles */
+    int numHomeAtomsWithoutFillers;
 
     /** Array for signalling if atoms have moved to another domain */
     std::vector<int> movedBuffer;
@@ -674,7 +686,7 @@ struct gmx_domdec_comm_t // NOLINT (clang-analyzer-optin.performance.Padding)
 
     /* Communication buffers for local redistribution */
     /**< Charge group flag comm. buffers */
-    std::array<std::vector<int>, DIM * 2> cggl_flag;
+    std::array<gmx::FastVector<int>, DIM * 2> cggl_flag;
     /**< Charge group center comm. buffers */
     std::array<std::vector<gmx::RVec>, DIM * 2> cgcm_state;
 
@@ -732,7 +744,7 @@ struct gmx_domdec_comm_t // NOLINT (clang-analyzer-optin.performance.Padding)
     double sum_nat[static_cast<int>(DDAtomRanges::Type::Number)] = {};
 
     /* Statistics for calls and times */
-    /**< The number of partioning calls */
+    /**< The number of partitioning calls */
     int ndecomp = 0;
     /**< The number of load recordings */
     int nload = 0;
@@ -751,6 +763,8 @@ struct gmx_domdec_comm_t // NOLINT (clang-analyzer-optin.performance.Padding)
 
     /** The last partition step */
     int64_t partition_step = INT_MIN;
+
+    GMX_DISALLOW_COPY_MOVE_AND_ASSIGN(gmx_domdec_comm_t);
 };
 
 /*! \brief DD zone permutation

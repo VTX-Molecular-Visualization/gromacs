@@ -51,8 +51,6 @@
 #include <gtest/gtest.h>
 
 #include "gromacs/math/units.h"
-#include "gromacs/math/vec.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/random/threefry.h"
@@ -60,9 +58,18 @@
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "testutils/refdata.h"
 #include "testutils/testasserts.h"
+
+// See #5440 and https://gcc.gnu.org/bugzilla/show_bug.cgi?id=115018
+#if defined(__GNUC__) && !defined(__clang__) && (__GNUC__ >= 13) && GMX_SIMD_ARM_SVE
+#    if GMX_SIMD_ARM_SVE_LENGTH_VALUE >= 256
+#        define GMX_TEST_DISABLE_TRANSLATE_POINTS_OPTIMIZATION 1
+#    endif
+#endif
 
 namespace gmx
 {
@@ -123,6 +130,11 @@ public:
             addSphere(x[XX], x[YY], x[ZZ], radius);
         }
     }
+
+#ifdef GMX_TEST_DISABLE_TRANSLATE_POINTS_OPTIMIZATION
+#    pragma GCC push_options
+#    pragma GCC optimize("O0")
+#endif
     void translatePoints(real x, real y, real z)
     {
         for (size_t i = 0; i < x_.size(); ++i)
@@ -132,6 +144,9 @@ public:
             x_[i][ZZ] += z;
         }
     }
+#ifdef GMX_TEST_DISABLE_TRANSLATE_POINTS_OPTIMIZATION
+#    pragma GCC pop_options
+#endif
 
     void calculate(int ndots, int flags, bool bPBC)
     {

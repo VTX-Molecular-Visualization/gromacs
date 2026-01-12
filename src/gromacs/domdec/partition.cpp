@@ -76,7 +76,6 @@
 #include "gromacs/gmxlib/nrnb.h"
 #include "gromacs/imd/imd.h"
 #include "gromacs/math/functions.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/mdlib/forcerec.h"
 #include "gromacs/mdlib/gmx_omp_nthreads.h"
 #include "gromacs/mdlib/mdatoms.h"
@@ -89,7 +88,6 @@
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/mdtypes/mdatom.h"
-#include "gromacs/mdtypes/nblist.h"
 #include "gromacs/mdtypes/state.h"
 #include "gromacs/nbnxm/nbnxm.h"
 #include "gromacs/pulling/pull.h"
@@ -111,6 +109,7 @@
 #include "gromacs/utility/stringstream.h"
 #include "gromacs/utility/stringutil.h"
 #include "gromacs/utility/textwriter.h"
+#include "gromacs/utility/vec.h"
 
 #include "box.h"
 #include "cellsizes.h"
@@ -119,6 +118,7 @@
 #include "domdec_internal.h"
 #include "domdec_vsite.h"
 #include "dump.h"
+#include "haloexchange.h"
 #include "redistribute.h"
 #include "utility.h"
 
@@ -364,28 +364,28 @@ static void dd_move_cellx(gmx_domdec_t* dd, const gmx_ddbox_t* ddbox, rvec cell_
                 || (!applyPbc && dd->ci[dim] + 1 + pulse == dd->numCells[dim] - 1))
             {
                 /* Store the extremes */
-                int pos = 0;
+                int posExtreme = 0;
 
                 for (int d1 = d; d1 < dd->ndim - 1; d1++)
                 {
-                    extr_s[d1][1] = std::min(extr_s[d1][1], buf_e[pos].min0);
-                    extr_s[d1][0] = std::max(extr_s[d1][0], buf_e[pos].max1);
-                    extr_s[d1][2] = std::min(extr_s[d1][2], buf_e[pos].min1);
-                    pos++;
+                    extr_s[d1][1] = std::min(extr_s[d1][1], buf_e[posExtreme].min0);
+                    extr_s[d1][0] = std::max(extr_s[d1][0], buf_e[posExtreme].max1);
+                    extr_s[d1][2] = std::min(extr_s[d1][2], buf_e[posExtreme].min1);
+                    posExtreme++;
                 }
 
                 if (d == 1 || (d == 0 && dd->ndim == 3))
                 {
                     for (int i = d; i < 2; i++)
                     {
-                        comm->zone_d2[1 - d][i] = buf_e[pos];
-                        pos++;
+                        comm->zone_d2[1 - d][i] = buf_e[posExtreme];
+                        posExtreme++;
                     }
                 }
                 if (d == 0)
                 {
-                    comm->zone_d1[1] = buf_e[pos];
-                    pos++;
+                    comm->zone_d1[1] = buf_e[posExtreme];
+                    posExtreme++;
                 }
             }
             else
@@ -469,7 +469,7 @@ static void restoreAtomGroups(gmx_domdec_t* dd, const t_state* state)
 {
     gmx::ArrayRef<const int> atomsState = state->cg_gl;
 
-    std::vector<int>& globalAtomIndices = dd->globalAtomIndices;
+    auto& globalAtomIndices = dd->globalAtomIndices;
 
     globalAtomIndices.resize(atomsState.size());
 
@@ -488,7 +488,7 @@ static void restoreAtomGroups(gmx_domdec_t* dd, const t_state* state)
 }
 
 //! Sets the atom info structures.
-static void dd_set_atominfo(gmx::ArrayRef<const int> index_gl, int atomStart, int atomEnd, t_forcerec* fr)
+static void ddSetAtominfo(gmx::ArrayRef<const int> index_gl, const gmx::Range<int>& atomRange, t_forcerec* fr)
 {
     if (fr != nullptr)
     {
@@ -498,15 +498,26 @@ static void dd_set_atominfo(gmx::ArrayRef<const int> index_gl, int atomStart, in
 
         const int gmx_unused numThreads = gmx_omp_nthreads_get(ModuleMultiThread::Domdec);
 #pragma omp parallel for num_threads(numThreads) schedule(static)
-        for (int a = atomStart; a < atomEnd; a++)
+        for (int a = *atomRange.begin(); a < *atomRange.end(); a++)
         {
-            atomInfo[a] = ddGetAtomInfo(atomInfoForEachMoleculeBlock, index_gl[a]);
+            const int globalIndex = index_gl[a];
+            if (isValidGlobalAtom(globalIndex))
+            {
+                atomInfo[a] = ddGetAtomInfo(atomInfoForEachMoleculeBlock, globalIndex);
+            }
+            else
+            {
+                atomInfo[a] = gmx::sc_atomInfo_IsFillerParticle;
+            }
         }
     }
 }
 
-//! Makes the mappings between global and local atom indices during DD repartioning.
-static void make_dd_indices(gmx_domdec_t* dd, const int atomStart)
+/*! \brief Makes the mappings between global and local atom indices during DD repartitioning.
+ *
+ * \returns the home atom count without filler particles
+ */
+static int make_dd_indices(gmx_domdec_t* dd, const int atomStart)
 {
     const gmx::DomdecZones&  zones             = dd->zones;
     const int                numZones          = zones.numZones();
@@ -515,6 +526,8 @@ static void make_dd_indices(gmx_domdec_t* dd, const int atomStart)
     gmx_ga2la_t& ga2la = *dd->ga2la;
 
     GMX_ASSERT(*zones.atomRange(0).end() == dd->numHomeAtoms, "zones should be up to date");
+
+    int numHomeAtomsWithoutFillers = 0;
 
     /* Make the local to global and global to local atom index */
     int a = atomStart;
@@ -541,10 +554,20 @@ static void make_dd_indices(gmx_domdec_t* dd, const int atomStart)
                 zone1 += numZones;
             }
             int globalAtomIndex = globalAtomIndices[cg];
-            ga2la.insert(globalAtomIndex, { a, zone1 });
+            if (isValidGlobalAtom(globalAtomIndex))
+            {
+                ga2la.insert(globalAtomIndex, { a, zone1 });
+            }
             a++;
         }
+
+        if (zone == 0)
+        {
+            numHomeAtomsWithoutFillers = a;
+        }
     }
+
+    return numHomeAtomsWithoutFillers;
 }
 
 //! Checks whether global and local atom indices are consistent.
@@ -559,17 +582,18 @@ static void check_index_consistency(const gmx_domdec_t* dd, int natoms_sys, cons
         std::vector<int> have(natoms_sys);
         for (int a = 0; a < numAtomsInZones; a++)
         {
-            int globalAtomIndex = dd->globalAtomIndices[a];
-            if (have[globalAtomIndex] > 0)
+            const int  globalAtomIndex = dd->globalAtomIndices[a];
+            const bool isValidAtom     = isValidGlobalAtom(globalAtomIndex);
+            if (isValidAtom && have[globalAtomIndex] > 0)
             {
                 fprintf(stderr,
                         "DD rank %d: global atom %d occurs twice: index %d and %d\n",
-                        dd->rank,
+                        dd->mpiComm().rank(),
                         globalAtomIndex + 1,
                         have[globalAtomIndex],
                         a + 1);
             }
-            else
+            else if (isValidAtom)
             {
                 have[globalAtomIndex] = a + 1;
             }
@@ -589,7 +613,7 @@ static void check_index_consistency(const gmx_domdec_t* dd, int natoms_sys, cons
                 fprintf(stderr,
                         "DD rank %d: global atom %d marked as local atom %d, which is larger than "
                         "nat_tot (%d)\n",
-                        dd->rank,
+                        dd->mpiComm().rank(),
                         i + 1,
                         a + 1,
                         numAtomsInZones);
@@ -603,7 +627,7 @@ static void check_index_consistency(const gmx_domdec_t* dd, int natoms_sys, cons
                     fprintf(stderr,
                             "DD rank %d: global atom %d marked as local atom %d, which has global "
                             "atom index %d\n",
-                            dd->rank,
+                            dd->mpiComm().rank(),
                             i + 1,
                             a + 1,
                             dd->globalAtomIndices[a] + 1);
@@ -615,15 +639,20 @@ static void check_index_consistency(const gmx_domdec_t* dd, int natoms_sys, cons
     }
     if (ngl != numAtomsInZones)
     {
-        fprintf(stderr, "DD rank %d, %s: %d global atom indices, %d local atoms\n", dd->rank, where, ngl, numAtomsInZones);
+        fprintf(stderr,
+                "DD rank %d, %s: %d global atom indices, %d local atoms\n",
+                dd->mpiComm().rank(),
+                where,
+                ngl,
+                numAtomsInZones);
     }
     for (int a = 0; a < numAtomsInZones; a++)
     {
-        if (have[a] == 0)
+        if (isValidGlobalAtom(dd->globalAtomIndices[a]) && have[a] == 0)
         {
             fprintf(stderr,
                     "DD rank %d, %s: local atom %d, global %d has no global index\n",
-                    dd->rank,
+                    dd->mpiComm().rank(),
                     where,
                     a + 1,
                     dd->globalAtomIndices[a] + 1);
@@ -632,28 +661,17 @@ static void check_index_consistency(const gmx_domdec_t* dd, int natoms_sys, cons
 
     if (nerr > 0)
     {
-        gmx_fatal(FARGS, "DD rank %d, %s: %d atom(group) index inconsistencies", dd->rank, where, nerr);
+        gmx_fatal(FARGS, "DD rank %d, %s: %d atom(group) index inconsistencies", dd->mpiComm().rank(), where, nerr);
     }
 }
 
 //! Clear all DD global state indices
-static void clearDDStateIndices(gmx_domdec_t* dd, const bool keepLocalAtomIndices)
+static void clearDDStateIndices(gmx_domdec_t* dd)
 {
     gmx_ga2la_t& ga2la = *dd->ga2la;
 
-    if (!keepLocalAtomIndices)
-    {
-        /* Clear the whole list without the overhead of searching */
-        ga2la.clear(true);
-    }
-    else
-    {
-        const int numAtomsInZones = dd->comm->atomRanges.end(DDAtomRanges::Type::Zones);
-        for (int i = 0; i < numAtomsInZones; i++)
-        {
-            ga2la.erase(dd->globalAtomIndices[i]);
-        }
-    }
+    /* Clear the whole list without the overhead of searching */
+    ga2la.clear(true);
 
     dd_clear_local_vsite_indices(dd);
 
@@ -673,7 +691,7 @@ static float dd_force_load(gmx_domdec_comm_t* comm)
         load = comm->flop;
         if (comm->ddSettings.eFlop > 1)
         {
-            load *= 1.0 + (comm->ddSettings.eFlop - 1) * (0.1 * rand() / RAND_MAX - 0.05);
+            load *= 1.0 + (comm->ddSettings.eFlop - 1) * (0.1 * std::rand() / RAND_MAX - 0.05);
         }
     }
     else
@@ -877,12 +895,12 @@ static void get_load_distribution(gmx_domdec_t* dd, gmx_wallcycle* wcycle)
                 load->flags    = 0;
                 load->mdf      = 0;
                 load->pme      = 0;
-                int pos        = 0;
+                int rowPos     = 0;
                 for (int i = 0; i < dd->numCells[dim]; i++)
                 {
-                    load->sum += load->load[pos++];
-                    load->max = std::max(load->max, load->load[pos]);
-                    pos++;
+                    load->sum += load->load[rowPos++];
+                    load->max = std::max(load->max, load->load[rowPos]);
+                    rowPos++;
                     if (isDlbOn(dd->comm->dlbState))
                     {
                         if (rowCoordinator->dlbIsLimited)
@@ -890,31 +908,31 @@ static void get_load_distribution(gmx_domdec_t* dd, gmx_wallcycle* wcycle)
                             /* This direction could not be load balanced properly,
                              * therefore we need to use the maximum iso the average load.
                              */
-                            load->sum_m = std::max(load->sum_m, load->load[pos]);
+                            load->sum_m = std::max(load->sum_m, load->load[rowPos]);
                         }
                         else
                         {
-                            load->sum_m += load->load[pos];
+                            load->sum_m += load->load[rowPos];
                         }
-                        pos++;
-                        load->cvol_min = std::min(load->cvol_min, load->load[pos]);
-                        pos++;
+                        rowPos++;
+                        load->cvol_min = std::min(load->cvol_min, load->load[rowPos]);
+                        rowPos++;
                         if (d < dd->ndim - 1)
                         {
-                            load->flags = gmx::roundToInt(load->load[pos++]);
+                            load->flags = gmx::roundToInt(load->load[rowPos++]);
                         }
                         if (d > 0)
                         {
-                            rowCoordinator->bounds[i].cellFracLowerMax = load->load[pos++];
-                            rowCoordinator->bounds[i].cellFracUpperMin = load->load[pos++];
+                            rowCoordinator->bounds[i].cellFracLowerMax = load->load[rowPos++];
+                            rowCoordinator->bounds[i].cellFracUpperMin = load->load[rowPos++];
                         }
                     }
                     if (bSepPME)
                     {
-                        load->mdf = std::max(load->mdf, load->load[pos]);
-                        pos++;
-                        load->pme = std::max(load->pme, load->load[pos]);
-                        pos++;
+                        load->mdf = std::max(load->mdf, load->load[rowPos]);
+                        rowPos++;
+                        load->pme = std::max(load->pme, load->load[rowPos]);
+                        rowPos++;
                     }
                 }
                 if (isDlbOn(comm->dlbState) && rowCoordinator->dlbIsLimited)
@@ -1060,13 +1078,13 @@ static void print_dd_load_av(FILE* fplog, gmx_domdec_t* dd)
         for (int d = 0; d < dd->ndim; d++)
         {
             int limitPercentage = (200 * comm->load_lim[d] + 1) / (2 * comm->nload);
-            sprintf(buf + strlen(buf), " %c %d %%", dim2char(dd->dim[d]), limitPercentage);
+            sprintf(buf + std::strlen(buf), " %c %d %%", dim2char(dd->dim[d]), limitPercentage);
             if (limitPercentage >= 50)
             {
                 dlbWasLimited = true;
             }
         }
-        sprintf(buf + strlen(buf), "\n");
+        sprintf(buf + std::strlen(buf), "\n");
         fprintf(fplog, "%s", buf);
         fprintf(stderr, "%s", buf);
     }
@@ -1322,11 +1340,9 @@ static void turn_off_dlb_forever(const gmx::MDLogger& mdlog, gmx_domdec_t* dd, i
     dd->comm->dlbState = DlbState::offForever;
 }
 
-void set_dd_dlb_max_cutoff(t_commrec* cr, real cutoff)
+void set_dd_dlb_max_cutoff(gmx_domdec_t* dd, real cutoff)
 {
-    gmx_domdec_comm_t* comm;
-
-    comm = cr->dd->comm.get();
+    gmx_domdec_comm_t* comm = dd->comm.get();
 
     /* Turn on the DLB limiting (might have been on already) */
     comm->bPMELoadBalDLBLimits = TRUE;
@@ -1356,16 +1372,16 @@ void set_dd_dlb_max_cutoff(t_commrec* cr, real cutoff)
  * \param[in]     atomInfoForEachMoleculeBlock  List of atom information for molecule blocks
  * \param[in,out] atomInfo  List of home + halo atom information
  */
-static void mergeAtomBuffers(const int                                       numZones,
-                             gmx_domdec_comm_dim_t*                          cd,
-                             const int                                       pulse,
-                             gmx::DomdecZones*                               zones,
-                             gmx::ArrayRef<int>                              index_gl,
-                             const int*                                      recv_i,
-                             gmx::ArrayRef<gmx::RVec>                        x,
-                             gmx::ArrayRef<const gmx::RVec>                  recv_vr,
+static void mergeAtomBuffers(const int                      numZones,
+                             gmx_domdec_comm_dim_t*         cd,
+                             const int                      pulse,
+                             gmx::DomdecZones*              zones,
+                             gmx::ArrayRef<int>             index_gl,
+                             const int*                     recv_i,
+                             gmx::ArrayRef<gmx::RVec>       x,
+                             gmx::ArrayRef<const gmx::RVec> recv_vr,
                              gmx::ArrayRef<gmx::AtomInfoWithinMoleculeBlock> atomInfoForEachMoleculeBlock,
-                             gmx::ArrayRef<int32_t>                          atomInfo)
+                             gmx::ArrayRef<int32_t> atomInfo)
 {
     GMX_ASSERT(zones->numZones() >= 2 * numZones, "zones should contain at least 2*numZones zones");
 
@@ -1452,9 +1468,9 @@ static void make_cell2at_index(gmx_domdec_comm_dim_t* cd, int nzone, int atomGro
 //! Returns whether a link is missing.
 static bool missing_link(const gmx::ListOfLists<int>& link, const int globalAtomIndex, const gmx_ga2la_t& ga2la)
 {
-    return std::any_of(link[globalAtomIndex].begin(), link[globalAtomIndex].end(), [&](const int a) {
-        return ga2la.findHome(a) == nullptr;
-    });
+    return std::any_of(link[globalAtomIndex].begin(),
+                       link[globalAtomIndex].end(),
+                       [&](const int a) { return ga2la.findHome(a) == nullptr; });
 }
 
 //! Domain corners for communication, a maximum of 4 i-zones see a j domain
@@ -1567,6 +1583,7 @@ static void set_dd_corners(const gmx_domdec_t* dd, int dim0, int dim1, int dim2,
 
 /*! \brief Add the atom groups and coordinates we need to send in this
  * pulse from this zone to \p localAtomGroups and \p work. */
+template<typename IntVector>
 static void get_zone_pulse_groups(gmx_domdec_t*                  dd,
                                   int                            zonei,
                                   int                            zone,
@@ -1596,7 +1613,7 @@ static void get_zone_pulse_groups(gmx_domdec_t*                  dd,
                                   gmx_bool                       bDistMB,
                                   gmx::ArrayRef<const gmx::RVec> coordinates,
                                   gmx::ArrayRef<const int32_t>   atomInfo,
-                                  std::vector<int>*              localAtomGroups,
+                                  IntVector*                     localAtomGroups,
                                   dd_comm_setup_work_t*          work)
 {
     gmx_domdec_comm_t* comm;
@@ -1615,7 +1632,7 @@ static void get_zone_pulse_groups(gmx_domdec_t*                  dd,
     bDistMB_pulse = (bDistMB && bDistBonded);
 
     /* Unpack the work data */
-    std::vector<int>&       ibuf = work->atomGroupBuffer;
+    gmx::FastVector<int>&   ibuf = work->atomGroupBuffer;
     std::vector<gmx::RVec>& vbuf = work->positionBuffer;
     nsend_z                      = 0;
     nat                          = work->nat;
@@ -2037,42 +2054,79 @@ static void setup_dd_communication(gmx_domdec_t* dd, matrix box, gmx_ddbox_t* dd
                         const int taskAtomEnd = atomStart + ((atomEnd - atomStart) * (th + 1)) / numThreads;
 
                         /* Get the atom groups and coordinates for this pulse in this zone */
-                        get_zone_pulse_groups(dd,
-                                              zonei,
-                                              zone,
-                                              taskAtomStart,
-                                              taskAtomEnd,
-                                              dd->globalAtomIndices,
-                                              dim,
-                                              dim_ind,
-                                              dim0,
-                                              dim1,
-                                              dim2,
-                                              r_comm2,
-                                              r_bcomm2,
-                                              box,
-                                              distanceIsTriclinic,
-                                              normal,
-                                              skew_fac2_d,
-                                              skew_fac_01,
-                                              v_d,
-                                              v_0,
-                                              v_1,
-                                              &corners,
-                                              sf2_round,
-                                              bDistBonded,
-                                              bBondComm,
-                                              bDist2B,
-                                              bDistMB,
-                                              state->x,
-                                              fr->atomInfo,
-                                              th == 0 ? &ind->index : &work.localAtomGroupBuffer,
-                                              &work);
+                        if (th == 0)
+                        {
+                            get_zone_pulse_groups(dd,
+                                                  zonei,
+                                                  zone,
+                                                  taskAtomStart,
+                                                  taskAtomEnd,
+                                                  dd->globalAtomIndices,
+                                                  dim,
+                                                  dim_ind,
+                                                  dim0,
+                                                  dim1,
+                                                  dim2,
+                                                  r_comm2,
+                                                  r_bcomm2,
+                                                  box,
+                                                  distanceIsTriclinic,
+                                                  normal,
+                                                  skew_fac2_d,
+                                                  skew_fac_01,
+                                                  v_d,
+                                                  v_0,
+                                                  v_1,
+                                                  &corners,
+                                                  sf2_round,
+                                                  bDistBonded,
+                                                  bBondComm,
+                                                  bDist2B,
+                                                  bDistMB,
+                                                  state->x,
+                                                  fr->atomInfo,
+                                                  &ind->index,
+                                                  &work);
+                        }
+                        else
+                        {
+                            get_zone_pulse_groups(dd,
+                                                  zonei,
+                                                  zone,
+                                                  taskAtomStart,
+                                                  taskAtomEnd,
+                                                  dd->globalAtomIndices,
+                                                  dim,
+                                                  dim_ind,
+                                                  dim0,
+                                                  dim1,
+                                                  dim2,
+                                                  r_comm2,
+                                                  r_bcomm2,
+                                                  box,
+                                                  distanceIsTriclinic,
+                                                  normal,
+                                                  skew_fac2_d,
+                                                  skew_fac_01,
+                                                  v_d,
+                                                  v_0,
+                                                  v_1,
+                                                  &corners,
+                                                  sf2_round,
+                                                  bDistBonded,
+                                                  bBondComm,
+                                                  bDist2B,
+                                                  bDistMB,
+                                                  state->x,
+                                                  fr->atomInfo,
+                                                  &work.localAtomGroupBuffer,
+                                                  &work);
+                        }
                     }
                     GMX_CATCH_ALL_AND_EXIT_WITH_FATAL_ERROR
                 } // END
 
-                std::vector<int>&       atomGroups = comm->dth[0].atomGroupBuffer;
+                gmx::FastVector<int>&   atomGroups = comm->dth[0].atomGroupBuffer;
                 std::vector<gmx::RVec>& positions  = comm->dth[0].positionBuffer;
                 ind->nsend[zone]                   = comm->dth[0].nsend_zone;
                 /* Append data of threads>=1 to the communication buffers */
@@ -2214,7 +2268,7 @@ static void setup_dd_communication(gmx_domdec_t* dd, matrix box, gmx_ddbox_t* dd
         /* We don't need to update atominfo, since that was already done above.
          * So we pass NULL for the forcerec.
          */
-        dd_set_atominfo(dd->globalAtomIndices, dd->numHomeAtoms, dd->globalAtomIndices.size(), nullptr);
+        ddSetAtominfo(dd->globalAtomIndices, { dd->numHomeAtoms, int(dd->globalAtomIndices.size()) }, nullptr);
     }
 
     if (debug)
@@ -2228,7 +2282,54 @@ static void setup_dd_communication(gmx_domdec_t* dd, matrix box, gmx_ddbox_t* dd
     }
 }
 
+//! Returns whether \p localAtomIndex is a valid local atom index, i.e. >= 0
+static inline bool isValidLocalAtom(const int localAtomIndex)
+{
+    return localAtomIndex >= 0;
+}
+
 /*! \brief Order data in \p dataToSort according to \p sort
+ *
+ * Uses \p fillerValue for filler particles
+ *
+ * Note: both buffers should have at least \p sort.size() elements.
+ */
+template<typename T>
+static void orderVector(gmx::ArrayRef<const gmx_cgsort_t> sort,
+                        gmx::ArrayRef<T>                  dataToSort,
+                        const T                           fillerValue,
+                        gmx::ArrayRef<T>                  sortBuffer)
+{
+    GMX_ASSERT(dataToSort.size() >= sort.size(), "The vector needs to be sufficiently large");
+    GMX_ASSERT(sortBuffer.size() >= sort.size(),
+               "The sorting buffer needs to be sufficiently large");
+
+    /* Order the data into the temporary buffer */
+    const int gmx_unused numThreads = gmx_omp_nthreads_get(ModuleMultiThread::Domdec);
+#pragma omp parallel for num_threads(numThreads) schedule(static)
+    for (gmx::Index i = 0; i < gmx::ssize(sort); i++)
+    {
+        if (isValidLocalAtom(sort[i].ind))
+        {
+            sortBuffer[i] = dataToSort[sort[i].ind];
+        }
+        else
+        {
+            sortBuffer[i] = fillerValue;
+        }
+    }
+
+    /* Copy back to the original array */
+#pragma omp parallel for num_threads(numThreads) schedule(static)
+    for (gmx::Index i = 0; i < gmx::ssize(sort); i++)
+    {
+        dataToSort[i] = sortBuffer[i];
+    }
+}
+
+/*! \brief Order data in \p dataToSort according to \p sort
+ *
+ * For filler particles the value for the last real atom is used
  *
  * Note: both buffers should have at least \p sort.size() elements.
  */
@@ -2242,10 +2343,23 @@ static void orderVector(gmx::ArrayRef<const gmx_cgsort_t> sort,
                "The sorting buffer needs to be sufficiently large");
 
     /* Order the data into the temporary buffer */
-    size_t i = 0;
+    gmx::Index lastRealAtomEntry = -1;
+    gmx::Index i                 = 0;
     for (const gmx_cgsort_t& entry : sort)
     {
-        sortBuffer[i++] = dataToSort[entry.ind];
+        if (isValidLocalAtom(entry.ind))
+        {
+            lastRealAtomEntry = i;
+
+            sortBuffer[i++] = dataToSort[entry.ind];
+        }
+        else
+        {
+            GMX_ASSERT(isValidLocalAtom(lastRealAtomEntry),
+                       "We can not start with a filler particle");
+
+            sortBuffer[i++] = sortBuffer[lastRealAtomEntry];
+        }
     }
 
     /* Copy back to the original array */
@@ -2254,79 +2368,109 @@ static void orderVector(gmx::ArrayRef<const gmx_cgsort_t> sort,
 
 /*! \brief Order data in \p dataToSort according to \p sort
  *
+ * Uses \p fillerValue for filler particles
+ *
  * Note: \p vectorToSort should have at least \p sort.size() elements,
  *       \p workVector is resized when it is too small.
  */
 template<typename T>
 static void orderVector(gmx::ArrayRef<const gmx_cgsort_t> sort,
                         gmx::ArrayRef<T>                  vectorToSort,
-                        std::vector<T>*                   workVector)
+                        const T&                          fillerValue,
+                        gmx::FastVector<T>*               workVector)
 {
     if (gmx::Index(workVector->size()) < sort.ssize())
     {
         workVector->resize(sort.size());
     }
-    orderVector<T>(sort, vectorToSort, *workVector);
+    orderVector<T>(sort, vectorToSort, fillerValue, *workVector);
 }
 
 //! Returns the sorting order for atoms based on the nbnxn grid order in sort
-static void dd_sort_order_nbnxn(const t_forcerec* fr, std::vector<gmx_cgsort_t>* sort)
+static void dd_sort_order_nbnxn(const gmx::nonbonded_verlet_t& nbv, gmx::FastVector<gmx_cgsort_t>* sort)
 {
-    gmx::ArrayRef<const int> atomOrder = fr->nbv->getLocalAtomOrder();
+    gmx::ArrayRef<const int> atomOrder = nbv.getLocalAtomOrder();
 
     /* Using push_back() instead of this resize results in much slower code */
     sort->resize(atomOrder.size());
     gmx::ArrayRef<gmx_cgsort_t> buffer    = *sort;
     size_t                      numSorted = 0;
-    for (int i : atomOrder)
+    if (nbv.localAtomOrderMatchesNbnxmOrder())
     {
-        if (i >= 0)
+        for (int i : atomOrder)
         {
             buffer[numSorted++].ind = i;
         }
     }
-    sort->resize(numSorted);
+    else
+    {
+        for (int i : atomOrder)
+        {
+            if (isValidLocalAtom(i))
+            {
+                buffer[numSorted++].ind = i;
+            }
+        }
+        sort->resize(numSorted);
+    }
 }
 
 //! Returns the sorting state for DD.
 static void dd_sort_state(gmx_domdec_t* dd, t_forcerec* fr, t_state* state)
 {
-    gmx_domdec_sort_t* sort = dd->comm->sort.get();
+    // Get the sorting data object, only stored in DD to avoid reallocation
+    gmx_domdec_sort_t& sortingData = *dd->comm->sort;
 
-    dd_sort_order_nbnxn(fr, &sort->sorted);
+    // Obtain the sorting order from/as the NBNxM gridding order, including fillers
+    dd_sort_order_nbnxn(*fr->nbv, &sortingData.sorted);
 
-    /* We alloc with the old size, since cgindex is still old */
-    DDBufferAccess<gmx::RVec> rvecBuffer(dd->comm->rvecBuffer, dd->numHomeAtoms);
+    // Get the list of old order indices for the new indexing order
+    gmx::ArrayRef<const gmx_cgsort_t> sortOrder = sortingData.sorted;
 
-    /* Set the new home atom/charge group count */
-    dd->numHomeAtoms = sort->sorted.size();
     if (debug)
     {
-        fprintf(debug, "Set the new home atom count to %d\n", dd->numHomeAtoms);
+        fprintf(debug, "The new home atom count, including filler particles, is %td\n", gmx::ssize(sortOrder));
     }
 
-    /* Reorder the state */
-    gmx::ArrayRef<const gmx_cgsort_t> cgsort = sort->sorted;
-    GMX_RELEASE_ASSERT(cgsort.ssize() == dd->numHomeAtoms,
-                       "We should sort all the home atom groups");
+    // For sorting we need space for both the old and new states
+    const int tmpAllocHomeAtoms = std::max(dd->numHomeAtoms, int(sortOrder.size()));
 
+    state->changeNumAtoms(tmpAllocHomeAtoms);
+
+    DDBufferAccess<gmx::RVec> rvecBuffer(dd->comm->rvecBuffer, tmpAllocHomeAtoms);
+
+    /* Reorder the state */
+    const gmx::RVec zeroRVec = { 0, 0, 0 };
     if (state->hasEntry(StateEntry::X))
     {
-        orderVector(cgsort, makeArrayRef(state->x), rvecBuffer.buffer);
+        // For filler particles we copy the coordinates of the last real atom
+        orderVector(sortOrder, makeArrayRef(state->x), rvecBuffer.buffer);
     }
     if (state->hasEntry(StateEntry::V))
     {
-        orderVector(cgsort, makeArrayRef(state->v), rvecBuffer.buffer);
+        orderVector(sortOrder, makeArrayRef(state->v), zeroRVec, rvecBuffer.buffer);
     }
     if (state->hasEntry(StateEntry::Cgp))
     {
-        orderVector(cgsort, makeArrayRef(state->cg_p), rvecBuffer.buffer);
+        orderVector(sortOrder, makeArrayRef(state->cg_p), zeroRVec, rvecBuffer.buffer);
     }
+    // Now that we have sorted, we can set the actual new atom count
+    dd->numHomeAtoms = sortOrder.size();
+    state->changeNumAtoms(dd->numHomeAtoms);
 
     /* Reorder the global cg index */
-    orderVector<int>(cgsort, dd->globalAtomIndices, &sort->intBuffer);
+    if (dd->numHomeAtoms > gmx::ssize(dd->globalAtomIndices))
+    {
+        dd->globalAtomIndices.resize(dd->numHomeAtoms, -1);
+    }
+    orderVector<int>(sortOrder, dd->globalAtomIndices, -1, &sortingData.intBuffer);
+    dd->globalAtomIndices.resize(dd->numHomeAtoms, -1);
+
     /* Reorder the atom info */
-    orderVector<int>(cgsort, fr->atomInfo, &sort->intBuffer);
+    fr->atomInfo.resize(tmpAllocHomeAtoms, gmx::sc_atomInfo_IsFillerParticle);
+    orderVector<int>(sortOrder, fr->atomInfo, gmx::sc_atomInfo_IsFillerParticle, &sortingData.intBuffer);
+    dd->globalAtomIndices.resize(dd->numHomeAtoms);
+
     /* Set the home atom number */
     dd->comm->atomRanges.setEnd(DDAtomRanges::Type::Home, dd->numHomeAtoms);
 
@@ -2412,12 +2556,12 @@ bool check_grid_jump(int64_t step, const gmx_domdec_t* dd, real cutoff, const gm
     return invalid;
 }
 
-void print_dd_statistics(const t_commrec* cr, const t_inputrec& inputrec, FILE* fplog)
+void print_dd_statistics(gmx_domdec_t* dd, const t_inputrec& inputrec, FILE* fplog)
 {
-    gmx_domdec_comm_t* comm = cr->dd->comm.get();
+    gmx_domdec_comm_t& comm = *dd->comm;
 
     const int numRanges = static_cast<int>(DDAtomRanges::Type::Number);
-    gmx_sumd(numRanges, comm->sum_nat, cr);
+    dd->mpiComm().sumReduce(numRanges, comm.sum_nat);
 
     if (fplog == nullptr)
     {
@@ -2429,14 +2573,14 @@ void print_dd_statistics(const t_commrec* cr, const t_inputrec& inputrec, FILE* 
     for (int i = static_cast<int>(DDAtomRanges::Type::Zones); i < numRanges; i++)
     {
         auto   range = static_cast<DDAtomRanges::Type>(i);
-        double av    = comm->sum_nat[i] / comm->ndecomp;
+        double av    = comm.sum_nat[i] / comm.ndecomp;
         switch (range)
         {
             case DDAtomRanges::Type::Zones:
                 fprintf(fplog, " av. #atoms communicated per step for force:  %d x %.1f\n", 2, av);
                 break;
             case DDAtomRanges::Type::Vsites:
-                if (cr->dd->vsite_comm)
+                if (dd->vsite_comm)
                 {
                     fprintf(fplog,
                             " av. #atoms communicated per step for vsites: %d x %.1f\n",
@@ -2448,7 +2592,7 @@ void print_dd_statistics(const t_commrec* cr, const t_inputrec& inputrec, FILE* 
                 }
                 break;
             case DDAtomRanges::Type::Constraints:
-                if (cr->dd->constraint_comm)
+                if (dd->constraint_comm)
                 {
                     fprintf(fplog,
                             " av. #atoms communicated per step for LINCS:  %d x %.1f\n",
@@ -2461,9 +2605,9 @@ void print_dd_statistics(const t_commrec* cr, const t_inputrec& inputrec, FILE* 
     }
     fprintf(fplog, "\n");
 
-    if (comm->ddSettings.recordLoad && EI_DYNAMICS(inputrec.eI))
+    if (comm.ddSettings.recordLoad && EI_DYNAMICS(inputrec.eI))
     {
-        print_dd_load_av(fplog, cr->dd);
+        print_dd_load_av(fplog, dd);
     }
 }
 
@@ -2471,7 +2615,7 @@ void print_dd_statistics(const t_commrec* cr, const t_inputrec& inputrec, FILE* 
 void dd_partition_system(FILE*                     fplog,
                          const gmx::MDLogger&      mdlog,
                          int64_t                   step,
-                         const t_commrec*          cr,
+                         gmx_domdec_t*             dd,
                          bool                      bMainState,
                          t_state*                  state_global,
                          const gmx_mtop_t&         top_global,
@@ -2496,7 +2640,6 @@ void dd_partition_system(FILE*                     fplog,
 
     wallcycle_start(wcycle, WallCycleCounter::Domdec);
 
-    gmx_domdec_t*      dd   = cr->dd;
     gmx_domdec_comm_t* comm = dd->comm.get();
 
     // TODO if the update code becomes accessible here, use
@@ -2536,7 +2679,7 @@ void dd_partition_system(FILE*                     fplog,
     }
     else
     {
-        /* Should we do dynamic load balacing this step?
+        /* Should we do dynamic load balancing this step?
          * Since it requires (possibly expensive) global communication,
          * we might want to do DLB less frequently.
          */
@@ -2682,11 +2825,12 @@ void dd_partition_system(FILE*                     fplog,
         comm->n_load_have++;
     }
 
+    // Clear the state indices
+    clearDDStateIndices(dd);
+
     bool bRedist = false;
     if (bMainState)
     {
-        /* Clear the old state */
-        clearDDStateIndices(dd, false);
         ncgindex_set = 0;
 
         auto xGlobal = positionsFromStatePointer(state_global);
@@ -2700,7 +2844,7 @@ void dd_partition_system(FILE*                     fplog,
 
         inc_nrnb(nrnb, eNR_CGCM, comm->atomRanges.numHomeAtoms());
 
-        dd_set_atominfo(dd->globalAtomIndices, 0, dd->numHomeAtoms, fr);
+        ddSetAtominfo(dd->globalAtomIndices, { 0, dd->numHomeAtoms }, fr);
     }
     else if (state_local->ddp_count != dd->ddp_count)
     {
@@ -2722,17 +2866,14 @@ void dd_partition_system(FILE*                     fplog,
                       state_local->ddp_count);
         }
 
-        /* Clear the old state */
-        clearDDStateIndices(dd, false);
-
         /* Restore the atom group indices from state_local */
         restoreAtomGroups(dd, state_local);
-        make_dd_indices(dd, 0);
-        ncgindex_set = dd->numHomeAtoms;
+        comm->numHomeAtomsWithoutFillers = make_dd_indices(dd, 0);
+        ncgindex_set                     = dd->numHomeAtoms;
 
         inc_nrnb(nrnb, eNR_CGCM, comm->atomRanges.numHomeAtoms());
 
-        dd_set_atominfo(dd->globalAtomIndices, 0, dd->numHomeAtoms, fr);
+        ddSetAtominfo(dd->globalAtomIndices, { 0, dd->numHomeAtoms }, fr);
 
         set_ddbox(*dd, bMainState, state_local->box, true, state_local->x, &ddbox);
 
@@ -2742,8 +2883,6 @@ void dd_partition_system(FILE*                     fplog,
     {
         /* We have the full state, only redistribute the cgs */
 
-        /* Clear the non-home indices */
-        clearDDStateIndices(dd, true);
         ncgindex_set = 0;
 
         /* To avoid global communication, we do not recompute the extent
@@ -2774,36 +2913,52 @@ void dd_partition_system(FILE*                     fplog,
 
     if (comm->systemInfo.useUpdateGroups)
     {
-        comm->updateGroupsCog->addCogs(
-                gmx::arrayRefFromArray(dd->globalAtomIndices.data(), dd->numHomeAtoms), state_local->x);
+        wallcycle_sub_start(wcycle, WallCycleSubCounter::DDAddCogs);
+
+        // We can run addCogs() thread parallel by distributing NBNxM grid columns over threads.
+        // This can only be done when are both redistributing this step and we have the correct
+        // atom count per column from the old state. This is available when atoms were put on
+        // the NBNxM grid at the last re-partitioning.
+        gmx::ArrayRef<const int> localGridNumAtomsPerColumn;
+        if (bRedist && comm->putAtomsOnGridAtLastPartitioning)
+        {
+            localGridNumAtomsPerColumn = fr->nbv->getLocalGridNumAtomsPerColumn();
+        }
+        comm->updateGroupsCog->addCogs(gmx::arrayRefFromArray(dd->globalAtomIndices.data(), dd->numHomeAtoms),
+                                       state_local->x,
+                                       localGridNumAtomsPerColumn);
+
+        wallcycle_sub_stop(wcycle, WallCycleSubCounter::DDAddCogs);
     }
 
     /* Check if we should sort the charge groups */
     const bool bSortCG = (bMainState || bRedist);
 
-    /* When repartitioning we mark atom groups that will move to neighboring
-     * DD cells, but we do not move them right away for performance reasons.
-     * Thus we need to keep track of how many charge groups will move for
-     * obtaining correct local charge group / atom counts.
-     */
-    int ncg_moved = 0;
     if (bRedist)
     {
         wallcycle_sub_start(wcycle, WallCycleSubCounter::DDRedist);
 
+        /* When repartitioning we mark atom groups that will move to neighboring
+         * DD cells, but we do not move them right away for performance reasons.
+         */
         ncgindex_set = dd->numHomeAtoms;
-        dd_redistribute_cg(fplog, step, dd, ddbox.tric_dir, state_local, fr, nrnb, &ncg_moved);
+        dd_redistribute_cg(fplog, step, dd, ddbox.tric_dir, state_local, fr, nrnb);
+
+        wallcycle_sub_stop(wcycle, WallCycleSubCounter::DDRedist);
 
         GMX_RELEASE_ASSERT(bSortCG, "Sorting is required after redistribution");
 
         if (comm->systemInfo.useUpdateGroups)
         {
+            wallcycle_sub_start_nocount(wcycle, WallCycleSubCounter::DDAddCogs);
+
             comm->updateGroupsCog->addCogs(
                     gmx::arrayRefFromArray(dd->globalAtomIndices.data(), dd->numHomeAtoms),
-                    state_local->x);
-        }
+                    state_local->x,
+                    {});
 
-        wallcycle_sub_stop(wcycle, WallCycleSubCounter::DDRedist);
+            wallcycle_sub_stop(wcycle, WallCycleSubCounter::DDAddCogs);
+        }
     }
 
     RVec cell_ns_x0, cell_ns_x1;
@@ -2845,9 +3000,7 @@ void dd_partition_system(FILE*                     fplog,
         {
             homeZoneVolume *= dd->zones.sizes(0).x1[dim] - dd->zones.sizes(0).x0[dim];
         }
-        // The home atom list still contains moved atoms, compute the new atom count
-        const int  newNumHomeAtoms = dd->numHomeAtoms - ncg_moved;
-        const real atomDensity     = newNumHomeAtoms / homeZoneVolume;
+        const real atomDensity = comm->numHomeAtomsWithoutFillers / homeZoneVolume;
 
         fr->nbv->putAtomsOnGrid(state_local->box,
                                 0,
@@ -2855,7 +3008,7 @@ void dd_partition_system(FILE*                     fplog,
                                 dd->zones.sizes(0).bb_x1,
                                 comm->updateGroupsCog.get(),
                                 { 0, dd->numHomeAtoms },
-                                newNumHomeAtoms,
+                                comm->numHomeAtomsWithoutFillers,
                                 atomDensity,
                                 fr->atomInfo,
                                 state_local->x,
@@ -2897,12 +3050,22 @@ void dd_partition_system(FILE*                     fplog,
 
     wallcycle_sub_start(wcycle, WallCycleSubCounter::DDSetupComm);
 
-    /* Set the induces for the home atoms */
+    /* Set the indices for the home atoms */
     set_zones_numHomeAtoms(dd);
     make_dd_indices(dd, ncgindex_set);
 
-    /* Setup up the communication and communicate the coordinates */
-    setup_dd_communication(dd, state_local->box, &ddbox, fr, state_local);
+    if (dd->nnodes > 1)
+    {
+        /* Setup up the halo communication and communicate the coordinates */
+        if (fr->nbv->localAtomOrderMatchesNbnxmOrder())
+        {
+            dd->haloExchange->setup(dd, state_local, ddbox, fr, bBoxChanged || bDoDLB);
+        }
+        else
+        {
+            setup_dd_communication(dd, state_local->box, &ddbox, fr, state_local);
+        }
+    }
 
     /* Set the indices for the halo atoms */
     make_dd_indices(dd, dd->numHomeAtoms);
@@ -2936,7 +3099,8 @@ void dd_partition_system(FILE*                     fplog,
                                                           top_global,
                                                           fr->atomInfo,
                                                           top_local);
-    dd->localTopologyChecker->scheduleCheckOfLocalTopology(numBondedInteractionsToReduce);
+    dd->localTopologyChecker->scheduleCheckOfLocalTopology(
+            *top_local, numBondedInteractionsToReduce, state_local);
 
     wallcycle_sub_stop(wcycle, WallCycleSubCounter::DDMakeTop);
 
@@ -3013,13 +3177,15 @@ void dd_partition_system(FILE*                     fplog,
                         nat_f_novirsum);
 
     /* Update atom data for mdatoms and several algorithms */
-    mdAlgorithmsSetupAtomData(cr, inputrec, top_global, top_local, fr, f, mdAtoms, constr, vsite, nullptr);
+    wallcycle_sub_stop(wcycle, WallCycleSubCounter::DDTopOther);
+    mdAlgorithmsSetupAtomData(dd, inputrec, top_global, top_local, fr, f, mdAtoms, constr, vsite, nullptr);
+    wallcycle_sub_start_nocount(wcycle, WallCycleSubCounter::DDTopOther);
 
     auto* mdatoms = mdAtoms->mdatoms();
-    if (!thisRankHasDuty(cr, DUTY_PME))
+    if (!dd->hasPmeDuty)
     {
         /* Send the charges and/or c6/sigmas to our PME only node */
-        gmx_pme_send_parameters(cr,
+        gmx_pme_send_parameters(dd,
                                 *fr->ic,
                                 mdatoms->nChargePerturbed != 0,
                                 mdatoms->nTypePerturbed != 0,
@@ -3043,7 +3209,7 @@ void dd_partition_system(FILE*                     fplog,
     if (inputrec.bPull)
     {
         /* Update the local pull groups */
-        dd_make_local_pull_groups(cr, pull_work);
+        dd_make_local_pull_groups(dd->mpiComm(), dd, pull_work);
     }
 
     /* Update the local atoms to be communicated via the IMD protocol if bIMD is true. */
@@ -3069,7 +3235,7 @@ void dd_partition_system(FILE*                     fplog,
                      step,
                      "dump",
                      top_global,
-                     cr,
+                     *dd,
                      -1,
                      state_local->x.rvec_array(),
                      state_local->box);
@@ -3089,6 +3255,7 @@ void dd_partition_system(FILE*                     fplog,
          */
         comm->main_cg_ddp_count = (bSortCG ? 0 : dd->ddp_count);
     }
+    comm->putAtomsOnGridAtLastPartitioning = bRedist;
 
     if (comm->ddSettings.DD_debug > 0)
     {
@@ -3099,8 +3266,10 @@ void dd_partition_system(FILE*                     fplog,
     // Now we have made the local atom sets and x is up to date, MDModules can be signaled
     MDModulesAtomsRedistributedSignal mdModulesAtomsRedistributedSignal(
             state_local->box,
-            gmx::makeConstArrayRef(state_local->x).subArray(0, comm->atomRanges.numHomeAtoms()));
-    mdModulesNotifiers.simulationSetupNotifier_.notify(mdModulesAtomsRedistributedSignal);
+            gmx::makeConstArrayRef(state_local->x).subArray(0, comm->atomRanges.numHomeAtoms()),
+            gmx::makeConstArrayRef(dd->globalAtomIndices)
+                    .subArray(0, comm->atomRanges.end(DDAtomRanges::Type::Zones)));
+    mdModulesNotifiers.simulationRunNotifier_.notify(mdModulesAtomsRedistributedSignal);
 
     wallcycle_stop(wcycle, WallCycleCounter::Domdec);
 }

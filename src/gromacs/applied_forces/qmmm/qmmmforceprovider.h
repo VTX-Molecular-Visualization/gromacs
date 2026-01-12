@@ -42,6 +42,9 @@
 #ifndef GMX_APPLIED_FORCES_QMMMFORCEPROVIDER_H
 #define GMX_APPLIED_FORCES_QMMMFORCEPROVIDER_H
 
+#include <string>
+#include <string_view>
+
 #include "gromacs/domdec/localatomset.h"
 #include "gromacs/mdtypes/forceoutput.h"
 #include "gromacs/mdtypes/iforceprovider.h"
@@ -50,12 +53,16 @@
 #include "gromacs/utility/classhelpers.h"
 #include "gromacs/utility/logger.h"
 
+#include "qmmmforceproviderstate.h"
 #include "qmmmtypes.h"
 
 namespace gmx
 {
 
 CLANG_DIAGNOSTIC_IGNORE("-Wunused-private-field")
+
+struct MDModulesWriteCheckpointData;
+class MpiComm;
 
 //! Type for CP2K force environment handle
 typedef int force_env_t;
@@ -66,11 +73,13 @@ typedef int force_env_t;
 class QMMMForceProvider final : public IForceProvider
 {
 public:
-    QMMMForceProvider(const QMMMParameters& parameters,
-                      const LocalAtomSet&   localQMAtomSet,
-                      const LocalAtomSet&   localMMAtomSet,
-                      PbcType               pbcType,
-                      const MDLogger&       logger);
+    QMMMForceProvider(const QMMMParameters&         parameters,
+                      const LocalAtomSet&           localQMAtomSet,
+                      const LocalAtomSet&           localMMAtomSet,
+                      PbcType                       pbcType,
+                      const MDLogger&               logger,
+                      const MpiComm&                mpiComm,
+                      const QMMMForceProviderState& state);
 
     //! Destruct force provider for QMMM and finalize libcp2k
     ~QMMMForceProvider();
@@ -80,6 +89,15 @@ public:
      * \param[out] fOutput output for force provider
      */
     void calculateForces(const ForceProviderInput& fInput, ForceProviderOutput* fOutput) override;
+
+    /*! \brief Write internal QMMM data to checkpoint file.
+     * \param[in] checkpointWriting enables writing to the Key-Value-Tree
+     *                              that is used for storing the checkpoint
+     *                              information
+     * \param[in] moduleName names the module that is checkpointing this force-provider
+     *
+     */
+    void writeCheckpointData(MDModulesWriteCheckpointData checkpointWriting, std::string_view moduleName);
 
 private:
     //! Write message to the log
@@ -91,9 +109,9 @@ private:
     bool isQMAtom(Index globalAtomIndex);
 
     /*!\brief Initialization of QM program.
-     * \param[in] cr connection record structure
+     * \param[in] mpiComm communication object
      */
-    void initCP2KForceEnvironment(const t_commrec& cr);
+    void initCP2KForceEnvironment(const MpiComm& mpiComm);
 
     const QMMMParameters& parameters_;
     const LocalAtomSet&   qmAtoms_;
@@ -101,17 +119,20 @@ private:
     const PbcType         pbcType_;
     const MDLogger&       logger_;
 
+    //! Struct holding the information stored in the checkpoint file
+    QMMMForceProviderState state_;
+
     //! Internal copy of PBC box
     matrix box_;
-
-    //! Flag wether initCP2KForceEnvironment() has been called already
-    bool isCp2kLibraryInitialized_ = false;
 
     //! CP2K force environment handle
     force_env_t force_env_ = -1;
 };
 
 CLANG_DIAGNOSTIC_RESET
+
+//! Returns information for describing the CP2K QM/MM support
+std::string qmmmDescription();
 
 } // namespace gmx
 

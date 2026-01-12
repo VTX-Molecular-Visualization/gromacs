@@ -75,6 +75,7 @@ static int chooseSubGroupSizeForDevice(const DeviceInformation& deviceInfo)
         switch (deviceInfo.deviceVendor)
         {
             case DeviceVendor::Intel: return 16; // TODO: Choose best value, Issue #4153.
+            case DeviceVendor::PoclCpu: return 16;
             default:
                 GMX_RELEASE_ASSERT(false, "Flexible sub-groups only supported for Intel GPUs");
                 return 0;
@@ -125,7 +126,7 @@ static int chooseSubGroupSizeForDevice(const DeviceInformation& deviceInfo)
     INSTANTIATE_X(GATHER, order, subGroupSize); \
     INSTANTIATE_SOLVE(subGroupSize);
 
-#if GMX_SYCL_DPCPP
+#if GMX_SYCL_DPCPP || GMX_ACPP_HAVE_GENERIC_TARGET
 INSTANTIATE(4, 16);
 #endif
 INSTANTIATE(4, 32);
@@ -222,7 +223,7 @@ PmeGpuProgramImpl::PmeGpuProgramImpl(const DeviceContext& deviceContext) :
 
     switch (warpSize_)
     {
-#if GMX_SYCL_DPCPP
+#if GMX_SYCL_DPCPP || GMX_ACPP_HAVE_GENERIC_TARGET
         case 16: setKernelPointers<16>(this); break;
 #endif
         case 32: setKernelPointers<32>(this); break;

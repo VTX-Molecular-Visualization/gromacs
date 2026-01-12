@@ -54,7 +54,8 @@ namespace gmx
 
 /*! \brief Vector that behaves likes std::vector but has fixed capacity.
  *
- * \tparam T         Value type of elements, should be default constructible
+ * \tparam T         Value type of elements, must be default constructible
+ *                   and trivially destructible
  * \tparam capacity_ The maximum number of elements that can be stored.
  *
  * This class provides a variable size container, but with constant
@@ -84,6 +85,7 @@ template<typename T, size_t capacity_>
 class FixedCapacityVector
 {
     static_assert(std::is_default_constructible_v<T>);
+    static_assert(std::is_trivially_destructible_v<T>);
 
 public:
     //! Type of values stored in the vector
@@ -108,6 +110,15 @@ public:
     using reverse_iterator = std::reverse_iterator<iterator>;
     //! Standard reverse iterator
     using const_reverse_iterator = std::reverse_iterator<const_iterator>;
+
+    //! Constructor, \p count sets the initial size, 0 by default
+    FixedCapacityVector(size_type count = 0)
+    {
+        if (count > 0)
+        {
+            resize(count);
+        }
+    }
 
     //! Returns a const iterator to the beginning
     const_iterator begin() const noexcept { return data(); }
@@ -200,10 +211,6 @@ public:
     constexpr void pop_back() noexcept
     {
         GMX_ASSERT(!empty(), "Can only delete last element when present");
-        if constexpr (!std::is_trivially_destructible_v<T>)
-        {
-            ~back();
-        }
         size_--;
     }
 
@@ -212,7 +219,7 @@ public:
     constexpr reference emplace_back(Args&&... args)
     {
         GMX_ASSERT(size() < capacity_, "Cannot add more elements than the capacity");
-        if constexpr (std::is_move_assignable<T>::value)
+        if constexpr (std::is_move_assignable_v<T>)
         {
             data_[size_] = std::move(T(args...));
         }
@@ -223,6 +230,23 @@ public:
         size_++;
 
         return back();
+    }
+
+    //! Resizes the vector, when the new size is larger, new elements are zero initialized
+    constexpr void resize(const size_type count)
+    {
+        if (count > capacity_)
+        {
+            throw std::length_error("resize beyond capacity requested");
+        }
+        while (size_ > count)
+        {
+            pop_back();
+        }
+        while (size_ < count)
+        {
+            emplace_back();
+        }
     }
 
     //! Clears content

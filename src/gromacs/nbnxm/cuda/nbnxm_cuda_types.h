@@ -54,7 +54,6 @@
 #include "gromacs/mdtypes/interaction_const.h"
 #include "gromacs/nbnxm/gpu_types_common.h"
 #include "gromacs/nbnxm/nbnxm.h"
-#include "gromacs/nbnxm/pairlist.h"
 #include "gromacs/timing/gpu_timing.h"
 #include "gromacs/utility/enumerationhelpers.h"
 
@@ -88,18 +87,22 @@ struct NbnxmGpu
     int* cxy_na = nullptr;
     /*! \brief number of elements in cxy_na */
     int ncxy_na = 0;
-    /*! \brief number of elements allocated allocated in device buffer */
+    /*! \brief number of elements allocated in device buffer */
     int ncxy_na_alloc = 0;
     /*! \brief x buf ops cell index mapping */
     int* cxy_ind = nullptr;
     /*! \brief number of elements in cxy_ind */
     int ncxy_ind = 0;
-    /*! \brief number of elements allocated allocated in device buffer */
+    /*! \brief number of elements allocated in device buffer */
     int ncxy_ind_alloc = 0;
     /*! \brief parameters required for the non-bonded calc. */
     NBParamGpu* nbparam = nullptr;
     /*! \brief pair-list data structures (local and non-local) */
     EnumerationArray<InteractionLocality, std::unique_ptr<GpuPairlist>> plist = { { nullptr } };
+    /*! \brief fep-list data structures (local and non-local) */
+    EnumerationArray<InteractionLocality, std::unique_ptr<GpuFeplist>> feplist = { { nullptr } };
+    /*! \brief host buffers required for the FEP H2D copies */
+    GpuFepHostData* fephostdata = nullptr;
     /*! \brief staging area where fshift/energies get downloaded */
     NBStagingData nbst;
     /*! \brief local and non-local GPU streams */
@@ -134,7 +137,7 @@ struct NbnxmGpu
     /*! \brief CUDA event-based timers. */
     GpuTimers* timers = nullptr;
     /*! \brief Timing data. TODO: deprecate this and query timers for accumulated data instead */
-    gmx_wallclock_gpu_nbnxn_t* timings = nullptr;
+    std::unique_ptr<gmx_wallclock_gpu_nbnxn_t> timings;
 };
 
 } // namespace gmx

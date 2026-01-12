@@ -50,8 +50,8 @@
 #include "gromacs/fft/parallel_3dfft.h"
 #include "gromacs/gpu_utils/gmxsycl.h"
 #include "gromacs/gpu_utils/syclutils.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/timing/wallcycle.h"
+#include "gromacs/utility/vec.h"
 
 #include "pme_gpu_grid.h"
 #include "pme_gpu_types.h"
@@ -106,7 +106,7 @@ public:
                        const size_t overlapSizeLeft,
                        const size_t overlapSizeRight)
     {
-        return [=](sycl::nd_item<3> item_ct1) [[intel::reqd_sub_group_size(subGroupSize)]]
+        return [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(subGroupSize)]]
         {
             size_t iz = item_ct1.get_local_id(2) + item_ct1.get_group(2) * item_ct1.get_local_range(2);
             size_t iy = item_ct1.get_local_id(1) + item_ct1.get_group(1) * item_ct1.get_local_range(1);
@@ -239,7 +239,7 @@ public:
                        size_t overlapSizeLeft,
                        size_t overlapSizeRight)
     {
-        return [=](sycl::nd_item<3> item_ct1) [[intel::reqd_sub_group_size(subGroupSize)]]
+        return [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(subGroupSize)]]
         {
             size_t iz = item_ct1.get_local_id(2) + item_ct1.get_group(2) * item_ct1.get_local_range(2);
             size_t iy = item_ct1.get_local_id(1) + item_ct1.get_group(1) * item_ct1.get_local_range(1);
@@ -372,7 +372,7 @@ public:
                        size_t overlapUp,
                        size_t overlapLeft)
     {
-        return [=](sycl::nd_item<3> item_ct1) [[intel::reqd_sub_group_size(subGroupSize)]]
+        return [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(subGroupSize)]]
         {
             size_t iz = item_ct1.get_local_id(2) + item_ct1.get_group(2) * item_ct1.get_local_range(2);
             size_t iy = item_ct1.get_local_id(1) + item_ct1.get_group(1) * item_ct1.get_local_range(1);
@@ -496,7 +496,7 @@ public:
                        size_t overlapUp,
                        size_t overlapLeft)
     {
-        return [=](sycl::nd_item<3> item_ct1) [[intel::reqd_sub_group_size(subGroupSize)]]
+        return [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(subGroupSize)]]
         {
             size_t iz = item_ct1.get_local_id(2) + item_ct1.get_group(2) * item_ct1.get_local_range(2);
             size_t iy = item_ct1.get_local_id(1) + item_ct1.get_group(1) * item_ct1.get_local_range(1);
@@ -578,6 +578,7 @@ public:
     }
 };
 
+#if GMX_MPI
 /*! \brief Submits a GPU grid kernel
  *
  * \tparam    Kernel           The class containing a static kernel() method to return
@@ -606,15 +607,12 @@ submit(const DeviceStream& deviceStream, size_t myGridX, size_t myGridY, sycl::u
                                      gmx::divideRoundUp<size_t>(pmeSize[ZZ], threadsAlongZDim) };
     const sycl::nd_range<3> range{ groupRange * localSize, localSize };
 
-    sycl::queue q = deviceStream.stream();
-    q.submit(GMX_SYCL_DISCARD_EVENT[&](sycl::handler & cgh) {
-        auto kernel = Kernel::template kernel<subGroupSize>(
-                myGridX, myGridY, pmeSize, std::forward<Args>(args)...);
-        cgh.parallel_for<Kernel>(range, kernel);
-    });
+    sycl::queue q                     = deviceStream.stream();
+    auto        kernelFunctionBuilder = Kernel::template kernel<subGroupSize>;
+    gmx::syclSubmitWithoutCghOrEvent<Kernel>(
+            q, kernelFunctionBuilder, range, myGridX, myGridY, pmeSize, std::forward<Args>(args)...);
 }
 
-#if GMX_MPI
 /*! \brief
  * Utility function to send and recv halo data from neighboring ranks
  */
@@ -910,6 +908,7 @@ void pmeGpuGridHaloExchange(const PmeGpu* pmeGpu, gmx_wallcycle* wcycle)
     }
 #else
     GMX_UNUSED_VALUE(pmeGpu);
+    GMX_UNUSED_VALUE(wcycle);
 #endif
 }
 
@@ -1202,6 +1201,7 @@ void pmeGpuGridHaloExchangeReverse(const PmeGpu* pmeGpu, gmx_wallcycle* wcycle)
     }
 #else
     GMX_UNUSED_VALUE(pmeGpu);
+    GMX_UNUSED_VALUE(wcycle);
 #endif
 }
 
@@ -1230,7 +1230,7 @@ public:
                               sycl::uint3 fftSize,
                               sycl::uint3 pmeSize)
     {
-        return [=](sycl::nd_item<3> item_ct1) [[intel::reqd_sub_group_size(subGroupSize)]]
+        return [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(subGroupSize)]]
         {
             size_t iz = item_ct1.get_local_id(2) + item_ct1.get_group(2) * item_ct1.get_local_range(2);
             size_t iy = item_ct1.get_local_id(1) + item_ct1.get_group(1) * item_ct1.get_local_range(1);
@@ -1279,12 +1279,10 @@ public:
                                          gmx::divideRoundUp<size_t>(localFftNData[ZZ], threadsAlongZDim) };
         const sycl::nd_range<3> range{ groupRange * localSize, localSize };
 
-        sycl::queue q = deviceStream.stream();
-
-        q.submit(GMX_SYCL_DISCARD_EVENT[&](sycl::handler & cgh) {
-            auto kernel = convertKernel<subGroupSize>(localFftNData, std::forward<Args>(args)...);
-            cgh.parallel_for<GridConverter<pmeToFft>>(range, kernel);
-        });
+        sycl::queue q                     = deviceStream.stream();
+        auto        kernelFunctionBuilder = convertKernel<subGroupSize>;
+        gmx::syclSubmitWithoutCghOrEvent<GridConverter>(
+                q, kernelFunctionBuilder, range, localFftNData, std::forward<Args>(args)...);
     }
 };
 
@@ -1298,11 +1296,11 @@ void convertPmeGridToFftGrid(const PmeGpu* pmeGpu, float* h_fftRealGrid, gmx_par
                                         localFftNDataAsIvec[YY],
                                         localFftNDataAsIvec[ZZ] };
     const sycl::uint3 localFftSize  = { localFftSizeAsIvec[XX],
-                                       localFftSizeAsIvec[YY],
-                                       localFftSizeAsIvec[ZZ] };
+                                        localFftSizeAsIvec[YY],
+                                        localFftSizeAsIvec[ZZ] };
     const sycl::uint3 localPmeSize  = { pmeGpu->kernelParams->grid.realGridSizePadded[XX],
-                                       pmeGpu->kernelParams->grid.realGridSizePadded[YY],
-                                       pmeGpu->kernelParams->grid.realGridSizePadded[ZZ] };
+                                        pmeGpu->kernelParams->grid.realGridSizePadded[YY],
+                                        pmeGpu->kernelParams->grid.realGridSizePadded[ZZ] };
 
     // this is true in case of slab decomposition
     if (localPmeSize[ZZ] == localFftSize[ZZ] && localPmeSize[YY] == localFftSize[YY])

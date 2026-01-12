@@ -35,6 +35,7 @@
 #ifndef GMX_GMXPREPROCESS_GROMPP_IMPL_H
 #define GMX_GMXPREPROCESS_GROMPP_IMPL_H
 
+#include <set>
 #include <string>
 
 #include "gromacs/gmxpreprocess/notset.h"
@@ -42,6 +43,7 @@
 #include "gromacs/topology/block.h"
 #include "gromacs/topology/idef.h"
 #include "gromacs/utility/basedefinitions.h"
+#include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/listoflists.h"
 #include "gromacs/utility/real.h"
@@ -61,7 +63,8 @@ public:
     //! Constructor that initializes vectors.
     InteractionOfType(gmx::ArrayRef<const int>  atoms,
                       gmx::ArrayRef<const real> params,
-                      const std::string&        name = "");
+                      const std::string&        name    = "",
+                      bool                      special = false);
     /*!@{*/
     //! Access the individual elements set for the parameter.
     const int& ai() const;
@@ -122,6 +125,8 @@ private:
     std::array<real, MAXFORCEPARAM> forceParam_;
     //! Used with forcefields whose .rtp files name the interaction types (e.g. GROMOS), rather than look them up from the atom names.
     std::string interactionTypeName_;
+    //! boolean used to identify if dihedral was defined in the specbond.dat file
+    bool specbond_;
 };
 
 /*! \libinternal \brief
@@ -137,14 +142,36 @@ struct InteractionsOfType
 { // NOLINT (clang-analyzer-optin.performance.Padding)
     //! The different parameters in the system.
     std::vector<InteractionOfType> interactionTypes;
-    //! CMAP grid spacing.
-    int cmapGridSpacing_ = -1;
+    //! CMAP grid spacing, when used.
+    std::optional<int> cmapGridSpacing_;
     //! Number of CMAP dihedral angle pairs.
     int numCmaps_ = -1;
     //! CMAP grid data.
     std::vector<real> cmap;
     //! The five atomtypes followed by a number that identifies the type.
     std::vector<int> cmapAtomTypes;
+    //! The five residue types followed by empty string for alignment with \link cmapAtomTypes \endlink.
+    std::vector<std::string> cmapResTypes_;
+    //! \brief Processed dihedral types
+    //!
+    //! When Amber LEaP-like ordering is used, only dihedrals after the first one of the
+    //! same type should be reordered. To enable this behavior, the list of previously
+    //! matched dihedral types is kept during processing.
+    std::set<std::array<std::string, 4>> leapDihedralTypes_;
+    //! \brief Processed dihedrals
+    //!
+    //! When Amber LEaP-like ordering is used, only dihedrals after the first one of the
+    //! same type should be reordered. To enable this behavior, the list of first encountered
+    //! dihedrals of each type (i.e. those not reordered) is kept during processing.
+    std::set<std::array<int, 4>> leapDihedralIndices_;
+    //! \brief Number of dihedrals kept ordered as encountered
+    //!
+    //! Dihedrals encountered already ordered alphabetically by atom type and matching Amber LEaP.
+    size_t numLeapReorderingNotNecessary = 0;
+    //! \brief Number of reordered dihedrals
+    //!
+    //! Dihedrals reordered alphabetically by atom type to match Amber LEaP.
+    size_t numLeapReorderingPerformed = 0;
 
     //! Number of parameters.
     size_t size() const { return interactionTypes.size(); }
@@ -172,14 +199,14 @@ struct MoleculeInformation
     int nrexcl = 0;
     //! Has the mol been processed.
     bool bProcessed = false;
-    //! Atoms in the moelcule.
+    //! Atoms in the molecule.
     t_atoms atoms;
     //! Molecules separated in datastructure.
     t_block mols;
     //! Exclusions in the molecule.
     gmx::ListOfLists<int> excls;
     //! Interactions of a defined type.
-    std::array<InteractionsOfType, F_NRE> interactions;
+    gmx::EnumerationArray<InteractionFunction, InteractionsOfType> interactions;
 
     /*! \brief
      * Initializer.

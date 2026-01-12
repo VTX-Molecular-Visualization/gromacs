@@ -53,13 +53,13 @@
 #include <gtest/gtest.h>
 
 #include "gromacs/domdec/ga2la.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/topology/idef.h"
 #include "gromacs/topology/ifunc.h"
 #include "gromacs/topology/topology.h"
 #include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "testutils/testasserts.h"
 
@@ -86,7 +86,7 @@ std::unique_ptr<gmx_mtop_t> triAtomMoleculeSystem()
     {
         const int                parameterType = -1; // value is not actually used
         const std::array<int, 2> atomIndices   = { b, b + 1 };
-        moltype.ilist[F_CONNBONDS].push_back(parameterType, atomIndices);
+        moltype.ilist[InteractionFunction::ConnectBonds].push_back(parameterType, atomIndices);
     }
 
     std::unique_ptr<gmx_mtop_t> mtop = std::make_unique<gmx_mtop_t>();

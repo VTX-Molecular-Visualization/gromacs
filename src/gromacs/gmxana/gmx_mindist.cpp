@@ -54,8 +54,6 @@
 #include "gromacs/fileio/xvgr.h"
 #include "gromacs/gmxana/gmx_ana.h"
 #include "gromacs/math/functions.h"
-#include "gromacs/math/vec.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/pbcutil/rmpbc.h"
@@ -73,6 +71,8 @@
 #include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
 
 struct gmx_output_env_t;
 
@@ -797,23 +797,23 @@ int gmx_mindist(int argc, char* argv[])
         { "-max", FALSE, etBOOL, { &bMax }, "Calculate *maximum* distance instead of minimum" },
         { "-d", FALSE, etREAL, { &rcutoff }, "Distance for contacts" },
         { "-group",
-          FALSE,
-          etBOOL,
-          { &bGroup },
-          "Count contacts with multiple atoms in the first group as one" },
+           FALSE,
+           etBOOL,
+           { &bGroup },
+           "Count contacts with multiple atoms in the first group as one" },
         { "-pi", FALSE, etBOOL, { &bPI }, "Calculate minimum distance with periodic images" },
         { "-split", FALSE, etBOOL, { &bSplit }, "Split graph where time is zero" },
         { "-ng",
-          FALSE,
-          etINT,
-          { &ng },
-          "Number of secondary groups to compute distance to a central group" },
+           FALSE,
+           etINT,
+           { &ng },
+           "Number of secondary groups to compute distance to a central group" },
         { "-pbc", FALSE, etBOOL, { &bPBC }, "Take periodic boundary conditions into account" },
         { "-respertime",
-          FALSE,
-          etBOOL,
-          { &bEachResEachTime },
-          "When writing per-residue distances, write distance for each time point" },
+           FALSE,
+           etBOOL,
+           { &bEachResEachTime },
+           "When writing per-residue distances, write distance for each time point" },
         { "-printresname", FALSE, etBOOL, { &bPrintResName }, "Write residue names" }
     };
     gmx_output_env_t* oenv;
@@ -823,7 +823,7 @@ int gmx_mindist(int argc, char* argv[])
     matrix            box;
     gmx_bool          bTop = FALSE;
 
-    int         i, nres = 0;
+    int         nres = 0;
     const char *trxfnm, *tpsfnm, *ndxfnm, *distfnm, *numfnm, *atmfnm, *oxfnm, *resfnm;
     char**      grpname;
     int*        gnx;
@@ -905,7 +905,7 @@ int gmx_mindist(int argc, char* argv[])
         srenew(gnx, ng);
         srenew(index, ng);
         srenew(grpname, ng);
-        for (i = 1; (i < ng); i++)
+        for (int i = 1; (i < ng); i++)
         {
             gnx[i]     = 1;
             grpname[i] = grpname[0];

@@ -53,7 +53,7 @@
  * After that ThreadedForceBuffer.reduce() is called for thread-parallel reduction.
  *
  * \author Berk Hess <hess@kth.se>
- * \ingroup mdtypes
+ * \ingroup module_mdtypes
  */
 #ifndef GMX_MDTYPES_THREADED_FORCE_BUFFER_H
 #define GMX_MDTYPES_THREADED_FORCE_BUFFER_H
@@ -62,7 +62,6 @@
 #include <vector>
 
 #include "gromacs/math/arrayrefwithpadding.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/mdtypes/enerdata.h"
 #include "gromacs/mdtypes/simulation_workload.h"
 #include "gromacs/topology/ifunc.h"
@@ -73,6 +72,7 @@
 #include "gromacs/utility/classhelpers.h"
 #include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/real.h"
+#include "gromacs/utility/vectypes.h"
 
 enum class FreeEnergyPerturbationCouplingType : int;
 
@@ -80,6 +80,7 @@ namespace gmx
 {
 
 class ForceWithShiftForces;
+class ForceWithVirial;
 class StepWorkload;
 
 /*! \internal
@@ -102,10 +103,9 @@ public:
 
     /*! \brief Constructor
      * \param[in] threadIndex  The index of the thread that will fill the buffers in this object
-     * \param[in] useEnergyTerms   Whether the list of energy terms will be used
      * \param[in] numEnergyGroups  The number of non-bonded energy groups
      */
-    ThreadForceBuffer(int threadIndex, bool useEnergyTerms, int numEnergyGroups);
+    ThreadForceBuffer(int threadIndex, int numEnergyGroups);
 
     //! Resizes the buffer to \p numAtoms and clears the mask
     void resizeBufferAndClearMask(int numAtoms);
@@ -148,8 +148,11 @@ public:
     //! Returns a view of the shift force buffer
     ArrayRef<RVec> shiftForces() { return shiftForces_; }
 
-    //! Returns a view of the energy terms, size F_NRE
-    ArrayRef<real> energyTerms() { return energyTerms_; }
+    //! Returns a reference to the diagonal virial
+    gmx::RVec& diagonalVirial() { return diagonalVirial_; }
+
+    //! Returns a view of the energy terms, size InteractionFunction::Count
+    gmx::EnumerationArray<InteractionFunction, real>& energyTerms() { return energyTerms_; }
 
     //! Returns a reference to the energy group pair energies
     gmx_grppairener_t& groupPairEnergies() { return groupPairEnergies_; }
@@ -174,8 +177,10 @@ private:
 
     //! Shift force array, size c_numShiftVectors
     std::vector<RVec> shiftForces_;
+    //! Virial buffer for diagonal only contributions
+    gmx::RVec diagonalVirial_;
     //! Energy array, can be empty
-    std::vector<real> energyTerms_;
+    gmx::EnumerationArray<InteractionFunction, real> energyTerms_;
     //! Group pair energy data for pairs
     gmx_grppairener_t groupPairEnergies_;
     //! Free-energy dV/dl output
@@ -213,7 +218,8 @@ public:
     //! Sets up the reduction, should be called after generating the masks on each thread
     void setupReduction();
 
-    /*! \brief Reduces forces and energies, as requested by \p stepWork
+    /*! \brief Reduces forces with shift forces and energies and dV/dlambda,
+     * as requested by \p stepWork
      *
      * The reduction of all output starts at the output from thread \p reductionBeginIndex,
      * except for the normal force buffer, which always starts at 0.
@@ -221,14 +227,52 @@ public:
      * Buffers that will not be used as indicated by the flags in \p stepWork
      * are allowed to be nullptr or empty.
      */
-    void reduce(gmx::ForceWithShiftForces* forceWithShiftForces,
-                real*                      ener,
-                gmx_grppairener_t*         grpp,
-                gmx::ArrayRef<real>        dvdl,
-                const gmx::StepWorkload&   stepWork,
-                int                        reductionBeginIndex);
+    void reduce(gmx::ForceWithShiftForces*                        forceWithShiftForces,
+                gmx::EnumerationArray<InteractionFunction, real>* ener,
+                gmx_grppairener_t*                                grpp,
+                gmx::ArrayRef<real>                               dvdl,
+                const gmx::StepWorkload&                          stepWork,
+                int                                               reductionBeginIndex);
+
+    /*! \brief Reduces forces with separate virial and energies and dV/dlambda,
+     * as requested by \p stepWork
+     *
+     * The reduction of all output starts at the output from thread \p reductionBeginIndex,
+     * except for the normal force buffer, which always starts at 0.
+     *
+     * Buffers that will not be used as indicated by the flags in \p stepWork
+     * are allowed to be nullptr or empty.
+     */
+    void reduce(gmx::ForceWithVirial*                             forceWithVirial,
+                gmx::EnumerationArray<InteractionFunction, real>* ener,
+                gmx_grppairener_t*                                grpp,
+                gmx::ArrayRef<real>                               dvdl,
+                const gmx::StepWorkload&                          stepWork,
+                int                                               reductionBeginIndex);
+
+    /*! \brief Reduces energies and dV/dlambda, as requested by \p stepWork
+     *
+     * The reduction of all output starts at the output from thread \p reductionBeginIndex.
+     *
+     * Buffers that will not be used as indicated by the flags in \p stepWork
+     * are allowed to be nullptr or empty.
+     */
+    void reduceEnergiesAndDvdl(gmx::EnumerationArray<InteractionFunction, real>* ener,
+                               gmx_grppairener_t*                                grpp,
+                               gmx::ArrayRef<real>                               dvdl,
+                               const gmx::StepWorkload&                          stepWork,
+                               int reductionBeginIndex);
 
 private:
+    //! Template version of \p reduce() above
+    template<typename ForceBufferType>
+    void reduceTemplated(ForceBufferType*                                  forceBuffer,
+                         gmx::EnumerationArray<InteractionFunction, real>* ener,
+                         gmx_grppairener_t*                                grpp,
+                         gmx::ArrayRef<real>                               dvdl,
+                         const gmx::StepWorkload&                          stepWork,
+                         int                                               reductionBeginIndex);
+
     //! Whether the energy buffer is used
     bool useEnergyTerms_;
     //! Force/energy data per thread, size nthreads, stored in unique_ptr to allow thread local allocation
