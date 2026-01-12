@@ -88,6 +88,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <initializer_list>
 #include <map>
 #include <set>
 #include <sstream>
@@ -518,7 +519,7 @@ std::vector<ApicInfo> detectX86ApicInfo(bool gmx_unused haveX2Apic)
     sched_setaffinity(0, sizeof(cpu_set_t), &saveCpuSet);
 #elif GMX_NATIVE_WINDOWS
     unsigned int eax, ebx, ecx, edx;
-    SYSTEM_INFO sysinfo;
+    SYSTEM_INFO  sysinfo;
     GetSystemInfo(&sysinfo);
 
     // calling SetThreadAffinityMask returns the current affinity mask if it succeeds,
@@ -785,6 +786,9 @@ CpuInfo::Vendor detectProcCpuInfoVendor(const std::map<std::string, std::string>
         { "riscv64", CpuInfo::Vendor::RiscV64 },
         { "riscv32", CpuInfo::Vendor::RiscV32 },
         { "riscv", CpuInfo::Vendor::RiscV32 }, // Must come after riscv64 to avoid misidentification
+        { "Loongson", CpuInfo::Vendor::Loongson },
+        { "loongarch64", CpuInfo::Vendor::Loongson },
+        { "loong64", CpuInfo::Vendor::Loongson },
     };
 
     // For each label in /proc/cpuinfo, compare the value to the name in the
@@ -803,9 +807,11 @@ CpuInfo::Vendor detectProcCpuInfoVendor(const std::map<std::string, std::string>
 
                 // If the entire name we are testing (s2) matches the first part of
                 // the string after the colon in /proc/cpuinfo (s1) we found our vendor
-                if (std::equal(s2.begin(), s2.end(), s1.begin(), [](const char& x, const char& y) -> bool {
-                        return tolower(x) == tolower(y);
-                    }))
+                if (std::equal(s2.begin(),
+                               s2.end(),
+                               s1.begin(),
+                               [](const char& x, const char& y) -> bool
+                               { return std::tolower(x) == std::tolower(y); }))
                 {
                     return t.second;
                 }
@@ -1038,6 +1044,10 @@ CpuInfo CpuInfo::detect()
         {
             result.vendor_ = CpuInfo::Vendor::RiscV64;
         }
+        else if (c_architecture == Architecture::Loongarch64)
+        {
+            result.vendor_ = CpuInfo::Vendor::Loongson;
+        }
 
 #if defined __aarch64__ || (defined _M_ARM && _M_ARM >= 8)
         result.features_.insert(Feature::Arm_Neon);      // ARMv8 always has Neon
@@ -1100,6 +1110,7 @@ const std::string& CpuInfo::vendorString() const
         { Vendor::Hygon, "Hygon" },
         { Vendor::RiscV32, "RISC-V 32" },
         { Vendor::RiscV64, "RISC-V 64" },
+        { Vendor::Loongson, "Loongson" },
     };
 
     return vendorStrings.at(vendor_);
@@ -1193,6 +1204,18 @@ bool cpuIsAmdZen1(const CpuInfo& cpuInfo)
            || (cpuInfo.vendor() == CpuInfo::Vendor::Hygon);
 }
 
+bool cpuIsNeoverseV2(const CpuInfo& cpuInfo)
+{
+    /* Neoverse V2 will have part=0xd4f, which we store under brand
+     * See https://github.com/torvalds/linux/blob/master/arch/arm64/include/asm/cputype.h
+     */
+
+    std::string brand = cpuInfo.brandString();
+    std::transform(
+            brand.begin(), brand.end(), brand.begin(), [](const char& c) { return std::tolower(c); });
+    return (cpuInfo.vendor() == CpuInfo::Vendor::Arm && (brand == "neoverse v2" || brand == "0xd4f"));
+}
+
 } // namespace gmx
 
 #ifdef GMX_CPUINFO_STANDALONE
@@ -1210,7 +1233,7 @@ int main(int argc, char** argv)
                 "-stepping      Print CPU stepping version.\n"
                 "-features      Print CPU feature flags.\n",
                 argv[0]);
-        exit(1);
+        std::exit(1);
     }
 
     std::string  arg(argv[1]);

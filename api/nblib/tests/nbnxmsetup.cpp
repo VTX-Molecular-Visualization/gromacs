@@ -40,19 +40,32 @@
  * \author Prashanth Kanduri <kanduri@cscs.ch>
  * \author Sebastian Keller <keller@cscs.ch>
  */
+#include "config.h"
+
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
+
+#include <string>
+#include <vector>
+
+#include <gtest/gtest.h>
 
 #include "gromacs/hardware/device_management.h"
+#include "gromacs/mdtypes/atominfo.h"
 #include "gromacs/mdtypes/forcerec.h"
 #include "gromacs/mdtypes/interaction_const.h"
 #include "gromacs/mdtypes/simulation_workload.h"
 #include "gromacs/nbnxm/nbnxm.h"
 #include "gromacs/nbnxm/nbnxm_simd.h"
+#include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/real.h"
 
 #include "testutils/test_hardware_environment.h"
 #include "testutils/testasserts.h"
 
 #include "nblib/box.h"
+#include "nblib/kerneloptions.h"
 #include "nblib/nbnxmsetuphelpers.h"
 
 namespace nblib
@@ -64,7 +77,7 @@ namespace
 
 TEST(NbnxmSetupTest, findNumEnergyGroups)
 {
-    std::vector<int64_t> v(10);
+    std::vector<int32_t> v(10);
     int                  arbitraryGid = 7;
 
     // this sets some bit outside the range of bits used for the group ID
@@ -79,25 +92,25 @@ TEST(NbnxmSetupTest, findNumEnergyGroups)
 TEST(NbnxmSetupTest, canTranslateBenchmarkEnumAuto)
 {
     auto kernel = SimdKernels::SimdAuto;
-    EXPECT_EQ(translateBenchmarkEnum(kernel), Nbnxm::KernelType::NotSet);
+    EXPECT_EQ(translateBenchmarkEnum(kernel), gmx::NbnxmKernelType::NotSet);
 }
 
 TEST(NbnxmSetupTest, canTranslateBenchmarkEnumNo)
 {
     auto kernel = SimdKernels::SimdNo;
-    EXPECT_EQ(translateBenchmarkEnum(kernel), Nbnxm::KernelType::Cpu4x4_PlainC);
+    EXPECT_EQ(translateBenchmarkEnum(kernel), gmx::NbnxmKernelType::Cpu4x4_PlainC);
 }
 
 TEST(NbnxmSetupTest, canTranslateBenchmarkEnum2XM)
 {
     auto kernel = SimdKernels::Simd2XMM;
-    EXPECT_EQ(translateBenchmarkEnum(kernel), Nbnxm::KernelType::Cpu4xN_Simd_2xNN);
+    EXPECT_EQ(translateBenchmarkEnum(kernel), gmx::NbnxmKernelType::Cpu4xN_Simd_2xNN);
 }
 
 TEST(NbnxmSetupTest, canTranslateBenchmarkEnum4XM)
 {
     auto kernel = SimdKernels::Simd4XM;
-    EXPECT_EQ(translateBenchmarkEnum(kernel), Nbnxm::KernelType::Cpu4xN_Simd_4xN);
+    EXPECT_EQ(translateBenchmarkEnum(kernel), gmx::NbnxmKernelType::Cpu4xN_Simd_4xN);
 }
 
 TEST(NbnxmSetupTest, CheckKernelSetupThrowsAuto)
@@ -114,20 +127,20 @@ TEST(NbnxmSetupTest, canCreateKernelSetupPlain)
 {
     NBKernelOptions nbKernelOptions;
     nbKernelOptions.nbnxmSimd = SimdKernels::SimdNo;
-    Nbnxm::KernelSetup kernelSetup =
+    gmx::NbnxmKernelSetup kernelSetup =
             createKernelSetupCPU(nbKernelOptions.nbnxmSimd, nbKernelOptions.useTabulatedEwaldCorr);
-    EXPECT_EQ(kernelSetup.kernelType, Nbnxm::KernelType::Cpu4x4_PlainC);
-    EXPECT_EQ(kernelSetup.ewaldExclusionType, Nbnxm::EwaldExclusionType::Table);
+    EXPECT_EQ(kernelSetup.kernelType, gmx::NbnxmKernelType::Cpu4x4_PlainC);
+    EXPECT_EQ(kernelSetup.ewaldExclusionType, gmx::EwaldExclusionType::Table);
 }
 
 TEST(NbnxmSetupTest, canCreateParticleInfoAllVdv)
 {
-    size_t  numParticles = 2;
-    int64_t mask         = 0;
+    size_t numParticles = 2;
+    int    mask         = 0;
     mask |= gmx::sc_atomInfo_HasVdw;
     mask |= gmx::sc_atomInfo_HasCharge;
-    std::vector<int64_t> refParticles  = { mask, mask };
-    std::vector<int64_t> testParticles = createParticleInfoAllVdw(numParticles);
+    std::vector<int> refParticles  = { mask, mask };
+    std::vector<int> testParticles = createParticleInfoAllVdw(numParticles);
     EXPECT_EQ(refParticles, testParticles);
 }
 
@@ -161,7 +174,7 @@ TEST(NbnxmSetupTest, canCheckKernelSetup)
     EXPECT_NO_THROW(checkKernelSetupSimd(nbKernelOptions.nbnxmSimd));
 }
 
-// check if the user is allowed to ask for SimdKernels::Simd2XMM when NBLIB is not compiled with it
+// check if the user is allowed to ask for SimdKernels::Simd2XMM when NB-LIB is not compiled with it
 #ifndef GMX_NBNXN_SIMD_2XNN
 TEST(NbnxmSetupTest, cannotCreateKernelSetupCPU2XM)
 {
@@ -172,7 +185,7 @@ TEST(NbnxmSetupTest, cannotCreateKernelSetupCPU2XM)
 }
 #endif
 
-// check if the user is allowed to ask for SimdKernels::Simd4XM when NBLIB is not compiled with it
+// check if the user is allowed to ask for SimdKernels::Simd4XM when NB-LIB is not compiled with it
 #ifndef GMX_NBNXN_SIMD_4XN
 TEST(NbnxmSetupTest, cannotCreateKernelSetupCPU4XM)
 {
@@ -196,10 +209,10 @@ TEST(NbnxmSetupTest, CanCreateNbnxmCPU)
 #if GMX_GPU_CUDA
 TEST(NbnxmSetupTest, canCreateKernelSetupGPU)
 {
-    NBKernelOptions    nbKernelOptions;
-    Nbnxm::KernelSetup kernelSetup = createKernelSetupGPU(nbKernelOptions.useTabulatedEwaldCorr);
-    EXPECT_EQ(kernelSetup.kernelType, Nbnxm::KernelType::Gpu8x8x8);
-    EXPECT_EQ(kernelSetup.ewaldExclusionType, Nbnxm::EwaldExclusionType::Analytical);
+    NBKernelOptions       nbKernelOptions;
+    gmx::NbnxmKernelSetup kernelSetup = createKernelSetupGPU(nbKernelOptions.useTabulatedEwaldCorr);
+    EXPECT_EQ(kernelSetup.kernelType, gmx::NbnxmKernelType::Gpu8x8x8);
+    EXPECT_EQ(kernelSetup.ewaldExclusionType, gmx::EwaldExclusionType::Analytical);
 }
 
 TEST(NbnxmSetupTest, CanCreateDeviceStreamManager)
@@ -207,7 +220,6 @@ TEST(NbnxmSetupTest, CanCreateDeviceStreamManager)
     const auto& testDeviceList = gmx::test::getTestHardwareEnvironment()->getTestDeviceList();
     for (const auto& testDevice : testDeviceList)
     {
-        testDevice->activate();
         const DeviceInformation& deviceInfo     = testDevice->deviceInfo();
         gmx::SimulationWorkload  simulationWork = createSimulationWorkloadGpu();
         EXPECT_NO_THROW(createDeviceStreamManager(deviceInfo, simulationWork));
@@ -219,7 +231,6 @@ TEST(NbnxmSetupTest, CanCreateNbnxmGPU)
     const auto& testDeviceList = gmx::test::getTestHardwareEnvironment()->getTestDeviceList();
     for (const auto& testDevice : testDeviceList)
     {
-        testDevice->activate();
         const DeviceInformation& deviceInfo   = testDevice->deviceInfo();
         size_t                   numParticles = 1;
         NBKernelOptions          nbKernelOptions;

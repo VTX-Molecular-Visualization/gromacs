@@ -67,14 +67,15 @@
 #include <algorithm>
 #include <vector>
 
-#include "gromacs/math/vec.h"
 #include "gromacs/selection/indexutil.h"
 #include "gromacs/selection/position.h"
+#include "gromacs/topology/block.h"
 #include "gromacs/trajectory/trajectoryframe.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/smalloc.h"
+#include "gromacs/utility/vec.h"
 
 #include "centerofmass.h"
 
@@ -136,7 +137,7 @@ public:
         for (int i = 0; i < size; ++i)
         {
             const int ii = index[i];
-            GMX_ASSERT(ii >= 0 && ii <= ssize(mapToFrameAtoms_) && mapToFrameAtoms_[ii] != -1,
+            GMX_ASSERT(ii >= 0 && ii <= gmx::ssize(mapToFrameAtoms_) && mapToFrameAtoms_[ii] != -1,
                        "Invalid input atom index");
             tmpFrameAtoms_[i] = mapToFrameAtoms_[ii];
         }
@@ -325,7 +326,7 @@ void PositionCalculationCollection::typeFromEnum(const char* post, e_poscalc_t* 
     {
         GMX_THROW(InternalError("Unknown position calculation type"));
     }
-    if (strlen(ptr) < 7)
+    if (std::strlen(ptr) < 7)
     {
         GMX_THROW(InternalError("Unknown position calculation type"));
     }
@@ -364,12 +365,20 @@ PositionCalculationCollection::Impl::Impl() :
 
 PositionCalculationCollection::Impl::~Impl()
 {
-    // Loop backwards, because there can be internal references in that are
+    // Loop backwards, because there can be internal references that are
     // correctly handled by this direction.
     while (last_ != nullptr)
     {
-        GMX_ASSERT(last_->refcount == 1, "Dangling references to position calculations");
-        gmx_ana_poscalc_free(last_);
+        if (last_->refcount != 1)
+        {
+            std::fprintf(stderr,
+                         "Warning: Dangling references to position calculations. Refcount = %d\n",
+                         last_->refcount);
+        }
+        else
+        {
+            gmx_ana_poscalc_free(last_);
+        }
     }
 }
 

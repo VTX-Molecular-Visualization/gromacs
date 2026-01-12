@@ -45,13 +45,22 @@
 
 #include "gromacs/coordinateio/outputadapters/setatoms.h"
 
+#include <filesystem>
+#include <memory>
+#include <string>
 #include <utility>
 
+#include <gtest/gtest.h>
+
+#include "gromacs/coordinateio/coordinatefileenums.h"
 #include "gromacs/coordinateio/tests/coordinate_test.h"
 #include "gromacs/fileio/trxio.h"
+#include "gromacs/topology/atoms.h"
 #include "gromacs/trajectory/trajectoryframe.h"
 #include "gromacs/trajectoryanalysis/topologyinformation.h"
+#include "gromacs/utility/exceptions.h"
 
+#include "testutils/cmdlinetest.h"
 #include "testutils/testfilemanager.h"
 
 namespace gmx
@@ -69,7 +78,7 @@ public:
     //! Prepare test fixture topology to have atoms available.
     SetAtomsTest()
     {
-        topology_.fillFromInputFile(TestFileManager::getInputFilePath("lysozyme.pdb").u8string());
+        topology_.fillFromInputFile(TestFileManager::getInputFilePath("lysozyme.pdb").string());
     }
 
     /*! \brief

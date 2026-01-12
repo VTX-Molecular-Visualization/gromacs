@@ -67,20 +67,23 @@
 #define GMX_MDLIB_RESETHANDLER_H
 
 #include <cstdint>
+#include <cstdio>
 
 #include "gromacs/compat/pointers.h"
 #include "gromacs/mdlib/simulationsignal.h"
 #include "gromacs/utility/logger.h"
+#include "gromacs/utility/real.h"
 
 struct gmx_pme_t;
 struct gmx_wallcycle;
 struct gmx_walltime_accounting;
-struct nonbonded_verlet_t;
-struct pme_load_balancing_t;
 struct t_nrnb;
+struct t_commrec;
 
 namespace gmx
 {
+struct nonbonded_verlet_t;
+class PmeLoadBalancing;
 
 /*! \brief Reset signals
  *
@@ -148,17 +151,17 @@ public:
      * specific time), the reset will only take place once, whenever the first condition
      * is met.
      */
-    void resetCounters(int64_t                     step,
-                       int64_t                     step_rel,
-                       const MDLogger&             mdlog,
-                       FILE*                       fplog,
-                       const t_commrec*            cr,
-                       nonbonded_verlet_t*         nbv,
-                       t_nrnb*                     nrnb,
-                       const gmx_pme_t*            pme,
-                       const pme_load_balancing_t* pme_loadbal,
-                       gmx_wallcycle*              wcycle,
-                       gmx_walltime_accounting*    walltime_accounting)
+    void resetCounters(int64_t                  step,
+                       int64_t                  step_rel,
+                       const MDLogger&          mdlog,
+                       FILE*                    fplog,
+                       const t_commrec*         cr,
+                       nonbonded_verlet_t*      nbv,
+                       t_nrnb*                  nrnb,
+                       const gmx_pme_t*         pme,
+                       const PmeLoadBalancing*  pme_loadbal,
+                       gmx_wallcycle*           wcycle,
+                       gmx_walltime_accounting* walltime_accounting)
     {
         if (simulationNeedsReset_)
         {
@@ -176,17 +179,17 @@ private:
     bool setSignalImpl(gmx_walltime_accounting* walltime_accounting);
 
     //! Implementation of the resetCounters() function
-    bool resetCountersImpl(int64_t                     step,
-                           int64_t                     step_rel,
-                           const MDLogger&             mdlog,
-                           FILE*                       fplog,
-                           const t_commrec*            cr,
-                           nonbonded_verlet_t*         nbv,
-                           t_nrnb*                     nrnb,
-                           const gmx_pme_t*            pme,
-                           const pme_load_balancing_t* pme_loadbal,
-                           gmx_wallcycle*              wcycle,
-                           gmx_walltime_accounting*    walltime_accounting);
+    bool resetCountersImpl(int64_t                  step,
+                           int64_t                  step_rel,
+                           const MDLogger&          mdlog,
+                           FILE*                    fplog,
+                           const t_commrec*         cr,
+                           nonbonded_verlet_t*      nbv,
+                           t_nrnb*                  nrnb,
+                           const gmx_pme_t*         pme,
+                           const PmeLoadBalancing*  pme_loadbal,
+                           gmx_wallcycle*           wcycle,
+                           gmx_walltime_accounting* walltime_accounting);
 
     SimulationSignal& signal_;
 

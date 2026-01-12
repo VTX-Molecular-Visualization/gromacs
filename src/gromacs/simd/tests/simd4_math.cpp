@@ -36,13 +36,18 @@
 #include <cmath>
 #include <cstdint>
 
+#include <limits>
+#include <string>
 #include <vector>
+
+#include <gtest/gtest.h>
 
 #include "gromacs/math/units.h"
 #include "gromacs/math/utilities.h"
 #include "gromacs/options/basicoptions.h"
 #include "gromacs/simd/simd.h"
 #include "gromacs/simd/simd_math.h"
+#include "gromacs/utility/real.h"
 
 #include "simd4.h"
 
@@ -89,8 +94,9 @@ TEST_F(Simd4MathTest, invsqrt)
     const real x1 = std::numeric_limits<float>::max();
     const real x2 = M_PI;
 
-    GMX_EXPECT_SIMD4_REAL_NEAR(setSimd4RealFrom3R(1.0 / sqrt(x0), 1.0 / sqrt(x1), 1.0 / sqrt(x2)),
-                               invsqrt(setSimd4RealFrom3R(x0, x1, x2)));
+    GMX_EXPECT_SIMD4_REAL_NEAR(
+            setSimd4RealFrom3R(1.0 / std::sqrt(x0), 1.0 / std::sqrt(x1), 1.0 / std::sqrt(x2)),
+            invsqrt(setSimd4RealFrom3R(x0, x1, x2)));
 }
 
 TEST_F(Simd4MathTest, invsqrtSingleAccuracy)
@@ -102,8 +108,9 @@ TEST_F(Simd4MathTest, invsqrtSingleAccuracy)
     /* Increase the allowed error by the difference between the actual precision and single */
     setUlpTolSingleAccuracy(ulpTol_);
 
-    GMX_EXPECT_SIMD4_REAL_NEAR(setSimd4RealFrom3R(1.0 / sqrt(x0), 1.0 / sqrt(x1), 1.0 / sqrt(x2)),
-                               invsqrtSingleAccuracy(setSimd4RealFrom3R(x0, x1, x2)));
+    GMX_EXPECT_SIMD4_REAL_NEAR(
+            setSimd4RealFrom3R(1.0 / std::sqrt(x0), 1.0 / std::sqrt(x1), 1.0 / std::sqrt(x2)),
+            invsqrtSingleAccuracy(setSimd4RealFrom3R(x0, x1, x2)));
 }
 
 /*! \} */

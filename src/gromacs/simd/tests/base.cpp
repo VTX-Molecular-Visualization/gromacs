@@ -37,6 +37,9 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
+
+#include <string>
 
 #include "gromacs/options/basicoptions.h"
 #include "gromacs/options/ioptionscontainer.h"
@@ -103,7 +106,7 @@ int SimdBaseTest::s_nPoints = 10000;
         absDiff[i] = std::abs(ref[i] - tst[i]);
         conv0.r    = ref[i];
         conv1.r    = tst[i];
-        ulpDiff[i] = llabs(conv0.i - conv1.i);
+        ulpDiff[i] = std::llabs(conv0.i - conv1.i);
 
         /* Use strict smaller-than for absolute tolerance check, so we disable it with absTol_=0 */
         allOk = allOk && ((absDiff[i] < absTol_) || ((ref[i] * tst[i] >= 0) && (ulpDiff[i] <= ulpTol_)));

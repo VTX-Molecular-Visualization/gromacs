@@ -42,14 +42,16 @@
 
 #include "gromacs/analysisdata/modules/lifetime.h"
 
-#include <cmath>
+#include <cstddef>
 
 #include <algorithm>
 #include <deque>
 #include <vector>
 
+#include "gromacs/analysisdata/abstractdata.h"
 #include "gromacs/analysisdata/dataframe.h"
-#include "gromacs/analysisdata/datastorage.h"
+#include "gromacs/utility/gmxassert.h"
+#include "gromacs/utility/real.h"
 
 namespace gmx
 {
@@ -131,7 +133,7 @@ void AnalysisDataLifetimeModule::dataStarted(AbstractAnalysisData* data)
 {
     impl_->currentLifetimes_.reserve(data->dataSetCount());
     impl_->lifetimeHistograms_.reserve(data->dataSetCount());
-    for (int i = 0; i < data->dataSetCount(); ++i)
+    for (size_t i = 0; i < data->dataSetCount(); ++i)
     {
         impl_->currentLifetimes_.emplace_back(data->columnCount(i), 0);
         impl_->lifetimeHistograms_.emplace_back();
@@ -155,7 +157,7 @@ void AnalysisDataLifetimeModule::pointsAdded(const AnalysisDataPointSetRef& poin
     // This assumption is strictly not necessary, but this is how the
     // framework works currently, and makes the code below simpler.
     GMX_ASSERT(points.firstColumn() == 0
-                       && points.lastColumn() == ssize(impl_->currentLifetimes_[dataSet]) - 1,
+                       && points.lastColumn() == gmx::ssize(impl_->currentLifetimes_[dataSet]) - 1,
                "Point set should cover all columns");
     for (int i = 0; i < points.columnCount(); ++i)
     {
@@ -233,7 +235,7 @@ void AnalysisDataLifetimeModule::dataFinished()
     for (histogram = impl_->lifetimeHistograms_.begin(); histogram != impl_->lifetimeHistograms_.end();
          ++histogram, ++column)
     {
-        int                                     row = 0;
+        size_t                                  row = 0;
         Impl::LifetimeHistogram::const_iterator i;
         for (i = histogram->begin(); i != histogram->end(); ++i, ++row)
         {

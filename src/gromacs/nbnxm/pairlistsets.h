@@ -49,20 +49,23 @@
 #include <memory>
 
 #include "gromacs/mdtypes/locality.h"
+#include "gromacs/nbnxm/nbnxm.h"
 
 #include "pairlistparams.h"
 
 struct nbnxn_atomdata_t;
-class PairlistSet;
-enum class PairlistType;
-class PairSearch;
+
+
 struct t_nrnb;
 
 namespace gmx
 {
+class PairlistSet;
+enum class PairlistType;
+class PairSearch;
+enum class PinningPolicy;
 template<typename>
 class ListOfLists;
-}
 
 //! Contains sets of pairlists \internal
 class PairlistSets
@@ -71,20 +74,22 @@ public:
     //! Constructor
     PairlistSets(const PairlistParams& pairlistParams,
                  bool                  haveMultipleDomains,
-                 int                   minimumIlistCountForGpuBalancing);
+                 int                   minimumIlistCountForGpuBalancing,
+                 PinningPolicy         pinPolicy);
 
     //! Construct the pairlist set for the given locality
-    void construct(gmx::InteractionLocality     iLocality,
-                   PairSearch*                  pairSearch,
-                   nbnxn_atomdata_t*            nbat,
-                   const gmx::ListOfLists<int>& exclusions,
-                   int64_t                      step,
-                   t_nrnb*                      nrnb);
+    void construct(InteractionLocality     iLocality,
+                   PairSearch*             pairSearch,
+                   nbnxn_atomdata_t*       nbat,
+                   const ListOfLists<int>& exclusions,
+                   bool                    includeAllPairs,
+                   int64_t                 step,
+                   t_nrnb*                 nrnb);
 
     //! Dispatches the dynamic pruning kernel for the given locality
-    void dispatchPruneKernel(gmx::InteractionLocality       iLocality,
-                             const nbnxn_atomdata_t*        nbat,
-                             gmx::ArrayRef<const gmx::RVec> shift_vec);
+    void dispatchPruneKernel(InteractionLocality     iLocality,
+                             const nbnxn_atomdata_t* nbat,
+                             ArrayRef<const RVec>    shift_vec);
 
     //! Returns the pair list parameters
     const PairlistParams& params() const { return params_; }
@@ -119,9 +124,9 @@ public:
     }
 
     //! Returns the pair-list set for the given locality
-    const PairlistSet& pairlistSet(gmx::InteractionLocality iLocality) const
+    const PairlistSet& pairlistSet(InteractionLocality iLocality) const
     {
-        if (iLocality == gmx::InteractionLocality::Local)
+        if (iLocality == InteractionLocality::Local)
         {
             return *localSet_;
         }
@@ -132,11 +137,14 @@ public:
         }
     }
 
+    //! Returns a plain pairlist containing all pairs in the lists on this domain except for exclusions
+    const PlainPairlist& plainPairlist(real range, const nbnxn_atomdata_t& nbat, ArrayRef<const int> atomIndices);
+
 private:
     //! Returns the pair-list set for the given locality
-    PairlistSet& pairlistSet(gmx::InteractionLocality iLocality)
+    PairlistSet& pairlistSet(InteractionLocality iLocality)
     {
-        if (iLocality == gmx::InteractionLocality::Local)
+        if (iLocality == InteractionLocality::Local)
         {
             return *localSet_;
         }
@@ -155,8 +163,15 @@ private:
     std::unique_ptr<PairlistSet> localSet_;
     //! Non-local pairlist set
     std::unique_ptr<PairlistSet> nonlocalSet_;
+    //! Whether also non-interacting pairs are included in the list
+    bool includesAllPairs_ = false;
     //! MD step at with the outer lists in pairlistSets_ were created
-    int64_t outerListCreationStep_;
+    int64_t outerListCreationStep_ = -1;
+
+    //! Storage for returning a plain pairlist
+    PlainPairlist plainPairlist_;
 };
+
+} // namespace gmx
 
 #endif

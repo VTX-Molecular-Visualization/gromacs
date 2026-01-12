@@ -43,7 +43,11 @@
 
 #include "config.h"
 
+#include <filesystem>
+#include <memory>
 #include <regex>
+#include <string>
+#include <tuple>
 
 #include <gtest/gtest.h>
 
@@ -54,8 +58,13 @@
 #include "gromacs/utility/path.h"
 #include "gromacs/utility/stringutil.h"
 
+#include "testutils/cmdlinetest.h"
 #include "testutils/refdata.h"
+#include "testutils/testasserts.h"
 #include "testutils/testfilemanager.h"
+
+#include "programs/mdrun/tests/comparison_helpers.h"
+#include "programs/mdrun/tests/moduletest.h"
 
 #include "energycomparison.h"
 #include "multisimtest.h"
@@ -182,15 +191,15 @@ TEST_P(ReplicaExchangeTest, Works)
                 !(tcoupl == TemperatureCoupling::No && pcoupl == PressureCoupling::No);
         // Tolerances copied from simulator tests
         EnergyTermsToCompare energyTermsToCompare{ {
-                { interaction_function[F_EPOT].longname,
+                { interaction_function[InteractionFunction::PotentialEnergy].longname,
                   relativeToleranceAsPrecisionDependentUlp(60.0, 200, doubleTolerance) },
-                { interaction_function[F_EKIN].longname,
+                { interaction_function[InteractionFunction::KineticEnergy].longname,
                   relativeToleranceAsPrecisionDependentUlp(60.0, 200, doubleTolerance) },
         } };
         if (hasConservedField)
         {
             energyTermsToCompare.emplace(
-                    interaction_function[F_ECONSERVED].longname,
+                    interaction_function[InteractionFunction::ConservedEnergy].longname,
                     relativeToleranceAsPrecisionDependentUlp(50.0, 100, doubleTolerance));
         }
         if (pcoupl != PressureCoupling::No)
@@ -247,7 +256,7 @@ TEST_P(ReplicaExchangeTest, Works)
             checkTrajectoryAgainstReferenceData(trajectoryFileName, trajectoryComparison, &simulationChecker);
 
         } // end loop over simulations
-    }     // end testing simulations on one rank
+    } // end testing simulations on one rank
 
 #if GMX_LIB_MPI
     // Make sure testing is complete before returning - ranks delete temporary files on exit

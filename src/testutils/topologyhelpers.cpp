@@ -42,6 +42,11 @@
 
 #include "topologyhelpers.h"
 
+#include <vector>
+
+#include "gromacs/topology/atoms.h"
+#include "gromacs/topology/idef.h"
+#include "gromacs/topology/ifunc.h"
 #include "gromacs/topology/mtop_util.h"
 #include "gromacs/topology/topology.h"
 
@@ -52,9 +57,14 @@ namespace test
 
 void addNWaterMolecules(gmx_mtop_t* mtop, int numWaters)
 {
+    // Target distance between oxygen and hydrogens
+    constexpr real dOH = 0.09572;
+    // Target distance between hydrogens
+    constexpr real dHH = 0.15139;
+
     gmx_moltype_t moltype;
-    moltype.atoms.nr             = NRAL(F_SETTLE);
-    std::vector<int>& iatoms     = moltype.ilist[F_SETTLE].iatoms;
+    moltype.atoms.nr             = NRAL(InteractionFunction::SETTLE);
+    std::vector<int>& iatoms     = moltype.ilist[InteractionFunction::SETTLE].iatoms;
     const int         settleType = 0;
     iatoms.push_back(settleType);
     iatoms.push_back(0);
@@ -62,16 +72,22 @@ void addNWaterMolecules(gmx_mtop_t* mtop, int numWaters)
     iatoms.push_back(2);
     int moleculeTypeIndex = mtop->moltype.size();
     mtop->moltype.push_back(moltype);
-    init_t_atoms(&mtop->moltype[0].atoms, NRAL(F_SETTLE), false);
-    for (int i = 0; i < NRAL(F_SETTLE); ++i)
+    init_t_atoms(&mtop->moltype[0].atoms, NRAL(InteractionFunction::SETTLE), false);
+    for (int i = 0; i < NRAL(InteractionFunction::SETTLE); ++i)
     {
         mtop->moltype[0].atoms.atom[i].m = (i % 3 == 0) ? 16 : 1;
     }
 
-    mtop->molblock.emplace_back(gmx_molblock_t{});
+    mtop->molblock.emplace_back();
     mtop->molblock.back().type = moleculeTypeIndex;
     mtop->molblock.back().nmol = numWaters;
     mtop->natoms               = moltype.atoms.nr * mtop->molblock.back().nmol;
+
+    // Set up the SETTLE parameters.
+    t_iparams iparams;
+    iparams.settle.doh = dOH;
+    iparams.settle.dhh = dHH;
+    mtop->ffparams.iparams.push_back(iparams);
 }
 
 } // namespace test

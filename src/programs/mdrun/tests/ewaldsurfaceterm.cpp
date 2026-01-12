@@ -41,6 +41,8 @@
  */
 #include "gmxpre.h"
 
+#include <cstdio>
+
 #include <memory>
 #include <string>
 #include <vector>
@@ -50,11 +52,14 @@
 #include "gromacs/topology/idef.h"
 #include "gromacs/topology/ifunc.h"
 #include "gromacs/trajectory/trajectoryframe.h"
+#include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/basenetwork.h"
 #include "gromacs/utility/filestream.h"
 #include "gromacs/utility/strconvert.h"
 #include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/vectypes.h"
 
+#include "testutils/cmdlinetest.h"
 #include "testutils/mpitest.h"
 #include "testutils/refdata.h"
 #include "testutils/simulationdatabase.h"
@@ -152,8 +157,8 @@ TEST_P(EwaldSurfaceTermTest, WithinTolerances)
         CommandLine mdrunCaller;
         ASSERT_EQ(0, runner_.callMdrun(mdrunCaller));
         EnergyTermsToCompare energyTermsToCompare{
-            { { interaction_function[F_EPOT].longname, absoluteTolerance(1e-3) },
-              { interaction_function[F_ETOT].longname, absoluteTolerance(1e-3) } }
+            { { interaction_function[InteractionFunction::PotentialEnergy].longname, absoluteTolerance(1e-3) },
+              { interaction_function[InteractionFunction::TotalEnergy].longname, absoluteTolerance(1e-3) } }
         };
         TestReferenceData refData;
         auto checker = refData.rootChecker().checkCompound("Simulation", simulationName);

@@ -52,19 +52,26 @@
 #include "gromacs/fileio/gmxfio.h"
 #include "gromacs/fileio/oenv.h"
 #include "gromacs/fileio/xvgr.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/options/basicoptions.h"
 #include "gromacs/options/ioptionscontainer.h"
 #include "gromacs/options/timeunitmanager.h"
 #include "gromacs/selection/selectioncollection.h"
+#include "gromacs/utility/basedefinitions.h"
+#include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/programcontext.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/stringutil.h"
 #include "gromacs/utility/unique_cptr.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
+
+struct gmx_output_env_t;
 
 namespace gmx
 {
+class AbstractAnalysisData;
 
 /********************************************************************
  * AnalysisDataPlotSettings
@@ -274,7 +281,7 @@ void AbstractPlotModule::setXFormat(int width, int precision, char format)
 {
     GMX_RELEASE_ASSERT(width >= 0 && precision >= 0 && width <= 99 && precision <= 99,
                        "Invalid width or precision");
-    GMX_RELEASE_ASSERT(strchr("eEfFgG", format) != nullptr, "Invalid format specifier");
+    GMX_RELEASE_ASSERT(std::strchr("eEfFgG", format) != nullptr, "Invalid format specifier");
     impl_->xformat_ = formatString("%%%d.%d%c", width, precision, format);
 }
 
@@ -283,7 +290,7 @@ void AbstractPlotModule::setYFormat(int width, int precision, char format)
 {
     GMX_RELEASE_ASSERT(width >= 0 && precision >= 0 && width <= 99 && precision <= 99,
                        "Invalid width or precision");
-    GMX_RELEASE_ASSERT(strchr("eEfFgG", format) != nullptr, "Invalid format specifier");
+    GMX_RELEASE_ASSERT(std::strchr("eEfFgG", format) != nullptr, "Invalid format specifier");
     impl_->yformat_ = formatString(" %%%d.%d%c", width, precision, format);
 }
 

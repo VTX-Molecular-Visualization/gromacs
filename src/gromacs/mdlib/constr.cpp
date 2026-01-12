@@ -43,10 +43,16 @@
 #include "constr.h"
 
 #include <cassert>
+#include <cinttypes>
+#include <climits>
 #include <cmath>
 #include <cstdlib>
 
 #include <algorithm>
+#include <array>
+#include <filesystem>
+#include <string>
+#include <utility>
 
 #include "gromacs/domdec/domdec.h"
 #include "gromacs/domdec/domdec_struct.h"
@@ -56,32 +62,41 @@
 #include "gromacs/fileio/pdbio.h"
 #include "gromacs/gmxlib/nrnb.h"
 #include "gromacs/math/arrayrefwithpadding.h"
+#include "gromacs/math/paddedvector.h"
 #include "gromacs/math/utilities.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/mdlib/gmx_omp_nthreads.h"
 #include "gromacs/mdlib/lincs.h"
 #include "gromacs/mdlib/settle.h"
 #include "gromacs/mdlib/shake.h"
-#include "gromacs/mdtypes/commrec.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/mdtypes/state.h"
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/pulling/pull.h"
 #include "gromacs/timing/wallcycle.h"
+#include "gromacs/topology/forcefieldparameters.h"
 #include "gromacs/topology/ifunc.h"
 #include "gromacs/topology/mtop_lookup.h"
 #include "gromacs/topology/mtop_util.h"
+#include "gromacs/topology/topology.h"
+#include "gromacs/topology/topology_enums.h"
 #include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/basedefinitions.h"
+#include "gromacs/utility/cstringutil.h"
+#include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/listoflists.h"
+#include "gromacs/utility/mpicomm.h"
 #include "gromacs/utility/pleasecite.h"
+#include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/txtdump.h"
+#include "gromacs/utility/vec.h"
 
 namespace gmx
 {
+class Lincs;
 
 /* \brief Impl class for Constraints
  *
@@ -99,7 +114,8 @@ public:
          const t_inputrec&          ir_p,
          pull_t*                    pull_work,
          FILE*                      log_p,
-         const t_commrec*           cr_p,
+         const MpiComm&             mpiComm_p,
+         gmx_domdec_t*              dd_p,
          bool                       useUpdateGroups,
          const gmx_multisim_t*      ms,
          t_nrnb*                    nrnb,
@@ -117,8 +133,7 @@ public:
                         bool                                hasMassPerturbedAtoms,
                         real                                lambda,
                         gmx::ArrayRef<const unsigned short> cFREEZE);
-    bool apply(bool                      bLog,
-               bool                      bEner,
+    bool apply(bool                      computeRmsd,
                int64_t                   step,
                int                       delta_step,
                real                      step_scaling,
@@ -184,7 +199,9 @@ public:
     //! Logging support.
     FILE* log = nullptr;
     //! Communication support.
-    const t_commrec* cr = nullptr;
+    const MpiComm& mpiComm;
+    //! Domain decomposition object, can be nullptr.
+    gmx_domdec_t* dd;
     //! Multi-sim support.
     const gmx_multisim_t* ms = nullptr;
     //! Pulling code object, if any.
@@ -212,7 +229,8 @@ bool Constraints::havePerturbedConstraints() const
 
     for (size_t i = 0; i < ffparams.functype.size(); i++)
     {
-        if ((ffparams.functype[i] == F_CONSTR || ffparams.functype[i] == F_CONSTRNC)
+        if ((ffparams.functype[i] == InteractionFunction::Constraints
+             || ffparams.functype[i] == InteractionFunction::ConstraintsNoCoupling)
             && ffparams.iparams[i].constr.dA != ffparams.iparams[i].constr.dB)
         {
             return true;
@@ -255,28 +273,26 @@ static void write_constr_pdb(const char*          fn,
                              const gmx_mtop_t&    mtop,
                              int                  start,
                              int                  homenr,
-                             const t_commrec*     cr,
+                             const MpiComm&       mpiComm,
+                             const gmx_domdec_t*  dd,
                              ArrayRef<const RVec> x,
                              const matrix         box)
 {
-    char          fname[STRLEN];
-    FILE*         out;
-    int           dd_ac0 = 0, dd_ac1 = 0, i, ii, resnr;
-    gmx_domdec_t* dd;
-    const char *  anm, *resnm;
+    char        fname[STRLEN];
+    FILE*       out;
+    int         dd_ac0 = 0, dd_ac1 = 0, i, ii, resnr;
+    const char *anm, *resnm;
 
-    dd = nullptr;
-    if (haveDDAtomOrdering(*cr))
+    if (dd)
     {
-        dd = cr->dd;
         dd_get_constraint_range(*dd, &dd_ac0, &dd_ac1);
         start  = 0;
         homenr = dd_ac1;
     }
 
-    if (PAR(cr))
+    if (mpiComm.isParallel())
     {
-        sprintf(fname, "%s_n%d.pdb", fn, cr->sim_nodeid);
+        sprintf(fname, "%s_n%d.pdb", fn, mpiComm.rank());
     }
     else
     {
@@ -297,6 +313,10 @@ static void write_constr_pdb(const char*          fn,
                 continue;
             }
             ii = dd->globalAtomIndices[i];
+            if (!isValidGlobalAtom(ii))
+            {
+                continue;
+            }
         }
         else
         {
@@ -330,23 +350,24 @@ static void dump_confs(FILE*                log,
                        const gmx_mtop_t&    mtop,
                        int                  start,
                        int                  homenr,
-                       const t_commrec*     cr,
+                       const MpiComm&       mpiComm,
+                       const gmx_domdec_t*  dd,
                        ArrayRef<const RVec> x,
                        ArrayRef<const RVec> xprime,
                        const matrix         box)
 {
     char buf[STRLEN], buf2[22];
 
-    char* env = getenv("GMX_SUPPRESS_DUMP");
+    char* env = std::getenv("GMX_SUPPRESS_DUMP");
     if (env)
     {
         return;
     }
 
     sprintf(buf, "step%sb", gmx_step_str(step, buf2));
-    write_constr_pdb(buf, "initial coordinates", mtop, start, homenr, cr, x, box);
+    write_constr_pdb(buf, "initial coordinates", mtop, start, homenr, mpiComm, dd, x, box);
     sprintf(buf, "step%sc", gmx_step_str(step, buf2));
-    write_constr_pdb(buf, "coordinates after constraining", mtop, start, homenr, cr, xprime, box);
+    write_constr_pdb(buf, "coordinates after constraining", mtop, start, homenr, mpiComm, dd, xprime, box);
     if (log)
     {
         fprintf(log, "Wrote pdb files with previous and current coordinates\n");
@@ -354,8 +375,7 @@ static void dump_confs(FILE*                log,
     fprintf(stderr, "Wrote pdb files with previous and current coordinates\n");
 }
 
-bool Constraints::apply(bool                      bLog,
-                        bool                      bEner,
+bool Constraints::apply(bool                      computeRmsd,
                         int64_t                   step,
                         int                       delta_step,
                         real                      step_scaling,
@@ -370,8 +390,7 @@ bool Constraints::apply(bool                      bLog,
                         tensor                    constraintsVirial,
                         ConstraintVariable        econq)
 {
-    return impl_->apply(bLog,
-                        bEner,
+    return impl_->apply(computeRmsd,
                         step,
                         delta_step,
                         step_scaling,
@@ -387,8 +406,7 @@ bool Constraints::apply(bool                      bLog,
                         econq);
 }
 
-bool Constraints::Impl::apply(bool                      bLog,
-                              bool                      bEner,
+bool Constraints::Impl::apply(const bool                computeRmsd,
                               int64_t                   step,
                               int                       delta_step,
                               real                      step_scaling,
@@ -452,8 +470,8 @@ bool Constraints::Impl::apply(bool                      bLog,
     {
         clear_mat(constraintsVirial);
     }
-    const InteractionList& settle = idef->il[F_SETTLE];
-    nsettle                       = settle.size() / (1 + NRAL(F_SETTLE));
+    const InteractionList& settle = idef->il[InteractionFunction::SETTLE];
+    nsettle                       = settle.size() / (1 + NRAL(InteractionFunction::SETTLE));
 
     if (nsettle > 0)
     {
@@ -469,15 +487,13 @@ bool Constraints::Impl::apply(bool                      bLog,
      * Note that PBC for constraints is different from PBC for bondeds.
      * For constraints there is both forward and backward communication.
      */
-    if (ir.pbcType != PbcType::No && (cr->dd || pbcHandlingRequired_)
-        && !(cr->dd && cr->dd->constraint_comm == nullptr))
+    if (ir.pbcType != PbcType::No && (dd || pbcHandlingRequired_) && !(dd && dd->constraint_comm == nullptr))
     {
         /* With pbc=screw the screw has been changed to a shift
          * by the constraint coordinate communication routine,
          * so that here we can use normal pbc.
          */
-        pbc_null = set_pbc_dd(
-                &pbc, ir.pbcType, haveDDAtomOrdering(*cr) ? cr->dd->numCells : nullptr, FALSE, box);
+        pbc_null = set_pbc_dd(&pbc, ir.pbcType, dd ? &dd->numCells : nullptr, FALSE, box);
     }
     else
     {
@@ -487,14 +503,11 @@ bool Constraints::Impl::apply(bool                      bLog,
     /* Communicate the coordinates required for the non-local constraints
      * for LINCS and/or SETTLE.
      */
-    if (havePPDomainDecomposition(cr))
+    if (havePPDomainDecomposition(dd))
     {
         wallcycle_sub_start(wcycle, WallCycleSubCounter::ConstrComm);
-        dd_move_x_constraints(cr->dd,
-                              box,
-                              x.unpaddedArrayRef(),
-                              xprime.unpaddedArrayRef(),
-                              econq == ConstraintVariable::Positions);
+        dd_move_x_constraints(
+                dd, box, x.unpaddedArrayRef(), xprime.unpaddedArrayRef(), econq == ConstraintVariable::Positions);
         wallcycle_sub_stop(wcycle, WallCycleSubCounter::ConstrComm);
 
         if (!v.empty())
@@ -503,18 +516,18 @@ bool Constraints::Impl::apply(bool                      bLog,
              * We never actually use these values, but we do increment them,
              * so we should avoid uninitialized variables and overflows.
              */
-            clear_constraint_quantity_nonlocal(*cr->dd, v.unpaddedArrayRef());
+            clear_constraint_quantity_nonlocal(*dd, v.unpaddedArrayRef());
         }
     }
 
     if (lincsd != nullptr)
     {
-        bOK = constrain_lincs(bLog || bEner,
+        bOK = constrain_lincs(computeRmsd,
                               ir,
                               step,
                               lincsd,
                               inverseMasses_,
-                              cr,
+                              dd,
                               ms,
                               x,
                               xprime,
@@ -654,7 +667,8 @@ bool Constraints::Impl::apply(bool                      bLog,
                             settle_proj(*settled,
                                         econq,
                                         end_th - start_th,
-                                        settle.iatoms.data() + start_th * (1 + NRAL(F_SETTLE)),
+                                        settle.iatoms.data()
+                                                + start_th * (1 + NRAL(InteractionFunction::SETTLE)),
                                         pbc_null,
                                         x.unpaddedArrayRef(),
                                         xprime.unpaddedArrayRef(),
@@ -692,8 +706,8 @@ bool Constraints::Impl::apply(bool                      bLog,
 
             if (bSettleErrorHasOccurred0)
             {
-                char buf[STRLEN];
-                sprintf(buf,
+                char msgBuf[STRLEN];
+                sprintf(msgBuf,
                         "\nstep "
                         "%" PRId64
                         ": One or more water molecules can not be settled.\n"
@@ -701,9 +715,9 @@ bool Constraints::Impl::apply(bool                      bLog,
                         step);
                 if (log)
                 {
-                    fprintf(log, "%s", buf);
+                    fprintf(log, "%s", msgBuf);
                 }
-                fprintf(stderr, "%s", buf);
+                fprintf(stderr, "%s", msgBuf);
                 warncount_settle++;
                 if (warncount_settle > maxwarn)
                 {
@@ -750,7 +764,7 @@ bool Constraints::Impl::apply(bool                      bLog,
 
     if (bDump)
     {
-        dump_confs(log, step, mtop, start, numHomeAtoms_, cr, x.unpaddedArrayRef(), xprime.unpaddedArrayRef(), box);
+        dump_confs(log, step, mtop, start, numHomeAtoms_, mpiComm, dd, x.unpaddedArrayRef(), xprime.unpaddedArrayRef(), box);
     }
 
     if (econq == ConstraintVariable::Positions)
@@ -769,7 +783,7 @@ bool Constraints::Impl::apply(bool                      bLog,
             pull_constraint(pullWork_,
                             masses_,
                             pbc,
-                            cr,
+                            mpiComm,
                             ir.delta_t,
                             t,
                             x.unpaddedArrayRef(),
@@ -780,7 +794,7 @@ bool Constraints::Impl::apply(bool                      bLog,
         if (ed && delta_step > 0)
         {
             /* apply the essential dynamics constraints here */
-            do_edsam(&ir, step, cr, xprime.unpaddedArrayRef(), v.unpaddedArrayRef(), box, ed);
+            do_edsam(&ir, step, mpiComm, xprime.unpaddedArrayRef(), v.unpaddedArrayRef(), box, ed);
         }
     }
     wallcycle_stop(wcycle, WallCycleCounter::Constr);
@@ -851,11 +865,11 @@ FlexibleConstraintTreatment flexibleConstraintTreatment(bool haveDynamicsIntegra
 /*! \brief Returns a block struct to go from atoms to constraints
  *
  * The block struct will contain constraint indices with lower indices
- * directly matching the order in F_CONSTR and higher indices matching
- * the order in F_CONSTRNC offset by the number of constraints in F_CONSTR.
+ * directly matching the order in InteractionFunction::Constraints and higher indices matching
+ * the order in InteractionFunction::ConstraintsNoCoupling offset by the number of constraints in InteractionFunction::Constraints.
  *
  * \param[in]  numAtoms  The number of atoms to construct the list for
- * \param[in]  ilists    The interaction lists, size F_NRE
+ * \param[in]  ilists    The interaction lists, size InteractionFunction::Count
  * \param[in]  iparams   Interaction parameters, can be null when
  *                       \p flexibleConstraintTreatment==Include
  * \param[in]  flexibleConstraintTreatment  The flexible constraint treatment,
@@ -863,17 +877,19 @@ FlexibleConstraintTreatment flexibleConstraintTreatment(bool haveDynamicsIntegra
  *
  * \returns a block struct with all constraints for each atom
  */
-static ListOfLists<int> makeAtomsToConstraintsList(int                             numAtoms,
-                                                   ArrayRef<const InteractionList> ilists,
-                                                   ArrayRef<const t_iparams>       iparams,
-                                                   FlexibleConstraintTreatment flexibleConstraintTreatment)
+static ListOfLists<int>
+makeAtomsToConstraintsList(int numAtoms,
+                           const gmx::EnumerationArray<InteractionFunction, InteractionList>& ilists,
+                           ArrayRef<const t_iparams>   iparams,
+                           FlexibleConstraintTreatment flexibleConstraintTreatment)
 {
     GMX_ASSERT(flexibleConstraintTreatment == FlexibleConstraintTreatment::Include || !iparams.empty(),
                "With flexible constraint detection we need valid iparams");
 
     std::vector<int> count(numAtoms);
 
-    for (int ftype = F_CONSTR; ftype <= F_CONSTRNC; ftype++)
+    for (InteractionFunction ftype :
+         { InteractionFunction::Constraints, InteractionFunction::ConstraintsNoCoupling })
     {
         const InteractionList& ilist  = ilists[ftype];
         const int              stride = 1 + NRAL(ftype);
@@ -899,11 +915,12 @@ static ListOfLists<int> makeAtomsToConstraintsList(int                          
     }
     std::vector<int> elements(listRanges[numAtoms]);
 
-    /* The F_CONSTRNC constraints have constraint numbers
-     * that continue after the last F_CONSTR constraint.
+    /* The InteractionFunction::ConstraintsNoCoupling constraints have constraint numbers
+     * that continue after the last InteractionFunction::Constraints constraint.
      */
     int numConstraints = 0;
-    for (int ftype = F_CONSTR; ftype <= F_CONSTRNC; ftype++)
+    for (InteractionFunction ftype :
+         { InteractionFunction::Constraints, InteractionFunction::ConstraintsNoCoupling })
     {
         const InteractionList& ilist  = ilists[ftype];
         const int              stride = 1 + NRAL(ftype);
@@ -925,10 +942,10 @@ static ListOfLists<int> makeAtomsToConstraintsList(int                          
     return ListOfLists<int>(std::move(listRanges), std::move(elements));
 }
 
-ListOfLists<int> make_at2con(int                             numAtoms,
-                             ArrayRef<const InteractionList> ilist,
-                             ArrayRef<const t_iparams>       iparams,
-                             FlexibleConstraintTreatment     flexibleConstraintTreatment)
+ListOfLists<int> make_at2con(int numAtoms,
+                             const gmx::EnumerationArray<InteractionFunction, InteractionList>& ilist,
+                             ArrayRef<const t_iparams>   iparams,
+                             FlexibleConstraintTreatment flexibleConstraintTreatment)
 {
     return makeAtomsToConstraintsList(numAtoms, ilist, iparams, flexibleConstraintTreatment);
 }
@@ -937,28 +954,7 @@ ListOfLists<int> make_at2con(const gmx_moltype_t&           moltype,
                              gmx::ArrayRef<const t_iparams> iparams,
                              FlexibleConstraintTreatment    flexibleConstraintTreatment)
 {
-    return makeAtomsToConstraintsList(
-            moltype.atoms.nr, makeConstArrayRef(moltype.ilist), iparams, flexibleConstraintTreatment);
-}
-
-//! Return the number of flexible constraints in the \c ilist and \c iparams.
-int countFlexibleConstraints(ArrayRef<const InteractionList> ilist, ArrayRef<const t_iparams> iparams)
-{
-    int nflexcon = 0;
-    for (int ftype = F_CONSTR; ftype <= F_CONSTRNC; ftype++)
-    {
-        const int numIatomsPerConstraint = 3;
-        for (int i = 0; i < ilist[ftype].size(); i += numIatomsPerConstraint)
-        {
-            const int type = ilist[ftype].iatoms[i];
-            if (iparams[type].constr.dA == 0 && iparams[type].constr.dB == 0)
-            {
-                nflexcon++;
-            }
-        }
-    }
-
-    return nflexcon;
+    return makeAtomsToConstraintsList(moltype.atoms.nr, moltype.ilist, iparams, flexibleConstraintTreatment);
 }
 
 //! Returns the index of the settle to which each atom belongs.
@@ -967,7 +963,7 @@ static std::vector<int> make_at2settle(int natoms, const InteractionList& ilist)
     /* Set all to no settle */
     std::vector<int> at2s(natoms, -1);
 
-    const int stride = 1 + NRAL(F_SETTLE);
+    const int stride = 1 + NRAL(InteractionFunction::SETTLE);
 
     for (int s = 0; s < ilist.size(); s += stride)
     {
@@ -1005,17 +1001,19 @@ void Constraints::Impl::setConstraints(gmx_localtop_t*                     top,
          */
         if (ir.eConstrAlg == ConstraintAlgorithm::Lincs)
         {
-            set_lincs(*idef, numAtoms_, inverseMasses_, lambda_, EI_DYNAMICS(ir.eI), cr, lincsd);
+            wallcycle_sub_start(wcycle, WallCycleSubCounter::SetLincs);
+            set_lincs(*idef, numAtoms_, inverseMasses_, lambda_, EI_DYNAMICS(ir.eI), dd, lincsd);
+            wallcycle_sub_stop(wcycle, WallCycleSubCounter::SetLincs);
         }
         if (ir.eConstrAlg == ConstraintAlgorithm::Shake)
         {
-            if (cr->dd)
+            if (dd)
             {
                 // We are using the local topology, so there are only
-                // F_CONSTR constraints.
-                GMX_RELEASE_ASSERT(idef->il[F_CONSTRNC].empty(),
+                // InteractionFunction::Constraints constraints.
+                GMX_RELEASE_ASSERT(idef->il[InteractionFunction::ConstraintsNoCoupling].empty(),
                                    "Here we should not have no-connect constraints");
-                make_shake_sblock_dd(shaked.get(), idef->il[F_CONSTR]);
+                make_shake_sblock_dd(shaked.get(), idef->il[InteractionFunction::Constraints]);
             }
             else
             {
@@ -1026,13 +1024,16 @@ void Constraints::Impl::setConstraints(gmx_localtop_t*                     top,
 
     if (settled)
     {
-        settled->setConstraints(idef->il[F_SETTLE], numHomeAtoms_, masses_, inverseMasses_);
+        wallcycle_sub_start(wcycle, WallCycleSubCounter::SetSettle);
+        settled->setConstraints(
+                idef->il[InteractionFunction::SETTLE], numHomeAtoms_, masses_, inverseMasses_);
+        wallcycle_sub_stop(wcycle, WallCycleSubCounter::SetSettle);
     }
 
     /* Make a selection of the local atoms for essential dynamics */
-    if (ed && cr->dd)
+    if (ed && dd)
     {
-        dd_make_local_ed_indices(cr->dd, ed);
+        dd_make_local_ed_indices(dd, ed);
     }
 }
 
@@ -1065,11 +1066,26 @@ static std::vector<ListOfLists<int>> makeAtomToConstraintMappings(const gmx_mtop
     return mapping;
 }
 
+bool hasTriangleConstraints(const gmx_mtop_t& mtop, const FlexibleConstraintTreatment flexibleConstraintTreatment)
+{
+    const auto atomToConstraintsPerMolType =
+            makeAtomToConstraintMappings(mtop, flexibleConstraintTreatment);
+    return std::any_of(mtop.molblock.begin(),
+                       mtop.molblock.end(),
+                       [&](const auto& molb)
+                       {
+                           const gmx_moltype_t& molt   = mtop.moltype[molb.type];
+                           const auto&          at2con = atomToConstraintsPerMolType[molb.type];
+                           return count_triangle_constraints(molt.ilist, at2con) > 0;
+                       });
+}
+
 Constraints::Constraints(const gmx_mtop_t&          mtop,
                          const t_inputrec&          ir,
                          pull_t*                    pull_work,
                          FILE*                      log,
-                         const t_commrec*           cr,
+                         const MpiComm&             mpiComm,
+                         gmx_domdec_t*              dd,
                          const bool                 useUpdateGroups,
                          const gmx_multisim_t*      ms,
                          t_nrnb*                    nrnb,
@@ -1078,7 +1094,20 @@ Constraints::Constraints(const gmx_mtop_t&          mtop,
                          ObservablesReducerBuilder* observablesReducerBuilder,
                          int                        numConstraints,
                          int                        numSettles) :
-    impl_(new Impl(mtop, ir, pull_work, log, cr, useUpdateGroups, ms, nrnb, wcycle, pbcHandlingRequired, observablesReducerBuilder, numConstraints, numSettles))
+    impl_(new Impl(mtop,
+                   ir,
+                   pull_work,
+                   log,
+                   mpiComm,
+                   dd,
+                   useUpdateGroups,
+                   ms,
+                   nrnb,
+                   wcycle,
+                   pbcHandlingRequired,
+                   observablesReducerBuilder,
+                   numConstraints,
+                   numSettles))
 {
 }
 
@@ -1086,7 +1115,8 @@ Constraints::Impl::Impl(const gmx_mtop_t&          mtop_p,
                         const t_inputrec&          ir_p,
                         pull_t*                    pull_work,
                         FILE*                      log_p,
-                        const t_commrec*           cr_p,
+                        const MpiComm&             mpiComm_p,
+                        gmx_domdec_t*              dd_p,
                         const bool                 useUpdateGroups,
                         const gmx_multisim_t*      ms_p,
                         t_nrnb*                    nrnb_p,
@@ -1099,7 +1129,8 @@ Constraints::Impl::Impl(const gmx_mtop_t&          mtop_p,
     mtop(mtop_p),
     pbcHandlingRequired_(pbcHandlingRequired),
     log(log_p),
-    cr(cr_p),
+    mpiComm(mpiComm_p),
+    dd(dd_p),
     ms(ms_p),
     pullWork_(pull_work),
     ir(ir_p),
@@ -1116,11 +1147,7 @@ Constraints::Impl::Impl(const gmx_mtop_t&          mtop_p,
     {
         at2con_mt = makeAtomToConstraintMappings(mtop, flexibleConstraintTreatment(EI_DYNAMICS(ir.eI)));
 
-        for (const gmx_molblock_t& molblock : mtop.molblock)
-        {
-            int count = countFlexibleConstraints(mtop.moltype[molblock.type].ilist, mtop.ffparams.iparams);
-            nflexcon += molblock.nmol * count;
-        }
+        nflexcon = gmx_mtop_flexible_constraint_count(mtop);
 
         if (nflexcon > 0)
         {
@@ -1148,12 +1175,13 @@ Constraints::Impl::Impl(const gmx_mtop_t&          mtop_p,
         // When there are multiple PP domains and update groups are
         // not in use, the constraints might be split across the
         // domains, needing particular handling.
-        const bool mayHaveSplitConstraints = haveDDAtomOrdering(*cr) && !useUpdateGroups;
+        const bool mayHaveSplitConstraints = (dd != nullptr) && !useUpdateGroups;
 
         if (ir.eConstrAlg == ConstraintAlgorithm::Lincs)
         {
-            GMX_ASSERT(observablesReducerBuilder == nullptr || PAR(cr_p),
-                       "ObservablesReducer only works with LINCS when there is more than one rank");
+            GMX_RELEASE_ASSERT(
+                    observablesReducerBuilder == nullptr || mpiComm.isParallel(),
+                    "ObservablesReducer only works with LINCS when there is more than one rank");
             lincsd = init_lincs(
                     log, mtop, nflexcon, at2con_mt, mayHaveSplitConstraints, ir.nLincsIter, ir.nProjOrder, observablesReducerBuilder);
         }
@@ -1200,8 +1228,8 @@ Constraints::Impl::Impl(const gmx_mtop_t&          mtop_p,
         /* Make an atom to settle index for use in domain decomposition */
         for (size_t mt = 0; mt < mtop.moltype.size(); mt++)
         {
-            at2settle_mt.emplace_back(
-                    make_at2settle(mtop.moltype[mt].atoms.nr, mtop.moltype[mt].ilist[F_SETTLE]));
+            at2settle_mt.emplace_back(make_at2settle(
+                    mtop.moltype[mt].atoms.nr, mtop.moltype[mt].ilist[InteractionFunction::SETTLE]));
         }
 
         /* Allocate thread-local work arrays */
@@ -1214,7 +1242,7 @@ Constraints::Impl::Impl(const gmx_mtop_t&          mtop_p,
     }
 
     maxwarn   = 999;
-    char* env = getenv("GMX_MAXCONSTRWARN");
+    char* env = std::getenv("GMX_MAXCONSTRWARN");
     if (env)
     {
         maxwarn = 0;
@@ -1227,7 +1255,7 @@ Constraints::Impl::Impl(const gmx_mtop_t&          mtop_p,
         {
             fprintf(log, "Setting the maximum number of constraint warnings to %d\n", maxwarn);
         }
-        if (MAIN(cr))
+        if (mpiComm.isMainRank())
         {
             fprintf(stderr, "Setting the maximum number of constraint warnings to %d\n", maxwarn);
         }
@@ -1266,62 +1294,41 @@ ArrayRef<const std::vector<int>> Constraints::atom2settle_moltype() const
 
 void do_constrain_first(FILE*                     fplog,
                         gmx::Constraints*         constr,
-                        const t_inputrec*         ir,
-                        int                       numAtoms,
+                        const t_inputrec&         ir,
                         int                       numHomeAtoms,
                         ArrayRefWithPadding<RVec> x,
                         ArrayRefWithPadding<RVec> v,
                         const matrix              box,
-                        real                      lambda)
+                        const real                lambda)
 {
-    int     i, m, start, end;
-    int64_t step;
-    real    dt = ir->delta_t;
-    real    dvdl_dum;
+    PaddedVector<RVec> savex(x.size());
 
-    PaddedVector<RVec> savex(numAtoms);
-
-    start = 0;
-    end   = numHomeAtoms;
+    const int start = 0;
+    const int end   = numHomeAtoms;
 
     if (debug)
     {
         fprintf(debug, "vcm: start=%d, homenr=%d, end=%d\n", start, numHomeAtoms, end);
     }
     /* Do a first constrain to reset particles... */
-    step = ir->init_step;
+    const int64_t step = ir.init_step;
     if (fplog)
     {
         char buf[STEPSTRSIZE];
         fprintf(fplog, "\nConstraining the starting coordinates (step %s)\n", gmx_step_str(step, buf));
     }
-    dvdl_dum = 0;
+    real dvdl_dum = 0;
 
-    bool needsLogging  = true;
-    bool computeEnergy = false;
-    bool computeVirial = false;
+    const bool computeRmsd   = true;
+    const bool computeVirial = false;
     /* constrain the current position */
-    constr->apply(needsLogging,
-                  computeEnergy,
-                  step,
-                  0,
-                  1.0,
-                  x,
-                  x,
-                  {},
-                  box,
-                  lambda,
-                  &dvdl_dum,
-                  {},
-                  computeVirial,
-                  nullptr,
-                  gmx::ConstraintVariable::Positions);
-    if (EI_VV(ir->eI))
+    constr->apply(
+            computeRmsd, step, 0, 1.0, x, x, {}, box, lambda, &dvdl_dum, {}, computeVirial, nullptr, gmx::ConstraintVariable::Positions);
+    if (EI_VV(ir.eI))
     {
         /* constrain the inital velocity, and save it */
         /* also may be useful if we need the ekin from the halfstep for velocity verlet */
-        constr->apply(needsLogging,
-                      computeEnergy,
+        constr->apply(computeRmsd,
                       step,
                       0,
                       1.0,
@@ -1337,19 +1344,18 @@ void do_constrain_first(FILE*                     fplog,
                       gmx::ConstraintVariable::Velocities);
     }
     /* constrain the inital velocities at t-dt/2 */
-    if (EI_STATE_VELOCITY(ir->eI) && ir->eI != IntegrationAlgorithm::VV)
+    if (EI_STATE_VELOCITY(ir.eI) && ir.eI != IntegrationAlgorithm::VV)
     {
+        const real dt = ir.delta_t;
+
         auto subX = x.paddedArrayRef().subArray(start, end);
         auto subV = v.paddedArrayRef().subArray(start, end);
-        for (i = start; (i < end); i++)
+        for (int i = start; i < end; i++)
         {
-            for (m = 0; (m < DIM); m++)
-            {
-                /* Reverse the velocity */
-                subV[i][m] = -subV[i][m];
-                /* Store the position at t-dt in buf */
-                savex[i][m] = subX[i][m] + dt * subV[i][m];
-            }
+            /* Reverse the velocity */
+            subV[i] = -subV[i];
+            /* Store the position at t-dt in buf */
+            savex[i] = subX[i] + dt * subV[i];
         }
         /* Shake the positions at t=-dt with the positions at t=0
          * as reference coordinates.
@@ -1360,8 +1366,7 @@ void do_constrain_first(FILE*                     fplog,
             fprintf(fplog, "\nConstraining the coordinates at t0-dt (step %s)\n", gmx_step_str(step, buf));
         }
         dvdl_dum = 0;
-        constr->apply(needsLogging,
-                      computeEnergy,
+        constr->apply(computeRmsd,
                       step,
                       -1,
                       1.0,
@@ -1376,30 +1381,25 @@ void do_constrain_first(FILE*                     fplog,
                       nullptr,
                       gmx::ConstraintVariable::Positions);
 
-        for (i = start; i < end; i++)
+        for (int i = start; i < end; i++)
         {
-            for (m = 0; m < DIM; m++)
-            {
-                /* Re-reverse the velocities */
-                subV[i][m] = -subV[i][m];
-            }
+            /* Re-reverse the velocities */
+            subV[i] = -subV[i];
         }
     }
 }
 
 void constrain_velocities(gmx::Constraints* constr,
-                          bool              do_log,
-                          bool              do_ene,
+                          bool              computeRmsd,
                           int64_t           step,
                           t_state*          state,
                           real*             dvdlambda,
-                          gmx_bool          computeVirial,
+                          bool              computeVirial,
                           tensor            constraintsVirial)
 {
     if (constr != nullptr)
     {
-        constr->apply(do_log,
-                      do_ene,
+        constr->apply(computeRmsd,
                       step,
                       1,
                       1.0,
@@ -1417,28 +1417,26 @@ void constrain_velocities(gmx::Constraints* constr,
 }
 
 void constrain_coordinates(gmx::Constraints*         constr,
-                           bool                      do_log,
-                           bool                      do_ene,
+                           bool                      computeRmsd,
                            int64_t                   step,
                            t_state*                  state,
                            ArrayRefWithPadding<RVec> xp,
-                           real*                     dvdlambda,
-                           gmx_bool                  computeVirial,
+                           real*                     dhdlambda,
+                           bool                      computeVirial,
                            tensor                    constraintsVirial)
 {
     if (constr != nullptr)
     {
-        constr->apply(do_log,
-                      do_ene,
+        constr->apply(computeRmsd,
                       step,
                       1,
                       1.0,
                       state->x.arrayRefWithPadding(),
                       std::move(xp),
-                      ArrayRef<RVec>(),
+                      ArrayRef<RVec>{},
                       state->box,
                       state->lambda[FreeEnergyPerturbationCouplingType::Bonded],
-                      dvdlambda,
+                      dhdlambda,
                       state->v.arrayRefWithPadding(),
                       computeVirial,
                       constraintsVirial,

@@ -42,11 +42,16 @@
 
 #include "gromacs/topology/exclusionblocks.h"
 
+#include <string>
+#include <vector>
+
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 #include "gromacs/topology/block.h"
 #include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/basedefinitions.h"
+#include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/listoflists.h"
 #include "gromacs/utility/smalloc.h"
 
@@ -131,7 +136,7 @@ public:
 
     void compareBlocks()
     {
-        for (Index i = 0; i < ssize(b_); i++)
+        for (Index i = 0; i < gmx::ssize(b_); i++)
         {
             int index = ba_.index[i];
             for (int j = 0; j < b_[i].nra(); j++)
@@ -145,8 +150,8 @@ public:
 
     void compareBlocksAndList()
     {
-        GMX_RELEASE_ASSERT(ssize(b_) == list_.ssize(), "The list counts should match");
-        for (Index i = 0; i < ssize(b_); i++)
+        GMX_RELEASE_ASSERT(gmx::ssize(b_) == list_.ssize(), "The list counts should match");
+        for (Index i = 0; i < gmx::ssize(b_); i++)
         {
             gmx::ArrayRef<const int> jList = list_[i];
             ASSERT_EQ(b_[i].nra(), jList.ssize()) << "Block size mismatch at " << i << ".";

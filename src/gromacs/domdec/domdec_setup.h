@@ -41,8 +41,11 @@
 #ifndef GMX_DOMDEC_DOMDEC_SETUP_H
 #define GMX_DOMDEC_DOMDEC_SETUP_H
 
-#include "gromacs/math/vec.h"
+
 #include "gromacs/utility/gmxmpi.h"
+#include "gromacs/utility/real.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
 
 enum class DDRole;
 struct DDSettings;
@@ -60,6 +63,7 @@ class MDLogger;
 class SeparatePmeRanksPermitted;
 template<typename T>
 class ArrayRef;
+class MpiComm;
 } // namespace gmx
 
 /*! \brief Returns the volume fraction of the system that is communicated */
@@ -126,7 +130,7 @@ real getDDGridSetupCellSizeLimit(const gmx::MDLogger& mdlog,
  */
 DDGridSetup getDDGridSetup(const gmx::MDLogger&                  mdlog,
                            DDRole                                ddRole,
-                           MPI_Comm                              communicator,
+                           const gmx::MpiComm&                   mpiComm,
                            int                                   numRanksRequested,
                            const gmx::DomdecOptions&             options,
                            const DDSettings&                     ddSettings,

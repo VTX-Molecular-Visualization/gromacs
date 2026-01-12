@@ -104,14 +104,14 @@ then
     if [ -z "$RUN_CLANG_TIDY" ]
     then
         echo "Please set the path to run-clang-tidy using the git hook"
-        echo "git config hooks.runclangtidypath /path/to/run-clang-tidy-9.py"
+        echo "git config hooks.runclangtidypath /path/to/run-clang-tidy-18.py"
         echo "or by setting an environment variable, e.g."
-        echo "RUN_CLANG_TIDY=/path/to/run-clang-tidy-11.py"
+        echo "RUN_CLANG_TIDY=/path/to/run-clang-tidy-18.py"
         exit 2
     fi
     if ! which "$RUN_CLANG_TIDY" 1>/dev/null
     then
-        echo "run-clang-tidy-11.py not found: $RUN_CLANG_TIDY"
+        echo "run-clang-tidy-18.py not found: $RUN_CLANG_TIDY"
         exit 2
     fi
 fi
@@ -171,10 +171,7 @@ touch $tmpdir/messages
 # Can only perform clang-tidy on a non-empty list of files
 cd $tmpdir/new
 if [[ $tidy_mode != "off" &&  -s $tmpdir/filelist_clangtidy ]] ; then
-    # Temporarily exclude Colvars headers to silence warnings from code that is not built with GROMACS
-    # TODO: remove this when clang-tidy >= 14 is used
-    HEADER_FILTER="^(?!.*src/external/colvars).*"
-    $RUN_CLANG_TIDY `cat $tmpdir/filelist_clangtidy` -header-filter=${HEADER_FILTER} -j $concurrency -fix -quiet -extra-arg=--cuda-host-only -extra-arg=-nocudainc>$tmpdir/clang-tidy.out 2>&1
+    $RUN_CLANG_TIDY `cat $tmpdir/filelist_clangtidy` -j $concurrency -fix -quiet -extra-arg=--cuda-host-only -extra-arg=-nocudainc>$tmpdir/clang-tidy.out 2>&1
     awk '/warning/,/clang-tidy|^$/' $tmpdir/clang-tidy.out | grep -v "warnings generated." | grep -v "Suppressed .* warnings" | grep -v "clang-analyzer"  | grep -v "to display errors from all non" | sed '/^\s*$/d' > $tmpdir/clang-tidy-warnings.out
     grep '\berror:' $tmpdir/clang-tidy.out > $tmpdir/clang-tidy-errors.out || true
     if [ -s $tmpdir/clang-tidy-errors.out ]; then

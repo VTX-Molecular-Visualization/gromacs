@@ -40,20 +40,30 @@
  */
 #include "gmxpre.h"
 
+#include <cmath>
+#include <cstdlib>
+#include <cstring>
+
 #include <algorithm>
 #include <array>
+#include <list>
+#include <memory>
 #include <string>
 
 #include "gromacs/math/units.h"
 #include "gromacs/math/utilities.h"
-#include "gromacs/math/vec.h"
+#include "gromacs/selection/indexutil.h"
 #include "gromacs/selection/position.h"
+#include "gromacs/selection/selvalue.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/gmxassert.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/stringutil.h"
 #include "gromacs/utility/unique_cptr.h"
+#include "gromacs/utility/vec.h"
 
 #include "parsetree.h"
 #include "scanner.h"
@@ -93,13 +103,13 @@ gmx_ana_selparam_t* gmx_ana_selparam_find(const char* name, int nparam, gmx_ana_
     }
     for (; i < nparam; ++i)
     {
-        if (!strcmp(param[i].name, name))
+        if (!std::strcmp(param[i].name, name))
         {
             return &param[i];
         }
         /* Check for 'no' prefix on boolean parameters */
-        if (param[i].val.type == NO_VALUE && strlen(name) > 2 && name[0] == 'n' && name[1] == 'o'
-            && !strcmp(param[i].name, name + 2))
+        if (param[i].val.type == NO_VALUE && std::strlen(name) > 2 && name[0] == 'n'
+            && name[1] == 'o' && !std::strcmp(param[i].name, name + 2))
         {
             return &param[i];
         }
@@ -130,7 +140,7 @@ static void convert_value(SelectionParserValue* value, e_selvalue_t type, Except
             try
             {
                 SelectionTreeElementPointer expr = _gmx_sel_init_position(value->expr_, nullptr, scanner);
-                *value                           = SelectionParserValue::createExpr(expr);
+                *value = SelectionParserValue::createExpr(expr);
             }
             catch (UserInputError& ex)
             {
@@ -393,11 +403,11 @@ static void parse_values_range(const SelectionParserValueList& values, gmx_ana_s
         }
         if (param->val.type == INT_VALUE)
         {
-            memcpy(param->val.u.i, idata, 2 * n * sizeof(int));
+            std::memcpy(param->val.u.i, idata, 2 * n * sizeof(int));
         }
         else
         {
-            memcpy(param->val.u.r, rdata, 2 * n * sizeof(real));
+            std::memcpy(param->val.u.r, rdata, 2 * n * sizeof(real));
         }
     }
     if (param->nvalptr)
@@ -427,7 +437,7 @@ static void parse_values_varnum(const SelectionParserValueList&    values,
 
     param->flags &= ~SPAR_DYNAMIC;
     /* Compute number of values, considering also integer ranges. */
-    int valueCount = ssize(values);
+    int valueCount = gmx::ssize(values);
     if (param->val.type == INT_VALUE)
     {
         SelectionParserValueList::const_iterator value;
@@ -435,7 +445,7 @@ static void parse_values_varnum(const SelectionParserValueList&    values,
         {
             if (value->type_ == INT_VALUE && !value->hasExpressionValue())
             {
-                valueCount += abs(value->u.i.i2 - value->u.i.i1);
+                valueCount += std::abs(value->u.i.i2 - value->u.i.i1);
             }
         }
     }
@@ -895,7 +905,6 @@ static void parse_values_bool(const std::string&              name,
  * \param[in] values List of values.
  * \param     param  Parameter to parse.
  * \param[in] scanner Scanner data structure.
- * \returns   true if the values were parsed successfully, false otherwise.
  */
 static void parse_values_enum(const SelectionParserValueList& values, gmx_ana_selparam_t* param, void* scanner)
 {

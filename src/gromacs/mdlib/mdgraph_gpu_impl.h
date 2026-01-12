@@ -135,6 +135,13 @@ n device
 #if GMX_GPU_CUDA
     using Graph         = cudaGraph_t;
     using GraphInstance = cudaGraphExec_t;
+#elif GMX_GPU_SYCL && GMX_HAVE_GPU_GRAPH_SUPPORT && defined(SYCL_EXT_ONEAPI_GRAPH) && SYCL_EXT_ONEAPI_GRAPH
+    using Graph =
+            std::unique_ptr<sycl::ext::oneapi::experimental::command_graph<sycl::ext::oneapi::experimental::graph_state::modifiable>>;
+    using GraphInstance =
+            std::unique_ptr<sycl::ext::oneapi::experimental::command_graph<sycl::ext::oneapi::experimental::graph_state::executable>>;
+#elif GMX_HAVE_GPU_GRAPH_SUPPORT
+#    error "Configuration error: GPU Graphs enabled but not supported"
 #else
     using Graph         = void*;
     using GraphInstance = void*;
@@ -155,11 +162,11 @@ private:
     void enqueueRank0EventToAllPpStreams(GpuEventSynchronizer* event, const DeviceStream& stream);
 
     //! Captured graph object
-    Graph graph_;
+    Graph graph_ = nullptr;
     //! Instantiated graph object
-    GraphInstance instance_;
-    //! Whether graph has already been created
-    bool graphCreated_ = false;
+    GraphInstance instance_ = nullptr;
+    //! Whether the recording of the graph has started
+    bool graphCaptureStarted_ = false;
     //! Whether graph is capturing in this step
     bool graphIsCapturingThisStep_ = false;
     //! Whether graph should be used this step
@@ -170,9 +177,9 @@ private:
     bool disableGraphAcrossAllPpRanks_ = false;
     //! Device stream manager object
     const DeviceStreamManager& deviceStreamManager_;
-    //! CUDA stream for launching graph
+    //! Device stream for launching graph
     std::unique_ptr<DeviceStream> launchStream_;
-    //! Alternate CUDA stream for launching graph
+    //! Alternate Device stream for launching graph
     std::unique_ptr<DeviceStream> launchStreamAlternate_;
     //! Whether PP domain decomposition is in use
     bool havePPDomainDecomposition_;
@@ -196,13 +203,9 @@ private:
     GpuEventSynchronizer* alternateStepPpTaskCompletionEvent_;
     //! Wall cycle timer object
     gmx_wallcycle* wcycle_;
-    //! Whether the graph object has been allocated
-    bool graphAllocated_ = false;
-    //! Whether the graph instance object has been allocated
-    bool graphInstanceAllocated_ = false;
     //! State of graph
     GraphState graphState_ = GraphState::Invalid;
-    //! Whether a perormance bug workaround is needed in graph update/reinstantiation
+    //! Whether a performance bug workaround is needed in graph update/reinstantiation
     bool needOldDriverTransferWorkaround_ = false;
 };
 

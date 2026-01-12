@@ -42,20 +42,8 @@
 #ifndef GMX_NBNXM_NBNXM_GPU_DATA_MGMT_H
 #define GMX_NBNXM_NBNXM_GPU_DATA_MGMT_H
 
-class DeviceContext;
-struct interaction_const_t;
-struct NBParamGpu;
-struct PairlistParams;
-
 namespace gmx
 {
-enum class InteractionLocality;
-}
-
-namespace Nbnxm
-{
-
-struct gpu_plist;
 
 /*! \brief Initializes the NBNXM GPU data structures. */
 void gpu_init_platform_specific(NbnxmGpu* nb);
@@ -63,11 +51,6 @@ void gpu_init_platform_specific(NbnxmGpu* nb);
 /*! \brief Releases the NBNXM GPU data structures. */
 void gpu_free_platform_specific(NbnxmGpu* nb);
 
-#if GMX_GPU_CUDA
-/*! Calculates working memory required for exclusive sum, used in neighbour list sorting */
-void getExclusiveScanWorkingArraySize(size_t& scan_size, gpu_plist* d_plist, const DeviceStream& deviceStream);
-#endif
-
-} // namespace Nbnxm
+} // namespace gmx
 
 #endif // GMX_NBNXM_NBNXM_GPU_DATA_MGMT_H

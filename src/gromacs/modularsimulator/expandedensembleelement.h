@@ -46,6 +46,7 @@
 #include "freeenergyperturbationdata.h"
 
 struct df_history_t;
+struct gmx_domdec_t;
 struct t_inputrec;
 
 namespace gmx
@@ -77,18 +78,24 @@ public:
                                      const FreeEnergyPerturbationData* freeEnergyPerturbationData,
                                      FILE*                             fplog,
                                      const t_inputrec*                 inputrec);
+    //! Destructor
+    ~ExpandedEnsembleElement();
 
     //! Attempt lambda MC step and write log
     void scheduleTask(Step step, Time time, const RegisterRunFunction& registerRunFunction) override;
     //! Set up FEP history object
     void elementSetup() override;
     //! No teardown needed
-    void elementTeardown() override{};
+    void elementTeardown() override {};
 
     //! ICheckpointHelperClient write checkpoint implementation
-    void saveCheckpointState(std::optional<WriteCheckpointData> checkpointData, const t_commrec* cr) override;
+    void saveCheckpointState(std::optional<WriteCheckpointData> checkpointData,
+                             const MpiComm&                     mpiComm,
+                             gmx_domdec_t*                      dd) override;
     //! ICheckpointHelperClient read checkpoint implementation
-    void restoreCheckpointState(std::optional<ReadCheckpointData> checkpointData, const t_commrec* cr) override;
+    void restoreCheckpointState(std::optional<ReadCheckpointData> checkpointData,
+                                const MpiComm&                    mpiComm,
+                                gmx_domdec_t*                     dd) override;
     //! ICheckpointHelperClient key implementation
     const std::string& clientID() override;
 
@@ -106,11 +113,11 @@ public:
      */
     static ISimulatorElement* getElementPointerImpl(LegacySimulatorData* legacySimulatorData,
                                                     ModularSimulatorAlgorithmBuilderHelper* builderHelper,
-                                                    StatePropagatorData*        statePropagatorData,
-                                                    EnergyData*                 energyData,
+                                                    StatePropagatorData* statePropagatorData,
+                                                    EnergyData*          energyData,
                                                     FreeEnergyPerturbationData* freeEnergyPerturbationData,
                                                     GlobalCommunicationHelper* globalCommunicationHelper,
-                                                    ObservablesReducer*        observablesReducer);
+                                                    ObservablesReducer* observablesReducer);
 
 private:
     //! Use expanded ensemble to determine new FEP state or write log

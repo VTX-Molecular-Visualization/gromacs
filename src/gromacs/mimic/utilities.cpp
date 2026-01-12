@@ -31,12 +31,18 @@
  * To help us fund GROMACS development, we humbly ask that you cite
  * the research papers on the package. Check out https://www.gromacs.org.
  */
+/*!
+ * \defgroup module_mimic Module Mimic
+ * \brief A brief description for Module Mimic
+ */
 
 #include "gmxpre.h"
 
 #include "utilities.h"
 
 #include "gromacs/topology/topology.h"
+#include "gromacs/topology/topology_enums.h"
+#include "gromacs/utility/enumerationhelpers.h"
 
 std::vector<int> genQmmmIndices(const gmx_mtop_t& mtop)
 {

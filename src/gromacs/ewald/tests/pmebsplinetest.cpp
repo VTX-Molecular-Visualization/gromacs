@@ -41,14 +41,22 @@
 
 #include "gmxpre.h"
 
+#include <array>
+#include <memory>
 #include <string>
+#include <tuple>
+#include <vector>
 
 #include <gmock/gmock.h>
+#include <gtest/gtest.h>
 
+#include "gromacs/ewald/pme.h"
 #include "gromacs/ewald/pme_internal.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/mdtypes/inputrec.h"
+#include "gromacs/mdtypes/md_enums.h"
+#include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "testutils/refdata.h"
 #include "testutils/testasserts.h"
@@ -117,7 +125,7 @@ public:
         const char* dimString[] = { "X", "Y", "Z" };
         for (int i = 0; i < DIM; i++)
         {
-            checker.checkSequenceArray(gridSize[i], pme->bsp_mod[i], dimString[i]);
+            checker.checkSequenceArray(gridSize[i], pme->bsp_mod[i].data(), dimString[i]);
         }
     }
 };

@@ -42,20 +42,33 @@
 #ifndef GMX_EWALD_PME_TEST_COMMON_H
 #define GMX_EWALD_PME_TEST_COMMON_H
 
+#include <cstdint>
+
 #include <array>
 #include <map>
+#include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "gromacs/ewald/pme.h"
 #include "gromacs/ewald/pme_gpu_internal.h"
+#include "gromacs/ewald/pme_gpu_program.h"
+#include "gromacs/ewald/pme_output.h"
 #include "gromacs/math/gmxcomplex.h"
 #include "gromacs/mdtypes/state_propagator_data_gpu.h"
 #include "gromacs/utility/message_string_collector.h"
 #include "gromacs/utility/range.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/unique_cptr.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "testutils/test_device.h"
+
+class DeviceContext;
+class DeviceStream;
+struct gmx_pme_t;
+struct t_inputrec;
 
 namespace gmx
 {
@@ -152,7 +165,7 @@ PmeSafePointer pmeInitWrapper(const t_inputrec*    inputRec,
 PmeSafePointer pmeInitEmpty(const t_inputrec* inputRec);
 
 //! Make a GPU state-propagator manager
-std::unique_ptr<StatePropagatorDataGpu> makeStatePropagatorDataGpu(const gmx_pme_t&     pme,
+std::unique_ptr<StatePropagatorDataGpu> makeStatePropagatorDataGpu(const gmx_pme_t& pme,
                                                                    const DeviceContext* deviceContext,
                                                                    const DeviceStream* deviceStream);
 //! PME initialization with atom data and system box
@@ -164,7 +177,7 @@ void pmeInitAtoms(gmx_pme_t*               pme,
 //! PME spline computation and charge spreading
 void pmePerformSplineAndSpread(gmx_pme_t* pme, CodePath mode, bool computeSplines, bool spreadCharges);
 //! PME solving
-void pmePerformSolve(const gmx_pme_t*  pme,
+void pmePerformSolve(gmx_pme_t*        pme,
                      CodePath          mode,
                      PmeSolveAlgorithm method,
                      real              cellVolume,
@@ -189,8 +202,8 @@ void pmeSetSplineData(const gmx_pme_t*             pme,
 //! Setting gridline indices be used in spread/gather
 void pmeSetGridLineIndices(gmx_pme_t* pme, CodePath mode, const GridLineIndicesVector& gridLineIndices);
 //! Setting real grid to be used in gather
-void pmeSetRealGrid(const gmx_pme_t* pme, CodePath mode, const SparseRealGridValuesInput& gridValues);
-void pmeSetComplexGrid(const gmx_pme_t*                    pme,
+void pmeSetRealGrid(gmx_pme_t* pme, CodePath mode, const SparseRealGridValuesInput& gridValues);
+void pmeSetComplexGrid(gmx_pme_t*                          pme,
                        CodePath                            mode,
                        GridOrdering                        gridOrdering,
                        const SparseComplexGridValuesInput& gridValues);
@@ -202,9 +215,9 @@ SplineParamsDimVector pmeGetSplineData(const gmx_pme_t* pme, CodePath mode, PmeS
 //! Getting the gridline indices
 GridLineIndicesVector pmeGetGridlineIndices(const gmx_pme_t* pme, CodePath mode);
 //! Getting the real grid (spreading output of pmePerformSplineAndSpread())
-SparseRealGridValuesOutput pmeGetRealGrid(const gmx_pme_t* pme, CodePath mode);
+SparseRealGridValuesOutput pmeGetRealGrid(gmx_pme_t* pme, CodePath mode);
 //! Getting the complex grid output of pmePerformSolve()
-SparseComplexGridValuesOutput pmeGetComplexGrid(const gmx_pme_t* pme, CodePath mode, GridOrdering gridOrdering);
+SparseComplexGridValuesOutput pmeGetComplexGrid(gmx_pme_t* pme, CodePath mode, GridOrdering gridOrdering);
 //! Getting the reciprocal energy and virial
 PmeOutput pmeGetReciprocalEnergyAndVirial(const gmx_pme_t* pme, CodePath mode, PmeSolveAlgorithm method);
 

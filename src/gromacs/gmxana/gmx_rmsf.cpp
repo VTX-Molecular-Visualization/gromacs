@@ -35,13 +35,18 @@
 
 #include <cassert>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 #include <array>
+#include <filesystem>
+#include <string>
 
+#include "gromacs/commandline/filenm.h"
 #include "gromacs/commandline/pargs.h"
 #include "gromacs/commandline/viewit.h"
 #include "gromacs/fileio/confio.h"
+#include "gromacs/fileio/filetypes.h"
 #include "gromacs/fileio/pdbio.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/fileio/xvgr.h"
@@ -52,14 +57,22 @@
 #include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
 #include "gromacs/math/utilities.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/pbcutil/rmpbc.h"
+#include "gromacs/topology/atoms.h"
 #include "gromacs/topology/index.h"
 #include "gromacs/topology/topology.h"
+#include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/arraysize.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/futil.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
+
+enum class PbcType : int;
+struct gmx_output_env_t;
 
 static real find_pdb_bfac(const t_atoms* atoms, t_resinfo* ri, char* atomnm)
 {
@@ -81,7 +94,7 @@ static real find_pdb_bfac(const t_atoms* atoms, t_resinfo* ri, char* atomnm)
     if (i == atoms->nr)
     {
         fprintf(stderr, "\rCan not find %s%d-%s in pdbfile\n", rresnm, ri->nr, atomnm);
-        fflush(stderr);
+        std::fflush(stderr);
         return 0.0;
     }
 
@@ -228,11 +241,11 @@ int gmx_rmsf(int argc, char* argv[])
         { "-res", FALSE, etBOOL, { &bRes }, "Calculate averages for each residue" },
         { "-aniso", FALSE, etBOOL, { &bAniso }, "Compute anisotropic temperature factors" },
         { "-fit",
-          FALSE,
-          etBOOL,
-          { &bFit },
-          "Do a least squares superposition before computing RMSF. Without this you must "
-          "make sure that the reference structure and the trajectory match." }
+                  FALSE,
+                  etBOOL,
+                  { &bFit },
+                  "Do a least squares superposition before computing RMSF. Without this you must "
+                          "make sure that the reference structure and the trajectory match." }
     };
     int  natom;
     int  i, m;

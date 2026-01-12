@@ -42,13 +42,15 @@
 #ifndef GMX_MDRUN_BOXDEFORMATION_H
 #define GMX_MDRUN_BOXDEFORMATION_H
 
+#include <cstdint>
+
 #include <memory>
 
 #include "gromacs/math/matrix.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/classhelpers.h"
 #include "gromacs/utility/gmxmpi.h"
+#include "gromacs/utility/vectypes.h"
 
 struct t_inputrec;
 enum class DDRole;

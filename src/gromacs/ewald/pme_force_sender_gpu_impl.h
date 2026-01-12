@@ -49,6 +49,11 @@
 #include "gromacs/gpu_utils/devicebuffer_datatype.h"
 #include "gromacs/gpu_utils/gputraits.h"
 #include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/basedefinitions.h"
+
+#if defined(__cplusplus) && __cplusplus >= 202002L
+#    include <version>
+#endif
 
 // Portable definition of cache line size
 #ifdef __cpp_lib_hardware_interference_size
@@ -62,11 +67,21 @@ class GpuEventSynchronizer;
 namespace gmx
 {
 
-/*! \internal \brief Class with interfaces and data for CUDA version of PME Force sending functionality*/
+/*! \internal \brief Class with interfaces and data for GPU version of PME Force sending functionality*/
 
 typedef struct CacheLineAlignedFlag
 {
+    // gcc 12+ warns about such uses in header files in case they
+    // could make a public ABI dependent on the compilation flags.
+    // This is an internal header, so we silence gcc. We could
+    // do this better if we had a proper CMake target
+#if defined(__GNUC__) && __GNUC__ > 11
+    GCC_DIAGNOSTIC_IGNORE("-Winterference-size")
+#endif
     alignas(hardware_destructive_interference_size) bool flag;
+#if defined(__GNUC__) && __GNUC__ > 11
+    GCC_DIAGNOSTIC_RESET
+#endif
 } CacheLineAlignedFlag;
 
 /*! \internal
@@ -138,8 +153,6 @@ private:
     MPI_Comm comm_;
     //! list of PP ranks
     gmx::ArrayRef<PpRanks> ppRanks_;
-    //! GPU context handle (not used in CUDA)
-    const DeviceContext& deviceContext_;
     //! Whether GPU to CPU communication should be staged as GPU to
     //! GPU via P2P cudaMemcpy, then local D2H, for thread-MPI This
     //! may be beneficial when using servers with direct links between

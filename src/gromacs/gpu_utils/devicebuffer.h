@@ -56,6 +56,8 @@
 
 #if GMX_GPU_CUDA
 #    include "gromacs/gpu_utils/devicebuffer.cuh"
+#elif GMX_GPU_HIP
+#    include "gromacs/gpu_utils/devicebuffer_hip.h"
 #elif GMX_GPU_OPENCL
 #    include "gromacs/gpu_utils/devicebuffer_ocl.h"
 #elif GMX_GPU_SYCL
@@ -99,7 +101,8 @@ void reallocateDeviceBuffer(DeviceBuffer<ValueType>* buffer,
     if (symmetricAlloc)
     {
 #if GMX_NVSHMEM
-        GMX_RELEASE_ASSERT((nvshmemx_init_status() == NVSHMEM_STATUS_IS_INITIALIZED),
+        GMX_RELEASE_ASSERT((nvshmemx_init_status() == NVSHMEM_STATUS_IS_INITIALIZED)
+                                   || (nvshmemx_init_status() == NVSHMEM_STATUS_FULL_MPG),
                            "NVSHMEM is not initialized.");
 #else
         GMX_RELEASE_ASSERT(0, "Symmetric allocation works with NVSHMEM builds.");

@@ -45,7 +45,7 @@
 
 #include "gromacs/gpu_utils/cudautils.cuh"
 #include "gromacs/gpu_utils/devicebuffer.h"
-#include "gromacs/gpu_utils/typecasts.cuh"
+#include "gromacs/gpu_utils/typecasts_cuda_hip.h"
 #include "gromacs/hardware/device_information.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/exceptions.h"
@@ -109,9 +109,9 @@ void convertRVecToFloat3OnDevice(ArrayRef<gmx::RVec>       h_rVecOutput,
                                  ArrayRef<const gmx::RVec> h_rVecInput,
                                  const TestDevice*         testDevice)
 {
-    testDevice->activate();
     const DeviceContext& deviceContext = testDevice->deviceContext();
     const DeviceStream&  deviceStream  = testDevice->deviceStream();
+    deviceContext.activate();
 
     const int numElements = h_rVecInput.size();
 
@@ -126,7 +126,7 @@ void convertRVecToFloat3OnDevice(ArrayRef<gmx::RVec>       h_rVecOutput,
     std::vector<float3> h_float3Output(numElements);
 
     KernelLaunchConfig kernelLaunchConfig;
-    kernelLaunchConfig.gridSize[0]      = (numElements + c_threadsPerBlock - 1) / c_threadsPerBlock;
+    kernelLaunchConfig.gridSize[0]      = gmx::divideRoundUp(numElements, c_threadsPerBlock);
     kernelLaunchConfig.blockSize[0]     = c_threadsPerBlock;
     kernelLaunchConfig.blockSize[1]     = 1;
     kernelLaunchConfig.blockSize[2]     = 1;

@@ -36,30 +36,42 @@
 #include "trjcat.h"
 
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
 #include <algorithm>
+#include <filesystem>
 #include <string>
+#include <vector>
 
+#include "gromacs/commandline/filenm.h"
 #include "gromacs/commandline/pargs.h"
 #include "gromacs/fileio/confio.h"
+#include "gromacs/fileio/filetypes.h"
 #include "gromacs/fileio/gmxfio.h"
+#include "gromacs/fileio/oenv.h"
 #include "gromacs/fileio/pdbio.h"
 #include "gromacs/fileio/tngio.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/fileio/xtcio.h"
 #include "gromacs/fileio/xvgr.h"
-#include "gromacs/math/vec.h"
+#include "gromacs/math/functions.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/topology/index.h"
 #include "gromacs/trajectory/trajectoryframe.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/arraysize.h"
+#include "gromacs/utility/basedefinitions.h"
+#include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/futil.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/vec.h"
+
+struct gmx_output_env_t;
 
 #define TIME_EXPLICIT 0
 #define TIME_CONTINUE 1
@@ -212,7 +224,7 @@ static void edit_files(gmx::ArrayRef<std::string> files,
             ok = FALSE;
             do
             {
-                if (nullptr == fgets(inputstring, STRLEN - 1, stdin))
+                if (nullptr == std::fgets(inputstring, STRLEN - 1, stdin))
                 {
                     gmx_fatal(FARGS, "Error reading user input");
                 }
@@ -235,7 +247,7 @@ static void edit_files(gmx::ArrayRef<std::string> files,
                 }
                 else
                 {
-                    settime[i] = strtod(inputstring, &chptr) * output_env_get_time_invfactor(oenv);
+                    settime[i] = std::strtod(inputstring, &chptr) * output_env_get_time_invfactor(oenv);
                     if (chptr == inputstring)
                     {
                         fprintf(stderr,
@@ -482,7 +494,7 @@ int gmx_trjcat(int argc, char* argv[])
         { "-cat", FALSE, etBOOL, { &bCat }, "Do not discard double time frames" }
     };
 #define npargs asize(pa)
-    int               ftpin, i, frame, frame_out;
+    int               ftpin, frame, frame_out;
     t_trxstatus *     status, *trxout = nullptr;
     real              t_corr;
     t_trxframe        fr, frout;
@@ -493,7 +505,7 @@ int gmx_trjcat(int argc, char* argv[])
     real              first_time = 0, lasttime = 0, last_ok_t = -1, timestep;
     gmx_bool          lastTimeSet = FALSE;
     real              last_frame_time, searchtime;
-    int               isize = 0, j;
+    int               isize = 0;
     int *             index = nullptr, imax;
     char*             grpname;
     real **           val = nullptr, *t = nullptr, dt_remd;
@@ -501,9 +513,9 @@ int gmx_trjcat(int argc, char* argv[])
     gmx_off_t         fpos;
     gmx_output_env_t* oenv;
     t_filenm          fnm[] = { { efTRX, "-f", nullptr, ffRDMULT },
-                       { efTRO, "-o", nullptr, ffWRMULT },
-                       { efNDX, "-n", "index", ffOPTRD },
-                       { efXVG, "-demux", "remd", ffOPTRD } };
+                                { efTRO, "-o", nullptr, ffWRMULT },
+                                { efNDX, "-n", "index", ffOPTRD },
+                                { efXVG, "-demux", "remd", ffOPTRD } };
 
 #define NFILE asize(fnm)
 
@@ -514,7 +526,7 @@ int gmx_trjcat(int argc, char* argv[])
     }
     fprintf(stdout,
             "Note that major changes are planned in future for "
-            "trjcat, to improve usability and utility.");
+            "trjcat, to improve usability and utility.\n");
 
     auto timeUnit = output_env_get_time_unit(oenv);
 
@@ -529,7 +541,7 @@ int gmx_trjcat(int argc, char* argv[])
         rd_index(ftp2fn(efNDX, NFILE, fnm), 1, &isize, &index, &grpname);
         /* scan index */
         imax = index[0];
-        for (i = 1; i < isize; i++)
+        for (int i = 1; i < isize; i++)
         {
             imax = std::max(imax, index[i]);
         }
@@ -553,10 +565,10 @@ int gmx_trjcat(int argc, char* argv[])
         if (debug)
         {
             fprintf(debug, "Dump of replica_index.xvg\n");
-            for (i = 0; (i < n); i++)
+            for (int i = 0; (i < n); i++)
             {
                 fprintf(debug, "%10g", t[i]);
-                for (j = 0; (j < nset); j++)
+                for (int j = 0; (j < nset); j++)
                 {
                     fprintf(debug, "  %3d", static_cast<int>(std::round(val[j][i])));
                 }
@@ -571,7 +583,7 @@ int gmx_trjcat(int argc, char* argv[])
         gmx_fatal(FARGS, "No input files!");
     }
 
-    if (bDeMux && ssize(inFiles) != nset)
+    if (bDeMux && gmx::ssize(inFiles) != nset)
     {
         gmx_fatal(FARGS, "You have specified %td files and %d entries in the demux table", inFiles.ssize(), nset);
     }
@@ -601,7 +613,7 @@ int gmx_trjcat(int argc, char* argv[])
         gmx_fatal(FARGS,
                   "Don't know what to do with more than 1 output file if  not demultiplexing");
     }
-    else if (bDeMux && ssize(outFiles) != nset && outFiles.size() != 1)
+    else if (bDeMux && gmx::ssize(outFiles) != nset && outFiles.size() != 1)
     {
         gmx_fatal(FARGS,
                   "Number of output files should be 1 or %d (#input files), not %td",
@@ -615,7 +627,7 @@ int gmx_trjcat(int argc, char* argv[])
         {
             std::string name = outFilesDemux[0];
             outFilesDemux.resize(nset);
-            for (i = 0; (i < nset); i++)
+            for (int i = 0; (i < nset); i++)
             {
                 outFilesDemux[i] = gmx::formatString("%d_%s", i, name.c_str());
             }
@@ -943,7 +955,7 @@ int gmx_trjcat(int argc, char* argv[])
                                     frame_out,
                                     output_env_conv_time(oenv, frout.time),
                                     timeUnit.c_str());
-                            fflush(stderr);
+                            std::fflush(stderr);
                         }
                     }
                 }

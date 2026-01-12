@@ -47,6 +47,9 @@
 #include <cstring>
 
 #include <algorithm>
+#include <filesystem>
+#include <string>
+#include <vector>
 
 #include "gromacs/correlationfunctions/expfit.h"
 #include "gromacs/correlationfunctions/integrate.h"
@@ -54,13 +57,14 @@
 #include "gromacs/correlationfunctions/polynomials.h"
 #include "gromacs/fileio/xvgr.h"
 #include "gromacs/math/functions.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/utility/arraysize.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/futil.h"
 #include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/strconvert.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
 
 /*! \brief Shortcut macro to select modes. */
 #define MODE(x) ((mode & (x)) == (x))
@@ -106,13 +110,13 @@ static void low_do_four_core(int nframes, real c1[], real cfour[], int nCos)
         case enCos:
             for (i = 0; (i < nframes); i++)
             {
-                data[0][i] = cos(c1[i]);
+                data[0][i] = std::cos(c1[i]);
             }
             break;
         case enSin:
             for (i = 0; (i < nframes); i++)
             {
-                data[0][i] = sin(c1[i]);
+                data[0][i] = std::sin(c1[i]);
             }
             break;
         default: gmx_fatal(FARGS, "nCos = %d, %s %d", nCos, __FILE__, __LINE__);
@@ -130,7 +134,6 @@ static void do_ac_core(int nframes, int nout, real corr[], real c1[], int nresta
 {
     int  j, k, j3, jk3, m, n;
     real ccc, cth;
-    rvec xj, xk;
 
     if (nrestart < 1)
     {
@@ -179,6 +182,7 @@ static void do_ac_core(int nframes, int nout, real corr[], real c1[], int nresta
             {
                 unsigned int mmm;
 
+                rvec xj, xk;
                 for (m = 0; (m < DIM); m++)
                 {
                     xj[m] = c1[j3 + m];
@@ -223,6 +227,7 @@ static void do_ac_core(int nframes, int nout, real corr[], real c1[], int nresta
             }
             else if (MODE(eacVector))
             {
+                rvec xj, xk;
                 for (m = 0; (m < DIM); m++)
                 {
                     xj[m] = c1[j3 + m];
@@ -241,7 +246,7 @@ static void do_ac_core(int nframes, int nout, real corr[], real c1[], int nresta
     /* Correct for the number of points and copy results to the data array */
     for (j = 0; (j < nout); j++)
     {
-        n     = (nframes - j + (nrestart - 1)) / nrestart;
+        n     = gmx::divideRoundUp(nframes - j, nrestart);
         c1[j] = corr[j] / n;
     }
 }
@@ -264,7 +269,7 @@ static void normalize_acf(int nout, real corr[])
     /* Normalisation makes that c[0] = 1.0 and that other points are scaled
      * accordingly.
      */
-    if (fabs(corr[0]) < 1e-5)
+    if (std::fabs(corr[0]) < 1e-5)
     {
         c0 = 1.0;
     }
@@ -327,7 +332,7 @@ static void norm_and_scale_vectors(int nframes, real c1[], real scale)
 }
 
 /*! \brief Debugging */
-static void dump_tmp(char* s, int n, real c[])
+static void dump_tmp(const char* s, int n, real c[])
 {
     FILE* fp;
     int   i;
@@ -549,7 +554,6 @@ void low_do_autocorr(const char*             fn,
                      int                     eFitFn)
 {
     FILE *   fp, *gp = nullptr;
-    int      i;
     real*    csum;
     real *   ctmp, *fit;
     real     sum, Ct2av, Ctav;
@@ -606,7 +610,7 @@ void low_do_autocorr(const char*             fn,
         if (bVerbose && (((i % 100) == 0) || (i == nitem - 1)))
         {
             fprintf(stderr, "\rThingie %d", i + 1);
-            fflush(stderr);
+            std::fflush(stderr);
         }
 
         if (bFour)
@@ -669,7 +673,7 @@ void low_do_autocorr(const char*             fn,
         {
             gp = xvgropen("ct-distr.xvg", "Correlation times", "item", "time (ps)", oenv);
         }
-        for (i = 0; i < nitem; i++)
+        for (int i = 0; i < nitem; i++)
         {
             if (bNormalize)
             {
@@ -690,12 +694,12 @@ void low_do_autocorr(const char*             fn,
             }
             Ctav += sum;
             Ct2av += sum * sum;
-            if (debug)
+            if (gp)
             {
                 fprintf(gp, "%5d  %.3f\n", i, sum);
             }
         }
-        if (debug)
+        if (gp)
         {
             xvgrclose(gp);
         }

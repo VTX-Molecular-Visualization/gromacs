@@ -35,11 +35,13 @@
 #ifndef GMX_FILEIO_XTCIO_H
 #define GMX_FILEIO_XTCIO_H
 
+#include <cstdint>
+
 #include <filesystem>
 
-#include "gromacs/math/vectypes.h"
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/real.h"
+#include "gromacs/utility/vectypes.h"
 
 struct t_fileio;
 

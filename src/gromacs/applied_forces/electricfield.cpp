@@ -43,15 +43,19 @@
 #include "electricfield.h"
 
 #include <cmath>
+#include <cstdio>
 
+#include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "gromacs/commandline/filenm.h"
 #include "gromacs/fileio/gmxfio.h"
 #include "gromacs/fileio/xvgr.h"
+#include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
-#include "gromacs/mdtypes/commrec.h"
 #include "gromacs/mdtypes/forceoutput.h"
 #include "gromacs/mdtypes/iforceprovider.h"
 #include "gromacs/mdtypes/imdmodule.h"
@@ -60,14 +64,22 @@
 #include "gromacs/options/basicoptions.h"
 #include "gromacs/options/ioptionscontainerwithsections.h"
 #include "gromacs/options/optionsection.h"
+#include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/keyvaluetreebuilder.h"
 #include "gromacs/utility/keyvaluetreetransform.h"
+#include "gromacs/utility/mpicomm.h"
 #include "gromacs/utility/pleasecite.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/strconvert.h"
+#include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/vectypes.h"
+
+struct gmx_output_env_t;
 
 namespace gmx
 {
+struct MDModulesNotifiers;
 
 namespace
 {
@@ -176,6 +188,7 @@ public:
                          ForceProviderOutput*      forceProviderOutput) override;
 
     void subscribeToSimulationSetupNotifications(MDModulesNotifiers* /* notifiers */) override {}
+    void subscribeToSimulationRunNotifications(MDModulesNotifiers* /* notifiers */) override {}
     void subscribeToPreProcessingNotifications(MDModulesNotifiers* /* notifiers */) override {}
 
 private:
@@ -306,8 +319,8 @@ void ElectricField::calculateForces(const ForceProviderInput& forceProviderInput
 {
     if (isActive())
     {
-        const double     t  = forceProviderInput.t_;
-        const t_commrec& cr = forceProviderInput.cr_;
+        const double   t       = forceProviderInput.t_;
+        const MpiComm& mpiComm = forceProviderInput.mpiComm_;
 
         // NOTE: The non-conservative electric field does not have a virial
         ArrayRef<RVec> f = forceProviderOutput->forceWithVirial_.force_;
@@ -327,7 +340,7 @@ void ElectricField::calculateForces(const ForceProviderInput& forceProviderInput
                 }
             }
         }
-        if (MAIN(&cr) && fpField_ != nullptr)
+        if (mpiComm.isMainRank() && fpField_ != nullptr)
         {
             printComponents(t);
         }
@@ -336,7 +349,7 @@ void ElectricField::calculateForces(const ForceProviderInput& forceProviderInput
 
 } // namespace
 
-std::unique_ptr<IMDModule> createElectricFieldModule()
+std::unique_ptr<IMDModule> ElectricFieldModuleInfo::create()
 {
     return std::make_unique<ElectricField>();
 }

@@ -225,11 +225,17 @@
 
 #include <cstdarg>
 #include <cstdio>
+#include <cstring>
 
 #include <exception>
 #include <memory>
 
+#include "gromacs/selection/indexutil.h"
+#include "gromacs/selection/position.h"
 #include "gromacs/selection/selection.h"
+#include "gromacs/selection/selparam.h"
+#include "gromacs/selection/selvalue.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/smalloc.h"
@@ -329,13 +335,13 @@ namespace gmx
 SelectionParserValue::SelectionParserValue(e_selvalue_t type, const SelectionLocation& location) :
     type_(type), location_(location)
 {
-    memset(&u, 0, sizeof(u));
+    std::memset(&u, 0, sizeof(u));
 }
 
 SelectionParserValue::SelectionParserValue(const SelectionTreeElementPointer& expr) :
     type_(expr->v.type), expr_(expr), location_(expr->location())
 {
-    memset(&u, 0, sizeof(u));
+    std::memset(&u, 0, sizeof(u));
 }
 
 /********************************************************************
@@ -493,7 +499,7 @@ void _gmx_selelem_init_method_params(const gmx::SelectionTreeElementPointer& sel
     snew(param, nparams);
     if (nparams > 0)
     {
-        memcpy(param, orgparam, nparams * sizeof(gmx_ana_selparam_t));
+        std::memcpy(param, orgparam, nparams * sizeof(gmx_ana_selparam_t));
     }
     for (i = 0; i < nparams; ++i)
     {
@@ -515,7 +521,7 @@ void _gmx_selelem_init_method_params(const gmx::SelectionTreeElementPointer& sel
                 ++n;
             }
             _gmx_selvalue_reserve(&param[i].val, n + 1);
-            memcpy(param[i].val.u.s, orgparam[i].val.u.s, (n + 1) * sizeof(param[i].val.u.s[0]));
+            std::memcpy(param[i].val.u.s, orgparam[i].val.u.s, (n + 1) * sizeof(param[i].val.u.s[0]));
         }
     }
     mdata = nullptr;
@@ -549,7 +555,7 @@ void _gmx_selelem_set_method(const gmx::SelectionTreeElementPointer& sel,
     _gmx_selelem_set_vtype(sel, method->type);
     sel->setName(method->name);
     snew(sel->u.expr.method, 1);
-    memcpy(sel->u.expr.method, method, sizeof(gmx_ana_selmethod_t));
+    std::memcpy(sel->u.expr.method, method, sizeof(gmx_ana_selmethod_t));
     _gmx_selelem_init_method_params(sel, scanner);
 }
 
@@ -593,17 +599,16 @@ gmx::SelectionTreeElementPointer _gmx_sel_init_arithmetic(const gmx::SelectionTr
     sel->v.type = REAL_VALUE;
     switch (op)
     {
-        case '+': sel->u.arith.type = ARITH_PLUS; break;
-        case '-': sel->u.arith.type = (right ? ARITH_MINUS : ARITH_NEG); break;
-        case '*': sel->u.arith.type = ARITH_MULT; break;
-        case '/': sel->u.arith.type = ARITH_DIV; break;
-        case '^': sel->u.arith.type = ARITH_EXP; break;
+        case '+': sel->u.type = ARITH_PLUS; break;
+        case '-': sel->u.type = (right ? ARITH_MINUS : ARITH_NEG); break;
+        case '*': sel->u.type = ARITH_MULT; break;
+        case '/': sel->u.type = ARITH_DIV; break;
+        case '^': sel->u.type = ARITH_EXP; break;
     }
-    char buf[2]{ op, 0 };
+    std::string buf(1, op);
     sel->setName(buf);
-    sel->u.arith.opstr = gmx_strdup(buf);
-    sel->child         = left;
-    sel->child->next   = right;
+    sel->child       = left;
+    sel->child->next = right;
     return sel;
 }
 

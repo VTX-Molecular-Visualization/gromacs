@@ -43,8 +43,11 @@
 
 #include "virials.h"
 
+#include <algorithm>
+
 #include "gromacs/mdlib/calcvir.h"
 #include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "nblib/box.h"
 #include "nblib/exception.h"

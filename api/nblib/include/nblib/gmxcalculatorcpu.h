@@ -46,9 +46,14 @@
 #ifndef NBLIB_GMXCALCULATORCPU_H
 #define NBLIB_GMXCALCULATORCPU_H
 
+#include <cstdint>
+
 #include <memory>
 #include <vector>
 
+#include "gromacs/utility/vectypes.h"
+
+#include "nblib/basicdefinitions.h"
 #include "nblib/box.h"
 #include "nblib/vector.h"
 
@@ -70,7 +75,7 @@ public:
     GmxNBForceCalculatorCpu(gmx::ArrayRef<int>     particleTypeIdOfAllParticles,
                             gmx::ArrayRef<real>    nonBondedParams,
                             gmx::ArrayRef<real>    charges,
-                            gmx::ArrayRef<int64_t> particleInteractionFlags,
+                            gmx::ArrayRef<int32_t> particleInteractionFlags,
                             gmx::ArrayRef<int>     exclusionRanges,
                             gmx::ArrayRef<int>     exclusionElements,
                             const NBKernelOptions& options);

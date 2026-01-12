@@ -59,7 +59,7 @@ External material
 * `Lipidbook <https://www.lipidbook.org/>`_ is a public repository for force-field parameters of lipids,
   detergents and other molecules that are used in
   the simulation of membranes and membrane proteins. It is described in: J. Domański, P. Stansfeld, M.S.P. Sansom,
-  and O. Beckstein. J. Membrane Biol. 236 (2010), 255—258. `doi:10.1007/s00232-010-9296-8 <http://dx.doi.org/10.1007/s00232-010-9296-8>`_.
+  and O. Beckstein. J. Membrane Biol. 236 (2010), 255—258. `doi:10.1007/s00232-010-9296-8 <https://doi.org/10.1007/s00232-010-9296-8>`_.
 
 
 Parameterization of novel molecules
@@ -192,7 +192,7 @@ Taken from Robert Johnson's posts on the `gmx-users mailing list archive`_.
   chemical bond. Thus, when you use :ref:`grompp <gmx grompp>` you won't get an error
   about a single bonded C.
 
- 
+
 Andrea Minoia's tutorial
 ^^^^^^^^^^^^^^^^^^^^^^^^
 

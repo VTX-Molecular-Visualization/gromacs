@@ -47,24 +47,33 @@
 
 #include "config.h"
 
+#include <cmath>
+#include <cstdio>
+
+#include <filesystem>
+#include <memory>
+
 #include "gromacs/domdec/domdec.h"
 #include "gromacs/domdec/domdec_network.h"
 #include "gromacs/domdec/domdec_struct.h"
 #include "gromacs/domdec/nsgrid.h"
 #include "gromacs/gmxlib/network.h"
 #include "gromacs/math/functions.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/mdtypes/commrec.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/topology/block.h"
+#include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/mpicomm.h"
+#include "gromacs/utility/real.h"
+#include "gromacs/utility/vec.h"
 
 #include "domdec_internal.h"
 
 /*! \brief Calculates the average and standard deviation in 3D of atoms */
-static void calc_pos_av_stddev(gmx::ArrayRef<const gmx::RVec> x, rvec av, rvec stddev, const MPI_Comm* mpiCommunicator)
+static void calc_pos_av_stddev(gmx::ArrayRef<const gmx::RVec> x, rvec av, rvec stddev, const gmx::MpiComm* mpiComm)
 {
     dvec s1, s2;
 
@@ -82,32 +91,26 @@ static void calc_pos_av_stddev(gmx::ArrayRef<const gmx::RVec> x, rvec av, rvec s
 
     /* With mpiCommunicator != nullptr, x.size() is the home atom count */
     int numAtoms = x.size();
-#if GMX_MPI
-    if (mpiCommunicator)
+    if (mpiComm && mpiComm->isParallel())
     {
-        constexpr int c_bufSize = 7;
-        double        sendBuffer[c_bufSize];
-        double        receiveBuffer[c_bufSize];
+        std::array<double, 7> buffer;
 
         for (int d = 0; d < DIM; d++)
         {
-            sendBuffer[d]       = s1[d];
-            sendBuffer[DIM + d] = s2[d];
+            buffer[d]       = s1[d];
+            buffer[DIM + d] = s2[d];
         }
-        sendBuffer[6] = numAtoms;
+        buffer[6] = numAtoms;
 
-        MPI_Allreduce(sendBuffer, receiveBuffer, c_bufSize, MPI_DOUBLE, MPI_SUM, *mpiCommunicator);
+        mpiComm->sumReduce(buffer);
 
         for (int d = 0; d < DIM; d++)
         {
-            s1[d] = receiveBuffer[d];
-            s2[d] = receiveBuffer[DIM + d];
+            s1[d] = buffer[d];
+            s2[d] = buffer[DIM + d];
         }
-        numAtoms = gmx::roundToInt(receiveBuffer[6]);
+        numAtoms = gmx::roundToInt(buffer[6]);
     }
-#else  // GMX_MPI
-    GMX_UNUSED_VALUE(mpiCommunicator);
-#endif // GMX_MPI
 
     dsvmul(1.0 / numAtoms, s1, s1);
     dsvmul(1.0 / numAtoms, s2, s2);
@@ -120,7 +123,7 @@ static void calc_pos_av_stddev(gmx::ArrayRef<const gmx::RVec> x, rvec av, rvec s
 }
 
 /*! \brief Determines if dimensions require triclinic treatment and stores this info in ddbox */
-static void set_tric_dir(const ivec* dd_nc, gmx_ddbox_t* ddbox, const matrix box)
+static void set_tric_dir(const gmx::IVec* numDomains, gmx_ddbox_t* ddbox, const matrix box)
 {
     int   npbcdim = ddbox->npbcdim;
     rvec* normal  = ddbox->normal;
@@ -132,15 +135,15 @@ static void set_tric_dir(const ivec* dd_nc, gmx_ddbox_t* ddbox, const matrix box
             if (box[j][d] != 0)
             {
                 ddbox->tric_dir[d] = 1;
-                if (dd_nc != nullptr && (*dd_nc)[j] > 1 && (*dd_nc)[d] == 1)
+                if (numDomains != nullptr && (*numDomains)[j] > 1 && (*numDomains)[d] == 1)
                 {
                     gmx_fatal(FARGS,
                               "Domain decomposition has not been implemented for box vectors that "
                               "have non-zero components in directions that do not use domain "
                               "decomposition: ncells = %d %d %d, box vector[%d] = %f %f %f",
-                              (*dd_nc)[XX],
-                              (*dd_nc)[YY],
-                              (*dd_nc)[ZZ],
+                              (*numDomains)[XX],
+                              (*numDomains)[YY],
+                              (*numDomains)[ZZ],
                               j + 1,
                               box[j][XX],
                               box[j][YY],
@@ -154,7 +157,7 @@ static void set_tric_dir(const ivec* dd_nc, gmx_ddbox_t* ddbox, const matrix box
          * v[i][i]=1 and v[i][d]!=0 for triclinic dimensions, while the third
          * component is zero. These are used for computing the distance
          * to a triclinic plane given the distance along dimension d.
-         * Set the trilinic skewing factor that translates
+         * Set the triclinic skewing factor that translates
          * the thickness of a slab perpendicular to this dimension
          * into the real thickness of the slab.
          */
@@ -230,11 +233,11 @@ static void set_tric_dir(const ivec* dd_nc, gmx_ddbox_t* ddbox, const matrix box
 /*! \brief This function calculates bounding box and pbc info and populates ddbox */
 static void low_set_ddbox(int                            numPbcDimensions,
                           int                            numBoundedDimensions,
-                          const ivec*                    dd_nc,
+                          const gmx::IVec*               numDomains,
                           const matrix                   box,
                           bool                           calculateUnboundedSize,
                           gmx::ArrayRef<const gmx::RVec> x,
-                          const MPI_Comm*                mpiCommunicator,
+                          const gmx::MpiComm*            mpiComm,
                           gmx_ddbox_t*                   ddbox)
 {
     rvec av, stddev;
@@ -250,7 +253,7 @@ static void low_set_ddbox(int                            numPbcDimensions,
 
     if (ddbox->nboundeddim < DIM && calculateUnboundedSize)
     {
-        calc_pos_av_stddev(x, av, stddev, mpiCommunicator);
+        calc_pos_av_stddev(x, av, stddev, mpiComm);
 
         /* c_gridStdDevFactor * stddev
          * gives a uniform load for a rectangular block of cg's.
@@ -269,7 +272,7 @@ static void low_set_ddbox(int                            numPbcDimensions,
         }
     }
 
-    set_tric_dir(dd_nc, ddbox, box);
+    set_tric_dir(numDomains, ddbox, box);
 }
 
 void set_ddbox(const gmx_domdec_t&            dd,
@@ -291,7 +294,7 @@ void set_ddbox(const gmx_domdec_t&            dd,
                       box,
                       calculateUnboundedSize,
                       xRef,
-                      needToReduceCoordinateData ? &dd.mpi_comm_all : nullptr,
+                      needToReduceCoordinateData ? &dd.mpiComm() : nullptr,
                       ddbox);
     }
 
@@ -301,24 +304,24 @@ void set_ddbox(const gmx_domdec_t&            dd,
     }
 }
 
-void set_ddbox_cr(DDRole                         ddRole,
-                  MPI_Comm                       communicator,
-                  const ivec*                    dd_nc,
-                  const t_inputrec&              ir,
-                  const matrix                   box,
-                  gmx::ArrayRef<const gmx::RVec> x,
-                  gmx_ddbox_t*                   ddbox)
+void set_ddbox_MpiComm(DDRole                         ddRole,
+                       const gmx::MpiComm&            mpiComm,
+                       const gmx::IVec*               numDomains,
+                       const t_inputrec&              ir,
+                       const matrix                   box,
+                       gmx::ArrayRef<const gmx::RVec> x,
+                       gmx_ddbox_t*                   ddbox)
 {
     if (ddRole == DDRole::Main)
     {
         low_set_ddbox(
-                numPbcDimensions(ir.pbcType), inputrec2nboundeddim(&ir), dd_nc, box, true, x, nullptr, ddbox);
+                numPbcDimensions(ir.pbcType), inputrec2nboundeddim(&ir), numDomains, box, true, x, nullptr, ddbox);
     }
 
-    gmx_bcast(sizeof(gmx_ddbox_t), ddbox, communicator);
+    gmx_bcast(sizeof(gmx_ddbox_t), ddbox, mpiComm.comm());
 }
 
-gmx_ddbox_t get_ddbox(const ivec&                    numDomains,
+gmx_ddbox_t get_ddbox(const gmx::IVec&               numDomains,
                       const t_inputrec&              ir,
                       const matrix                   box,
                       gmx::ArrayRef<const gmx::RVec> x)

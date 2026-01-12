@@ -44,10 +44,11 @@
 #ifndef GMX_MDLIB_BROADCASTSTRUCTS_H
 #define GMX_MDLIB_BROADCASTSTRUCTS_H
 
+#include <cstddef>
+
 #include <vector>
 
 #include "gromacs/gmxlib/network.h"
-#include "gromacs/mdtypes/commrec.h"
 #include "gromacs/utility/smalloc.h"
 
 struct gmx_mtop_t;

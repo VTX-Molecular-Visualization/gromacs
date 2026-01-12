@@ -42,14 +42,24 @@
 
 #include "gromacs/mdlib/freeenergyparameters.h"
 
+#include <cstdint>
+
+#include <algorithm>
+#include <string>
+#include <vector>
+
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/enumerationhelpers.h"
+#include "gromacs/utility/real.h"
 
 #include "testutils/testasserts.h"
 #include "testutils/testmatchers.h"
+
+enum class FreeEnergyPerturbationCouplingType : int;
 
 
 namespace gmx
@@ -133,9 +143,9 @@ public:
     t_lambda getFepVals()
     {
         t_lambda fepvals;
-        fepvals.init_fep_state = GetParam().initFepState;
-        fepvals.init_lambda    = GetParam().initLambda;
-        fepvals.delta_lambda   = GetParam().deltaLambda;
+        fepvals.init_fep_state             = GetParam().initFepState;
+        fepvals.init_lambda_without_states = GetParam().initLambda;
+        fepvals.delta_lambda               = GetParam().deltaLambda;
         std::fill(fepvals.all_lambda.begin(),
                   fepvals.all_lambda.end(),
                   defaultLambdaArrayForTest_[GetParam().nLambda]);

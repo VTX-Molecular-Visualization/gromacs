@@ -66,15 +66,16 @@ constexpr int c_stateB = 1;
 
 static int chooseSubGroupSizeForDevice(const DeviceInformation& deviceInfo)
 {
-    if (deviceInfo.supportedSubGroupSizesSize == 1)
+    if (deviceInfo.supportedSubGroupSizes.size() == 1)
     {
-        return deviceInfo.supportedSubGroupSizesData[0];
+        return deviceInfo.supportedSubGroupSizes[0];
     }
-    else if (deviceInfo.supportedSubGroupSizesSize > 1)
+    else if (deviceInfo.supportedSubGroupSizes.size() > 1)
     {
         switch (deviceInfo.deviceVendor)
         {
             case DeviceVendor::Intel: return 16; // TODO: Choose best value, Issue #4153.
+            case DeviceVendor::PoclCpu: return 16;
             default:
                 GMX_RELEASE_ASSERT(false, "Flexible sub-groups only supported for Intel GPUs");
                 return 0;
@@ -125,7 +126,7 @@ static int chooseSubGroupSizeForDevice(const DeviceInformation& deviceInfo)
     INSTANTIATE_X(GATHER, order, subGroupSize); \
     INSTANTIATE_SOLVE(subGroupSize);
 
-#if GMX_SYCL_DPCPP
+#if GMX_SYCL_DPCPP || GMX_ACPP_HAVE_GENERIC_TARGET
 INSTANTIATE(4, 16);
 #endif
 INSTANTIATE(4, 32);
@@ -211,10 +212,10 @@ PmeGpuProgramImpl::PmeGpuProgramImpl(const DeviceContext& deviceContext) :
     // kernel parameters
     const DeviceInformation& deviceInfo = deviceContext.deviceInfo();
     warpSize_                           = chooseSubGroupSizeForDevice(deviceInfo);
-    GMX_RELEASE_ASSERT(std::find(deviceInfo.supportedSubGroupSizes().begin(),
-                                 deviceInfo.supportedSubGroupSizes().end(),
+    GMX_RELEASE_ASSERT(std::find(deviceInfo.supportedSubGroupSizes.begin(),
+                                 deviceInfo.supportedSubGroupSizes.end(),
                                  warpSize_)
-                               != deviceInfo.supportedSubGroupSizes().end(),
+                               != deviceInfo.supportedSubGroupSizes.end(),
                        "Device does not support selected sub-group size");
     spreadWorkGroupSize   = c_spreadMaxWarpsPerBlock * warpSize_;
     solveMaxWorkGroupSize = c_solveMaxWarpsPerBlock * warpSize_;
@@ -222,7 +223,7 @@ PmeGpuProgramImpl::PmeGpuProgramImpl(const DeviceContext& deviceContext) :
 
     switch (warpSize_)
     {
-#if GMX_SYCL_DPCPP
+#if GMX_SYCL_DPCPP || GMX_ACPP_HAVE_GENERIC_TARGET
         case 16: setKernelPointers<16>(this); break;
 #endif
         case 32: setKernelPointers<32>(this); break;

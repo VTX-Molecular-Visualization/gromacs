@@ -36,25 +36,28 @@
 #include "coupling.h"
 
 #include <cassert>
+#include <cinttypes>
 #include <cmath>
 
 #include <algorithm>
+#include <filesystem>
 #include <numeric>
+#include <string>
 
 #include "gromacs/domdec/domdec_struct.h"
 #include "gromacs/gmxlib/nrnb.h"
 #include "gromacs/math/boxmatrix.h"
 #include "gromacs/math/functions.h"
 #include "gromacs/math/invertmatrix.h"
+#include "gromacs/math/multidimarray.h"
 #include "gromacs/math/units.h"
-#include "gromacs/math/vec.h"
-#include "gromacs/math/vecdump.h"
 #include "gromacs/mdlib/boxdeformation.h"
 #include "gromacs/mdlib/expanded.h"
 #include "gromacs/mdlib/gmx_omp_nthreads.h"
 #include "gromacs/mdlib/stat.h"
 #include "gromacs/mdlib/update.h"
-#include "gromacs/mdtypes/commrec.h"
+#include "gromacs/mdspan/extents.h"
+#include "gromacs/mdspan/layouts.h"
 #include "gromacs/mdtypes/enerdata.h"
 #include "gromacs/mdtypes/group.h"
 #include "gromacs/mdtypes/inputrec.h"
@@ -64,14 +67,22 @@
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/random/gammadistribution.h"
 #include "gromacs/random/normaldistribution.h"
+#include "gromacs/random/seed.h"
 #include "gromacs/random/tabulatednormaldistribution.h"
 #include "gromacs/random/threefry.h"
 #include "gromacs/random/uniformrealdistribution.h"
+#include "gromacs/topology/ifunc.h"
+#include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/logger.h"
 #include "gromacs/utility/pleasecite.h"
 #include "gromacs/utility/smalloc.h"
+#include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vecdump.h"
 
 #define NTROTTERPARTS 3
 
@@ -265,7 +276,7 @@ void update_pcouple_after_coordinates(FILE*                               fplog,
                         start,
                         homenr,
                         state->x,
-                        gmx::ArrayRef<gmx::RVec>(),
+                        gmx::ArrayRef<gmx::RVec>{},
                         cFREEZE,
                         nrnb,
                         scaleCoordinates);
@@ -392,7 +403,7 @@ void update_pcouple_after_coordinates(FILE*                               fplog,
 
 extern bool update_randomize_velocities(const t_inputrec*                   ir,
                                         int64_t                             step,
-                                        const t_commrec*                    cr,
+                                        const gmx_domdec_t*                 dd,
                                         int                                 homenr,
                                         gmx::ArrayRef<const unsigned short> cTC,
                                         gmx::ArrayRef<const real>           invMass,
@@ -421,7 +432,7 @@ extern bool update_randomize_velocities(const t_inputrec*                   ir,
     if ((ir->etc == TemperatureCoupling::Andersen) || do_per_step(step, gmx::roundToInt(1.0 / rate)))
     {
         andersen_tcoupl(
-                ir, step, cr, homenr, cTC, invMass, v, rate, upd->getAndersenRandomizeGroup(), upd->getBoltzmanFactor());
+                ir, step, dd, homenr, cTC, invMass, v, rate, upd->getAndersenRandomizeGroup(), upd->getBoltzmanFactor());
         return TRUE;
     }
     return FALSE;
@@ -523,11 +534,11 @@ static void NHC_trotter(const t_grpopts*      opts,
                 ivxi[nh - 1] += 0.25 * dt * GQ[nh - 1];
                 for (j = nh - 1; j > 0; j--)
                 {
-                    Efac        = exp(-0.125 * dt * ivxi[j]);
+                    Efac        = std::exp(-0.125 * dt * ivxi[j]);
                     ivxi[j - 1] = Efac * (ivxi[j - 1] * Efac + 0.25 * dt * GQ[j - 1]);
                 }
 
-                Efac = exp(-0.5 * dt * ivxi[0]);
+                Efac = std::exp(-0.5 * dt * ivxi[0]);
                 if (bBarostat)
                 {
                     *veta *= Efac;
@@ -552,7 +563,7 @@ static void NHC_trotter(const t_grpopts*      opts,
 
                 for (j = 0; j < nh - 1; j++)
                 {
-                    Efac    = exp(-0.125 * dt * ivxi[j + 1]);
+                    Efac    = std::exp(-0.125 * dt * ivxi[j + 1]);
                     ivxi[j] = Efac * (ivxi[j] * Efac + 0.25 * dt * GQ[j]);
                     if (iQinv[j + 1] > 0)
                     {
@@ -702,30 +713,29 @@ static void calcParrinelloRahmanInvMass(const PressureCouplingOptions& pressureC
     }
 }
 
-/*! \brief Calculate the M tensor for Parrinello-Rahman pressure coupling
+/*! \brief Returns the product of an inverse box matrix with a box or box velocity matrix
  *
- * M is used in the update code to couple the change in particle
- * velocities to that of the box vectors introduced by mu (see \c
- * calculateMu()).
+ * The result has off-diagonal elements exactly zero when the compressibility
+ * matrix has off-diagonal elements that are all exactly zero.
  */
-static Matrix3x3 calculateM(const PressureCouplingOptions& pressureCouplingOptions,
-                            const Matrix3x3&               invbox,
-                            const Matrix3x3&               boxv)
+static Matrix3x3 productOfInvBoxAndBoxMatrix(const PressureCouplingOptions& pressureCouplingOptions,
+                                             const Matrix3x3&               invbox,
+                                             const Matrix3x3&               box)
 
 {
     Matrix3x3 M;
 
     if (TRICLINIC(pressureCouplingOptions.compress))
     {
-        M = multiplyBoxMatrices(invbox, boxv);
+        M = multiplyBoxMatrices(invbox, box);
     }
     else
     {
         // Compute only the diagonal elements to avoid non-zero off-diagonal due to rounding
-        M = { { 0._real } };
+        M = { 0._real };
         for (int d = 0; d < DIM; d++)
         {
-            M(d, d) = invbox(d, d) * boxv(d, d);
+            M(d, d) = invbox(d, d) * box(d, d);
         }
     }
 
@@ -757,22 +767,8 @@ static Matrix3x3 calculateMu(const PressureCouplingOptions& pressureCouplingOpti
     preserveBoxShape(pressureCouplingOptions, deform, box_rel, temp);
     // Now temp is the box at t+dt, determine mu as the relative
     // change in the box.
-    Matrix3x3 mu;
-    if (TRICLINIC(pressureCouplingOptions.compress))
-    {
-        mu = multiplyBoxMatrices(invbox, temp);
-    }
-    else
-    {
-        // Compute only the diagonal elements to avoid non-zero off-diagonal due to rounding
-        mu = { { 0._real } };
-        for (int d = 0; d < DIM; d++)
-        {
-            mu(d, d) = invbox(d, d) * temp[d][d];
-        }
-    }
-
-    return mu;
+    return productOfInvBoxAndBoxMatrix(
+            pressureCouplingOptions, invbox, gmx::createMatrix3x3FromLegacyMatrix(temp));
 }
 
 void init_parrinellorahman(const PressureCouplingOptions& pressureCouplingOptions,
@@ -786,7 +782,8 @@ void init_parrinellorahman(const PressureCouplingOptions& pressureCouplingOption
 {
     const Matrix3x3 inverseBox = gmx::invertBoxMatrix(gmx::createMatrix3x3FromLegacyMatrix(box));
     preserveBoxShape(pressureCouplingOptions, deform, box_rel, boxv);
-    *M = calculateM(pressureCouplingOptions, inverseBox, gmx::createMatrix3x3FromLegacyMatrix(boxv));
+    *M = productOfInvBoxAndBoxMatrix(
+            pressureCouplingOptions, inverseBox, gmx::createMatrix3x3FromLegacyMatrix(boxv));
     *mu = calculateMu(pressureCouplingOptions, deform, box_rel, box, inverseBox, boxv, couplingTimePeriod);
 }
 
@@ -808,137 +805,133 @@ void parrinellorahman_pcoupl(const gmx::MDLogger&           mdlog,
 
     gmx::invertBoxMatrix(box, invbox);
 
-    // Indentation preserved for review convenience, can be
-    // removed later
+    /* First, calculate the acceleration of the box vectors.
+     *
+     * Note that c_presfac does not occur here.
+     * The pressure and compressibility always occur as a product,
+     * therefore the pressure unit drops out.
+     */
+    tensor winv;
+    calcParrinelloRahmanInvMass(pressureCouplingOptions, box, winv);
+
+    m_sub(pres, pressureCouplingOptions.ref_p, pdiff);
+
+    if (pressureCouplingOptions.epct == PressureCouplingType::SurfaceTension)
     {
-        /* First, calculate the acceleration of the box vectors.
-         *
-         * Note that c_presfac does not occur here.
-         * The pressure and compressibility always occur as a product,
-         * therefore the pressure unit drops out.
+        /* Unlike Berendsen coupling it might not be trivial to include a z
+         * pressure correction here? On the other hand we don't scale the
+         * box momentarily, but change accelerations, so it might not be crucial.
          */
-        tensor winv;
-        calcParrinelloRahmanInvMass(pressureCouplingOptions, box, winv);
-
-        m_sub(pres, pressureCouplingOptions.ref_p, pdiff);
-
-        if (pressureCouplingOptions.epct == PressureCouplingType::SurfaceTension)
+        real xy_pressure = 0.5 * (pres[XX][XX] + pres[YY][YY]);
+        for (int d = 0; d < ZZ; d++)
         {
-            /* Unlike Berendsen coupling it might not be trivial to include a z
-             * pressure correction here? On the other hand we don't scale the
-             * box momentarily, but change accelerations, so it might not be crucial.
-             */
-            real xy_pressure = 0.5 * (pres[XX][XX] + pres[YY][YY]);
+            pdiff[d][d] =
+                    (xy_pressure - (pres[ZZ][ZZ] - pressureCouplingOptions.ref_p[d][d] / box[d][d]));
+        }
+    }
+
+    tmmul(invbox, pdiff, t1);
+    /* Move the off-diagonal elements of the 'force' to one side to ensure
+     * that we obey the box constraints.
+     */
+    for (int d = 0; d < DIM; d++)
+    {
+        for (int n = 0; n < d; n++)
+        {
+            t1[d][n] += t1[n][d];
+            t1[n][d] = 0;
+        }
+    }
+
+    switch (pressureCouplingOptions.epct)
+    {
+        case PressureCouplingType::Anisotropic:
+            for (int d = 0; d < DIM; d++)
+            {
+                for (int n = 0; n <= d; n++)
+                {
+                    t1[d][n] *= winv[d][n] * vol;
+                }
+            }
+            break;
+        case PressureCouplingType::Isotropic:
+            /* calculate total volume acceleration */
+            atot = box[XX][XX] * box[YY][YY] * t1[ZZ][ZZ] + box[XX][XX] * t1[YY][YY] * box[ZZ][ZZ]
+                   + t1[XX][XX] * box[YY][YY] * box[ZZ][ZZ];
+            arel = atot / (3 * vol);
+            /* set all RELATIVE box accelerations equal, and maintain total V
+             * change speed */
+            for (int d = 0; d < DIM; d++)
+            {
+                for (int n = 0; n <= d; n++)
+                {
+                    t1[d][n] = winv[0][0] * vol * arel * box[d][n];
+                }
+            }
+            break;
+        case PressureCouplingType::SemiIsotropic:
+        case PressureCouplingType::SurfaceTension:
+            /* Note the correction to pdiff above for surftens. coupling  */
+
+            /* calculate total XY volume acceleration */
+            atot = box[XX][XX] * t1[YY][YY] + t1[XX][XX] * box[YY][YY];
+            arel = atot / (2 * box[XX][XX] * box[YY][YY]);
+            /* set RELATIVE XY box accelerations equal, and maintain total V
+             * change speed. Dont change the third box vector accelerations */
             for (int d = 0; d < ZZ; d++)
             {
-                pdiff[d][d] =
-                        (xy_pressure - (pres[ZZ][ZZ] - pressureCouplingOptions.ref_p[d][d] / box[d][d]));
+                for (int n = 0; n <= d; n++)
+                {
+                    t1[d][n] = winv[d][n] * vol * arel * box[d][n];
+                }
             }
-        }
-
-        tmmul(invbox, pdiff, t1);
-        /* Move the off-diagonal elements of the 'force' to one side to ensure
-         * that we obey the box constraints.
-         */
-        for (int d = 0; d < DIM; d++)
-        {
-            for (int n = 0; n < d; n++)
+            for (int n = 0; n < DIM; n++)
             {
-                t1[d][n] += t1[n][d];
-                t1[n][d] = 0;
+                t1[ZZ][n] *= winv[ZZ][n] * vol;
             }
-        }
+            break;
+        default:
+            gmx_fatal(FARGS,
+                      "Parrinello-Rahman pressure coupling type %s "
+                      "not supported yet\n",
+                      enumValueToString(pressureCouplingOptions.epct));
+    }
 
-        switch (pressureCouplingOptions.epct)
+    // Update the box velocities from the box accelerations, and
+    // prepare to log a warning about large changes, if needed.
+    real maxchange = 0;
+    for (int d = 0; d < DIM; d++)
+    {
+        for (int n = 0; n <= d; n++)
         {
-            case PressureCouplingType::Anisotropic:
-                for (int d = 0; d < DIM; d++)
-                {
-                    for (int n = 0; n <= d; n++)
-                    {
-                        t1[d][n] *= winv[d][n] * vol;
-                    }
-                }
-                break;
-            case PressureCouplingType::Isotropic:
-                /* calculate total volume acceleration */
-                atot = box[XX][XX] * box[YY][YY] * t1[ZZ][ZZ] + box[XX][XX] * t1[YY][YY] * box[ZZ][ZZ]
-                       + t1[XX][XX] * box[YY][YY] * box[ZZ][ZZ];
-                arel = atot / (3 * vol);
-                /* set all RELATIVE box accelerations equal, and maintain total V
-                 * change speed */
-                for (int d = 0; d < DIM; d++)
-                {
-                    for (int n = 0; n <= d; n++)
-                    {
-                        t1[d][n] = winv[0][0] * vol * arel * box[d][n];
-                    }
-                }
-                break;
-            case PressureCouplingType::SemiIsotropic:
-            case PressureCouplingType::SurfaceTension:
-                /* Note the correction to pdiff above for surftens. coupling  */
+            boxv[d][n] += couplingTimePeriod * t1[d][n];
 
-                /* calculate total XY volume acceleration */
-                atot = box[XX][XX] * t1[YY][YY] + t1[XX][XX] * box[YY][YY];
-                arel = atot / (2 * box[XX][XX] * box[YY][YY]);
-                /* set RELATIVE XY box accelerations equal, and maintain total V
-                 * change speed. Dont change the third box vector accelerations */
-                for (int d = 0; d < ZZ; d++)
-                {
-                    for (int n = 0; n <= d; n++)
-                    {
-                        t1[d][n] = winv[d][n] * vol * arel * box[d][n];
-                    }
-                }
-                for (int n = 0; n < DIM; n++)
-                {
-                    t1[ZZ][n] *= winv[ZZ][n] * vol;
-                }
-                break;
-            default:
-                gmx_fatal(FARGS,
-                          "Parrinello-Rahman pressure coupling type %s "
-                          "not supported yet\n",
-                          enumValueToString(pressureCouplingOptions.epct));
-        }
+            /* Calculate the change relative to diagonal elements-
+               since it's perfectly ok for the off-diagonal ones to
+               be zero it doesn't make sense to check the change relative
+               to its current size.
+             */
 
-        // Update the box velocities from the box accelerations, and
-        // prepare to log a warning about large changes, if needed.
-        real maxchange = 0;
-        for (int d = 0; d < DIM; d++)
-        {
-            for (int n = 0; n <= d; n++)
+            change = std::fabs(couplingTimePeriod * boxv[d][n] / box[d][d]);
+
+            if (change > maxchange)
             {
-                boxv[d][n] += couplingTimePeriod * t1[d][n];
-
-                /* Calculate the change relative to diagonal elements-
-                   since it's perfectly ok for the off-diagonal ones to
-                   be zero it doesn't make sense to check the change relative
-                   to its current size.
-                 */
-
-                change = std::fabs(couplingTimePeriod * boxv[d][n] / box[d][d]);
-
-                if (change > maxchange)
-                {
-                    maxchange = change;
-                }
+                maxchange = change;
             }
         }
+    }
 
-        if (maxchange > 0.01)
-        {
-            GMX_LOG(mdlog.warning)
-                    .asParagraph()
-                    .appendTextFormatted("Step %" PRId64
-                                         " Pressure scaling more than 1%%. "
-                                         "This may mean your system is not yet equilibrated. "
-                                         "Use of Parrinello-Rahman pressure coupling during "
-                                         "equilibration can lead to simulation instability, "
-                                         "and is discouraged.",
-                                         step);
-        }
+    if (maxchange > 0.01)
+    {
+        GMX_LOG(mdlog.warning)
+                .asParagraph()
+                .appendTextFormatted("Step %" PRId64
+                                     " Pressure scaling more than 1%%. "
+                                     "This may mean your system is not yet equilibrated. "
+                                     "Use of Parrinello-Rahman pressure coupling during "
+                                     "equilibration can lead to simulation instability, "
+                                     "and is discouraged.",
+                                     step);
     }
 
     // The new box velocity has been calculated, but might need
@@ -947,7 +940,8 @@ void parrinellorahman_pcoupl(const gmx::MDLogger&           mdlog,
     preserveBoxShape(pressureCouplingOptions, deform, box_rel, boxv);
 
     const Matrix3x3 inverseBox = gmx::createMatrix3x3FromLegacyMatrix(invbox);
-    *M = calculateM(pressureCouplingOptions, inverseBox, gmx::createMatrix3x3FromLegacyMatrix(boxv));
+    *M                         = productOfInvBoxAndBoxMatrix(
+            pressureCouplingOptions, inverseBox, gmx::createMatrix3x3FromLegacyMatrix(boxv));
 
     *mu = calculateMu(pressureCouplingOptions, deform, box_rel, box, inverseBox, boxv, couplingTimePeriod);
 }
@@ -995,7 +989,7 @@ static void calculateScalingMatrixImpl(const PressureCouplingOptions& pressureCo
             xy_pressure += pres[d][d] / (DIM - 1);
         }
     }
-    *mu = gmx::Matrix3x3{ { 0._real } };
+    *mu = gmx::Matrix3x3{ 0._real };
     calculateScalingMatrixImplDetail<pressureCouplingType>(pressureCouplingOptions,
                                                            ld_seed,
                                                            ensembleTemperature,
@@ -1433,7 +1427,7 @@ void berendsen_tcoupl(const t_inputrec* ir, gmx_ekindata_t* ekind, real dt, std:
 
 void andersen_tcoupl(const t_inputrec*                   ir,
                      int64_t                             step,
-                     const t_commrec*                    cr,
+                     const gmx_domdec_t*                 dd,
                      const int                           homenr,
                      gmx::ArrayRef<const unsigned short> cTC,
                      gmx::ArrayRef<const real>           invMass,
@@ -1442,11 +1436,11 @@ void andersen_tcoupl(const t_inputrec*                   ir,
                      const std::vector<bool>&            randomize,
                      gmx::ArrayRef<const real>           boltzfac)
 {
-    const int* gatindex = (haveDDAtomOrdering(*cr) ? cr->dd->globalAtomIndices.data() : nullptr);
-    int        i;
-    int        gc = 0;
-    gmx::ThreeFry2x64<0>               rng(ir->andersen_seed, gmx::RandomDomain::Thermostat);
-    gmx::UniformRealDistribution<real> uniformDist;
+    const int*           gatindex = (dd != nullptr ? dd->globalAtomIndices.data() : nullptr);
+    int                  i;
+    int                  gc = 0;
+    gmx::ThreeFry2x64<0> rng(ir->andersen_seed, gmx::RandomDomain::Thermostat);
+    gmx::UniformRealDistribution<real>         uniformDist;
     gmx::TabulatedNormalDistribution<real, 14> normalDist;
 
     /* randomize the velocities of the selected particles */
@@ -1552,8 +1546,8 @@ void trotter_update(const t_inputrec*                   ir,
     {
         return;
     }
-    dtc  = ir->nsttcouple * ir->delta_t; /* This is OK for NPT, because nsttcouple == nstpcouple is enforcesd */
-    opts = &(ir->opts);                  /* just for ease of referencing */
+    dtc = ir->nsttcouple * ir->delta_t; /* This is OK for NPT, because nsttcouple == nstpcouple is enforcesd */
+    opts = &(ir->opts);                 /* just for ease of referencing */
     ngtc = opts->ngtc;
     assert(ngtc > 0);
     snew(scalefac, opts->ngtc);
@@ -2180,7 +2174,7 @@ real vrescale_resamplekin(real kk, real sigma, real ndeg, real taut, int64_t ste
 
     if (taut > 0.1)
     {
-        factor = exp(-1.0 / taut);
+        factor = std::exp(-1.0 / taut);
     }
     else
     {

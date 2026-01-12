@@ -43,10 +43,18 @@
  */
 #include "nblib/listed_forces/calculator.h"
 
+#include <cstddef>
+
 #include <algorithm>
+#include <type_traits>
 
 #include "listed_forces/dataflow.hpp"
 #include "listed_forces/helpers.hpp"
+
+#include "gromacs/mdtypes/md_enums.h"
+#include "gromacs/pbcutil/ishift.h"
+#include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "nblib/box.h"
 #include "nblib/exception.h"

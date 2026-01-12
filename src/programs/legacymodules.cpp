@@ -42,11 +42,14 @@
 
 #include <cstdio>
 
+#include <utility>
+
 #include "mdrun/mdrun_main.h"
 #include "mdrun/nonbonded_bench.h"
 
 #include "gromacs/commandline/cmdlinemodule.h"
 #include "gromacs/commandline/cmdlinemodulemanager.h"
+#include "gromacs/commandline/cmdlinemodulesettings.h"
 #include "gromacs/commandline/cmdlineoptionsmodule.h"
 #include "gromacs/gmxana/gmx_ana.h"
 #include "gromacs/gmxpreprocess/editconf.h"
@@ -69,6 +72,11 @@
 #include "gromacs/tools/trjcat.h"
 #include "gromacs/tools/trjconv.h"
 #include "gromacs/tools/tune_pme.h"
+
+namespace gmx
+{
+class CommandLineHelpContext;
+} // namespace gmx
 
 namespace
 {

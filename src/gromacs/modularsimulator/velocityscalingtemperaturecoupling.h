@@ -44,13 +44,23 @@
 #ifndef GMX_MODULARSIMULATOR_VELOCITYSCALINGTEMPERATURECOUPLING_H
 #define GMX_MODULARSIMULATOR_VELOCITYSCALINGTEMPERATURECOUPLING_H
 
+#include <cstdint>
+
+#include <memory>
+#include <optional>
+#include <string>
+#include <vector>
+
+#include "gromacs/mdtypes/checkpointdata.h"
 #include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/real.h"
 
 #include "energydata.h"
 #include "modularsimulatorinterfaces.h"
 #include "propagator.h"
 
 struct t_commrec;
+enum class TemperatureCoupling : int;
 
 namespace gmx
 {
@@ -58,6 +68,13 @@ class ITemperatureCouplingImpl;
 class LegacySimulatorData;
 class ObservablesReducer;
 struct TemperatureCouplingData;
+class FreeEnergyPerturbationData;
+class GlobalCommunicationHelper;
+class ModularSimulatorAlgorithmBuilderHelper;
+class StatePropagatorData;
+enum class ReferenceTemperatureChangeAlgorithm;
+template<CheckpointDataOperation operation>
+class CheckpointData;
 
 //! Enum describing whether the thermostat is using full or half step kinetic energy
 enum class UseFullStepKE
@@ -85,18 +102,18 @@ class VelocityScalingTemperatureCoupling final :
 {
 public:
     //! Constructor
-    VelocityScalingTemperatureCoupling(int                               nstcouple,
-                                       int                               offset,
-                                       UseFullStepKE                     useFullStepKE,
+    VelocityScalingTemperatureCoupling(int           nstcouple,
+                                       int           offset,
+                                       UseFullStepKE useFullStepKE,
                                        ReportPreviousStepConservedEnergy reportPreviousConservedEnergy,
-                                       int64_t                           seed,
-                                       int                               numTemperatureGroups,
-                                       double                            couplingTimeStep,
-                                       const real*                       referenceTemperature,
-                                       const real*                       couplingTime,
-                                       const real*                       numDegreesOfFreedom,
-                                       EnergyData*                       energyData,
-                                       TemperatureCoupling               couplingType);
+                                       int64_t             seed,
+                                       int                 numTemperatureGroups,
+                                       double              couplingTimeStep,
+                                       const real*         referenceTemperature,
+                                       const real*         couplingTime,
+                                       const real*         numDegreesOfFreedom,
+                                       EnergyData*         energyData,
+                                       TemperatureCoupling couplingType);
 
     /*! \brief Register run function for step / time
      *
@@ -116,9 +133,13 @@ public:
                                        const PropagatorTag&        propagatorTag);
 
     //! ICheckpointHelperClient write checkpoint implementation
-    void saveCheckpointState(std::optional<WriteCheckpointData> checkpointData, const t_commrec* cr) override;
+    void saveCheckpointState(std::optional<WriteCheckpointData> checkpointData,
+                             const MpiComm&                     mpiComm,
+                             gmx_domdec_t*                      dd) override;
     //! ICheckpointHelperClient read checkpoint implementation
-    void restoreCheckpointState(std::optional<ReadCheckpointData> checkpointData, const t_commrec* cr) override;
+    void restoreCheckpointState(std::optional<ReadCheckpointData> checkpointData,
+                                const MpiComm&                    mpiComm,
+                                gmx_domdec_t*                     dd) override;
     //! ICheckpointHelperClient key implementation
     const std::string& clientID() override;
 

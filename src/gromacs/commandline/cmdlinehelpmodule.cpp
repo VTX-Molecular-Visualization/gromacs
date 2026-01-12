@@ -42,12 +42,19 @@
 
 #include "cmdlinehelpmodule.h"
 
+#include <cstdio>
+#include <cstring>
+
+#include <filesystem>
+#include <map>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "gromacs/commandline/cmdlinehelpcontext.h"
 #include "gromacs/commandline/cmdlinehelpwriter.h"
+#include "gromacs/commandline/cmdlinemodulemanager_impl.h"
 #include "gromacs/commandline/cmdlineparser.h"
 #include "gromacs/onlinehelp/helpformat.h"
 #include "gromacs/onlinehelp/helpmanager.h"
@@ -142,7 +149,7 @@ public:
                               const CommandLineModuleGroupList& groups);
 
     std::unique_ptr<IHelpExport> createExporter(const std::string& format, IFileOutputRedirector* redirector);
-    void                         exportHelp(IHelpExport* exporter);
+    void exportHelp(IHelpExport* exporter);
 
     RootHelpTopic                     rootTopic_;
     const IProgramContext&            programContext_;
@@ -791,7 +798,7 @@ public:
         // TODO: Redirect these for unit tests.
         if (File::exists(path_, File::returnFalseOnError))
         {
-            const std::string originalContents_ = TextReader::readFileToString(path_.u8string());
+            const std::string originalContents_ = TextReader::readFileToString(path_);
             if (originalContents_ == newContents)
             {
                 return;

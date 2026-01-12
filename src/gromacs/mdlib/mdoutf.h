@@ -34,13 +34,14 @@
 #ifndef GMX_MDLIB_MDOUTF_H
 #define GMX_MDLIB_MDOUTF_H
 
+#include <cstdint>
 #include <cstdio>
 
 #include "gromacs/fileio/enxio.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/timing/wallcycle.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/basedefinitions.h"
+#include "gromacs/utility/vectypes.h"
 
 class energyhistory_t;
 struct gmx_mtop_t;
@@ -50,6 +51,7 @@ struct ObservablesHistory;
 struct t_commrec;
 struct t_filenm;
 struct t_inputrec;
+class t_state;
 
 namespace gmx
 {
@@ -146,8 +148,7 @@ void mdoutf_write_to_trajectory_files(FILE*                          fplog,
  * and it will not gather the state over the different ranks.
  *
  * This should only be called if no other trajectory file writing is needed, and
- * the global state has all required information. Currently, this is only used by
- * the modular checkpointing facility.
+ * the global state has all required information.
  *
  * \param[in] of                              File handler to trajectory file.
  * \param[in] fplog                           File handler to log file.

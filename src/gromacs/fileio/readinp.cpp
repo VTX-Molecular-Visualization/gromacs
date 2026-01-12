@@ -35,17 +35,21 @@
 
 #include "readinp.h"
 
+#include <cinttypes>
 #include <cstdlib>
 #include <cstring>
 
 #include <algorithm>
+#include <string_view>
 
+#include "gromacs/mdrun/binary_information.h"
 #include "gromacs/utility/arrayref.h"
-#include "gromacs/utility/binaryinformation.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/gmxassert.h"
+#include "gromacs/utility/keyvaluetree.h"
 #include "gromacs/utility/keyvaluetreebuilder.h"
 #include "gromacs/utility/niceheader.h"
 #include "gromacs/utility/programcontext.h"
@@ -53,6 +57,17 @@
 #include "gromacs/utility/stringutil.h"
 #include "gromacs/utility/textreader.h"
 #include "gromacs/utility/textwriter.h"
+
+namespace gmx
+{
+
+const char* enumValueToString(YesNoType enumValue)
+{
+    constexpr EnumerationArray<YesNoType, const char*> yesNoTypeNames = { "yes", "no" };
+    return yesNoTypeNames[enumValue];
+}
+
+} // namespace gmx
 
 std::vector<t_inpfile> read_inpfile(gmx::TextInputStream*        stream,
                                     const std::filesystem::path& fn,
@@ -62,7 +77,7 @@ std::vector<t_inpfile> read_inpfile(gmx::TextInputStream*        stream,
 
     if (debug)
     {
-        fprintf(debug, "Reading MDP file %s\n", fn.u8string().c_str());
+        fprintf(debug, "Reading MDP file %s\n", fn.string().c_str());
     }
 
     int             indexOfLineReadFromFile = 0;
@@ -205,7 +220,7 @@ void write_inpfile(gmx::TextOutputStream*       stream,
     gmx::TextWriter writer(stream);
     if (writeHeader == WriteMdpHeader::yes)
     {
-        gmx::niceHeader(&writer, fn.u8string().c_str(), ';');
+        gmx::niceHeader(&writer, fn.string().c_str(), ';');
 
         gmx::BinaryInformationSettings settings;
         settings.generatedByHeader(true);
@@ -429,7 +444,7 @@ double get_ereal(std::vector<t_inpfile>* inp, const char* name, double def, Warn
     }
     else
     {
-        double ret = strtod(inpRef[ii].value_.c_str(), &ptr);
+        double ret = std::strtod(inpRef[ii].value_.c_str(), &ptr);
         if (*ptr != '\0')
         {
             wi->addError(gmx::formatString(

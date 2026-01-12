@@ -42,13 +42,22 @@
 
 #include "gromacs/fileio/mrcdensitymap.h"
 
+#include <array>
+#include <filesystem>
 #include <string>
+#include <vector>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 #include "gromacs/fileio/mrcdensitymapheader.h"
-#include "gromacs/utility/inmemoryserializer.h"
+#include "gromacs/math/coordinatetransformation.h"
+#include "gromacs/math/multidimarray.h"
+#include "gromacs/mdspan/extensions.h"
+#include "gromacs/serialization/inmemoryserializer.h"
+#include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/exceptions.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "testutils/refdata.h"
 #include "testutils/testasserts.h"

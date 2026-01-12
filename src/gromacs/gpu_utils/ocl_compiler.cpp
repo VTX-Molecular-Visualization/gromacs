@@ -75,7 +75,7 @@ namespace ocl
  *
  *  Currently caching is disabled by default unless the env var override
  *  is used until we resolve concurrency issues. */
-static bool useBuildCache = getenv("GMX_OCL_GENCACHE") != nullptr;
+static bool useBuildCache = std::getenv("GMX_OCL_GENCACHE") != nullptr;
 
 /*! \brief Handles writing the OpenCL JIT compilation log to \c fplog.
  *
@@ -99,7 +99,8 @@ static void writeOclBuildLog(FILE*              fplog,
                              const std::string& preprocessorOptions,
                              bool               buildFailed)
 {
-    bool writeOutput = ((fplog != nullptr) && (buildFailed || (getenv("GMX_OCL_DUMP_LOG") != nullptr)));
+    bool writeOutput =
+            ((fplog != nullptr) && (buildFailed || (std::getenv("GMX_OCL_DUMP_LOG") != nullptr)));
 
     if (!writeOutput)
     {
@@ -150,7 +151,7 @@ static void writeOclBuildLog(FILE*              fplog,
     message += "---------------LOG END----------------\n";
     ;
 
-    fputs(message.c_str(), fplog);
+    std::fputs(message.c_str(), fplog);
 }
 
 /*! \brief Construct compiler options string
@@ -163,14 +164,14 @@ static std::string selectCompilerOptions(DeviceVendor deviceVendor)
 {
     std::string compilerOptions;
 
-    if (getenv("GMX_OCL_NOOPT"))
+    if (std::getenv("GMX_OCL_NOOPT"))
     {
         compilerOptions += " -cl-opt-disable";
     }
 
     /* Fastmath improves performance on all supported arch,
      * but is tends to cause problems on Intel (Issue #3898) */
-    if ((deviceVendor != DeviceVendor::Intel) && (getenv("GMX_OCL_DISABLE_FASTMATH") == nullptr))
+    if ((deviceVendor != DeviceVendor::Intel) && (std::getenv("GMX_OCL_DISABLE_FASTMATH") == nullptr))
     {
         compilerOptions += " -cl-fast-relaxed-math";
 
@@ -180,12 +181,12 @@ static std::string selectCompilerOptions(DeviceVendor deviceVendor)
         compilerOptions += " -cl-denorms-are-zero";
     }
 
-    if ((deviceVendor == DeviceVendor::Nvidia) && getenv("GMX_OCL_VERBOSE"))
+    if ((deviceVendor == DeviceVendor::Nvidia) && std::getenv("GMX_OCL_VERBOSE"))
     {
         compilerOptions += " -cl-nv-verbose";
     }
 
-    if ((deviceVendor == DeviceVendor::Amd) && getenv("GMX_OCL_DUMP_INTERM_FILES"))
+    if ((deviceVendor == DeviceVendor::Amd) && std::getenv("GMX_OCL_DUMP_INTERM_FILES"))
     {
         /* To dump OpenCL build intermediate files, caching must be off */
         if (!useBuildCache)
@@ -194,12 +195,12 @@ static std::string selectCompilerOptions(DeviceVendor deviceVendor)
         }
     }
 
-    if (getenv("GMX_OCL_DEBUG"))
+    if (std::getenv("GMX_OCL_DEBUG"))
     {
         compilerOptions += " -g";
     }
 
-    if (deviceVendor == DeviceVendor::Amd && getenv("GMX_OCL_FORCE_AMD_WAVEFRONT64"))
+    if (deviceVendor == DeviceVendor::Amd && std::getenv("GMX_OCL_FORCE_AMD_WAVEFRONT64"))
     {
         compilerOptions += " -Wf,-mwavefrontsize64";
     }
@@ -225,7 +226,7 @@ static std::filesystem::path getSourceRootPath(const std::string& sourceRelative
 {
     std::filesystem::path sourceRootPath;
     /* Use GMX_OCL_FILE_PATH if the user has defined it */
-    const char* gmxOclFilePath = getenv("GMX_OCL_FILE_PATH");
+    const char* gmxOclFilePath = std::getenv("GMX_OCL_FILE_PATH");
 
     if (gmxOclFilePath == nullptr)
     {
@@ -374,8 +375,10 @@ static std::string makeKernelIncludePathOption(const std::string& unescapedKerne
 static void removeExtraSpaces(std::string* str)
 {
     GMX_RELEASE_ASSERT(str != nullptr, "A pointer to an actual string must be provided");
-    std::string::iterator newEnd = std::unique(
-            str->begin(), str->end(), [=](char a, char b) { return isspace(a) != 0 && (a == b); });
+    std::string::iterator newEnd =
+            std::unique(str->begin(),
+                        str->end(),
+                        [=](char a, char b) { return std::isspace(a) != 0 && (a == b); });
     str->erase(newEnd, str->end());
 }
 
@@ -399,9 +402,9 @@ static std::string makePreprocessorOptions(const std::filesystem::path& kernelRo
     preprocessorOptions += ' ';
     preprocessorOptions += selectCompilerOptions(deviceVendor);
     preprocessorOptions += ' ';
-    preprocessorOptions += makeKernelIncludePathOption(kernelRootPath.generic_u8string());
+    preprocessorOptions += makeKernelIncludePathOption(kernelRootPath.generic_string());
     preprocessorOptions += ' ';
-    preprocessorOptions += makeKernelIncludePathOption(includeRootPath.generic_u8string());
+    preprocessorOptions += makeKernelIncludePathOption(includeRootPath.generic_string());
 
     // Mac OS (and maybe some other implementations) does not accept double spaces in options
     removeExtraSpaces(&preprocessorOptions);
@@ -472,11 +475,11 @@ cl_program compileProgram(FILE*              fplog,
     if (program == nullptr)
     {
         // Compile OpenCL program from source
-        std::string kernelSource = TextReader::readFileToString(kernelFilename.u8string());
+        std::string kernelSource = TextReader::readFileToString(kernelFilename.string());
         if (kernelSource.empty())
         {
             GMX_THROW(FileIOError(gmx::formatString("Error loading OpenCL code %s",
-                                                    kernelFilename.u8string().c_str())));
+                                                    kernelFilename.string().c_str())));
         }
         const char* kernelSourcePtr  = kernelSource.c_str();
         size_t      kernelSourceSize = kernelSource.size();
@@ -497,7 +500,7 @@ cl_program compileProgram(FILE*              fplog,
     /* Write log first, and then throw exception that the user know what is
        the issue even if the build fails. */
     writeOclBuildLog(
-            fplog, program, deviceId, kernelFilename.u8string(), preprocessorOptions, buildStatus != CL_SUCCESS);
+            fplog, program, deviceId, kernelFilename.string(), preprocessorOptions, buildStatus != CL_SUCCESS);
 
     if (buildStatus != CL_SUCCESS)
     {
@@ -522,7 +525,7 @@ cl_program compileProgram(FILE*              fplog,
             }
         }
     }
-    if ((deviceVendor == DeviceVendor::Nvidia) && getenv("GMX_OCL_DUMP_INTERM_FILES"))
+    if ((deviceVendor == DeviceVendor::Nvidia) && std::getenv("GMX_OCL_DUMP_INTERM_FILES"))
     {
         /* If dumping intermediate files has been requested and this is an NVIDIA card
            => write PTX to file */

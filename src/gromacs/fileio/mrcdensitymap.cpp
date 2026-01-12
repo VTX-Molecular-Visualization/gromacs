@@ -44,15 +44,23 @@
 
 #include "mrcdensitymap.h"
 
+#include <cstdio>
+
 #include <algorithm>
+#include <iterator>
 #include <vector>
 
 #include "gromacs/fileio/gmxfio.h"
 #include "gromacs/fileio/gmxfio_xdr.h"
 #include "gromacs/fileio/mrcdensitymapheader.h"
+#include "gromacs/math/coordinatetransformation.h"
+#include "gromacs/mdspan/extents.h"
+#include "gromacs/mdspan/layouts.h"
+#include "gromacs/serialization/inmemoryserializer.h"
+#include "gromacs/serialization/iserializer.h"
+#include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/exceptions.h"
-#include "gromacs/utility/inmemoryserializer.h"
-#include "gromacs/utility/iserializer.h"
+#include "gromacs/utility/futil.h"
 #include "gromacs/utility/stringutil.h"
 
 #include "mrcserializer.h"
@@ -75,7 +83,7 @@ std::vector<char> readCharBufferFromFile(const std::filesystem::path& filename)
     if (!gmx_fexist(filename))
     {
         GMX_THROW(FileIOError(gmx::formatString("Error while reading '%s' - file not found.",
-                                                filename.u8string().c_str())));
+                                                filename.string().c_str())));
     }
     t_fileio* mrcFile = gmx_fio_open(filename, "r");
 
@@ -85,7 +93,7 @@ std::vector<char> readCharBufferFromFile(const std::filesystem::path& filename)
     gmx_fseek(gmx_fio_getfp(mrcFile), 0, SEEK_SET);
     // Read whole file into buffer the size of the file
     std::vector<char> fileContentBuffer(fileSize);
-    size_t            readSize = fread(
+    size_t            readSize = std::fread(
             fileContentBuffer.data(), sizeof(char), fileContentBuffer.size(), gmx_fio_getfp(mrcFile));
     gmx_fio_close(mrcFile);
 
@@ -93,7 +101,7 @@ std::vector<char> readCharBufferFromFile(const std::filesystem::path& filename)
     {
         GMX_THROW(FileIOError(gmx::formatString(
                 "Error while reading '%s' - file size and read buffer size do not match.",
-                filename.u8string().c_str())));
+                filename.string().c_str())));
     }
 
     return fileContentBuffer;
@@ -183,12 +191,12 @@ MrcDensityMapOfFloatFromFileReader::Impl::Impl(const std::filesystem::path& file
     if (!mrcHeaderIsSane(reader_->header()))
     {
         serializer_ = std::make_unique<InMemoryDeserializer>(buffer_, false, EndianSwapBehavior::Swap);
-        reader_     = std::make_unique<MrcDensityMapOfFloatReader>(serializer_.get());
+        reader_ = std::make_unique<MrcDensityMapOfFloatReader>(serializer_.get());
         if (!mrcHeaderIsSane(reader_->header()))
         {
             GMX_THROW(FileIOError(gmx::formatString(
                     "Header of '%s' fails sanity check for little- as well as big-endian reading.",
-                    filename.u8string().c_str())));
+                    filename.string().c_str())));
         }
     }
 
@@ -198,7 +206,7 @@ MrcDensityMapOfFloatFromFileReader::Impl::Impl(const std::filesystem::path& file
         GMX_THROW(
                 FileIOError(gmx::formatString("File header density extent information of '%s'"
                                               " does not match density data size",
-                                              filename.u8string().c_str())));
+                                              filename.string().c_str())));
     }
 }
 

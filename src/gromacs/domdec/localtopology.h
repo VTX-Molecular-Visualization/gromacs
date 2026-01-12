@@ -43,10 +43,11 @@
 #ifndef GMX_DOMDEC_LOCALTOPOLOGY_H
 #define GMX_DOMDEC_LOCALTOPOLOGY_H
 
-#include "gromacs/math/vectypes.h"
+#include <cstdint>
+
+#include "gromacs/utility/vectypes.h"
 
 struct gmx_domdec_t;
-struct gmx_domdec_zones_t;
 struct gmx_localtop_t;
 struct gmx_mtop_t;
 struct t_forcerec;
@@ -56,13 +57,14 @@ namespace gmx
 {
 template<typename>
 class ArrayRef;
-}
+class DomdecZones;
+} // namespace gmx
 
 /*! \brief Generate the local topology and virtual site data
  *
  * \returns Total count of bonded interactions in the local topology on this domain */
 int dd_make_local_top(const gmx_domdec_t&            dd,
-                      const gmx_domdec_zones_t&      zones,
+                      const gmx::DomdecZones&        zones,
                       int                            npbcdim,
                       matrix                         box,
                       rvec                           cellsize_min,
@@ -70,7 +72,7 @@ int dd_make_local_top(const gmx_domdec_t&            dd,
                       t_forcerec*                    fr,
                       gmx::ArrayRef<const gmx::RVec> coordinates,
                       const gmx_mtop_t&              top,
-                      gmx::ArrayRef<const int64_t>   atomInfo,
+                      gmx::ArrayRef<const int32_t>   atomInfo,
                       gmx_localtop_t*                ltop);
 
 #endif

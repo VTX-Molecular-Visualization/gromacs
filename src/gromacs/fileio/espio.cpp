@@ -39,15 +39,18 @@
 #include <cstdlib>
 #include <cstring>
 
+#include <string>
+
 #include "gromacs/fileio/gmxfio.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/topology/atoms.h"
 #include "gromacs/topology/symtab.h"
 #include "gromacs/topology/topology.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/smalloc.h"
+#include "gromacs/utility/vec.h"
 
 static int get_espresso_word(FILE* fp, char word[])
 {
@@ -58,7 +61,7 @@ static int get_espresso_word(FILE* fp, char word[])
 
     do
     {
-        i = fgetc(fp);
+        i = std::fgetc(fp);
         if (i != EOF)
         {
             if (i == ' ' || i == '\n' || i == '\t')
@@ -115,7 +118,7 @@ static int check_open_parenthesis(FILE* fp, int r, const std::filesystem::path& 
         }
         else
         {
-            gmx_fatal(FARGS, "Expected '{' after '%s' in file '%s'", keyword, infile.u8string().c_str());
+            gmx_fatal(FARGS, "Expected '{' after '%s' in file '%s'", keyword, infile.string().c_str());
         }
     }
 
@@ -141,10 +144,8 @@ static int check_close_parenthesis(FILE* fp, int r, const std::filesystem::path&
         }
         else
         {
-            gmx_fatal(FARGS,
-                      "Expected '}' after section '%s' in file '%s'",
-                      keyword,
-                      infile.u8string().c_str());
+            gmx_fatal(
+                    FARGS, "Expected '}' after section '%s' in file '%s'", keyword, infile.string().c_str());
         }
     }
 
@@ -211,7 +212,7 @@ void gmx_espresso_read_conf(const std::filesystem::path& infile,
                 bFoundProp = FALSE;
                 for (p = 0; p < espNR; p++)
                 {
-                    if (strcmp(word, esp_prop[p]) == 0)
+                    if (std::strcmp(word, esp_prop[p]) == 0)
                     {
                         bFoundProp    = TRUE;
                         prop[nprop++] = p;
@@ -386,9 +387,7 @@ void gmx_espresso_read_conf(const std::filesystem::path& infile,
 
     if (!bFoundParticles)
     {
-        fprintf(stderr,
-                "Did not find a particles section in Espresso file '%s'\n",
-                infile.u8string().c_str());
+        fprintf(stderr, "Did not find a particles section in Espresso file '%s'\n", infile.string().c_str());
     }
 
     gmx_fio_fclose(fp);
@@ -409,7 +408,7 @@ int get_espresso_coordnum(const std::filesystem::path& infile)
     level           = 0;
     while ((r = get_espresso_word(fp, word)) && !bFoundParticles)
     {
-        if (level == 1 && strcmp(word, "particles") == 0 && !bFoundParticles)
+        if (level == 1 && std::strcmp(word, "particles") == 0 && !bFoundParticles)
         {
             bFoundParticles = TRUE;
             level += check_open_parenthesis(fp, r, infile, "particles");
@@ -440,9 +439,7 @@ int get_espresso_coordnum(const std::filesystem::path& infile)
     }
     if (!bFoundParticles)
     {
-        fprintf(stderr,
-                "Did not find a particles section in Espresso file '%s'\n",
-                infile.u8string().c_str());
+        fprintf(stderr, "Did not find a particles section in Espresso file '%s'\n", infile.string().c_str());
     }
 
     gmx_fio_fclose(fp);

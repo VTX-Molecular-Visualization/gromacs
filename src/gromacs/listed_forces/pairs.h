@@ -45,13 +45,15 @@
 
 #include <vector>
 
-#include "gromacs/math/vec.h"
 #include "gromacs/topology/ifunc.h"
 #include "gromacs/utility/real.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
 
 struct gmx_grppairener_t;
 struct t_forcerec;
 struct t_pbc;
+union t_iparams;
 
 namespace gmx
 {
@@ -65,7 +67,7 @@ class ArrayRef;
  *
  * global_atom_index is only passed for printing error messages.
  */
-void do_pairs(int                                 ftype,
+void do_pairs(InteractionFunction                 ftype,
               int                                 nbonds,
               const t_iatom                       iatoms[],
               const t_iparams                     iparams[],

@@ -43,12 +43,15 @@
 #ifndef NBLIB_TPR_H
 #define NBLIB_TPR_H
 
+#include <cstdint>
+
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "nblib/basicdefinitions.h"
 #include "nblib/box.h"
+#include "nblib/listed_forces/definitions.h"
 #include "nblib/topology.h"
 #include "nblib/vector.h"
 
@@ -72,7 +75,7 @@ public:
     TprReader(std::string filename);
 
     //! Particle info where all particles are marked to have Van der Waals interactions
-    std::vector<int64_t> particleInteractionFlags_;
+    std::vector<int32_t> particleInteractionFlags_;
     //! particle type id of all particles
     std::vector<int> particleTypeIdOfAllParticles_;
     //! Storage for parameters for short range interactions.

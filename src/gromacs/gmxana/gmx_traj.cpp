@@ -34,35 +34,49 @@
 #include "gmxpre.h"
 
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
 #include <algorithm>
+#include <array>
+#include <filesystem>
 #include <string>
 #include <vector>
 
+#include "gromacs/commandline/filenm.h"
 #include "gromacs/commandline/pargs.h"
 #include "gromacs/commandline/viewit.h"
 #include "gromacs/fileio/confio.h"
+#include "gromacs/fileio/filetypes.h"
+#include "gromacs/fileio/oenv.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/fileio/xvgr.h"
 #include "gromacs/gmxana/gmx_ana.h"
 #include "gromacs/math/functions.h"
 #include "gromacs/math/nrjac.h"
 #include "gromacs/math/units.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/pbcutil/rmpbc.h"
+#include "gromacs/topology/atoms.h"
+#include "gromacs/topology/block.h"
 #include "gromacs/topology/index.h"
 #include "gromacs/topology/topology.h"
 #include "gromacs/trajectory/trajectoryframe.h"
+#include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/arraysize.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/futil.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
+
+struct gmx_output_env_t;
 
 static void
 low_print_data(FILE* fp, real time, rvec x[], int n, const int* index, const gmx_bool bDim[], const char* sffmt)
@@ -633,10 +647,10 @@ int gmx_traj(int argc, char* argv[])
         { "-com", FALSE, etBOOL, { &bCom }, "Plot data for the com of each group" },
         { "-pbc", FALSE, etBOOL, { &bPBC }, "Make molecules whole for COM" },
         { "-mol",
-          FALSE,
-          etBOOL,
-          { &bMol },
-          "Index contains molecule numbers instead of atom numbers" },
+                  FALSE,
+                  etBOOL,
+                  { &bMol },
+                  "Index contains molecule numbers instead of atom numbers" },
         { "-nojump", FALSE, etBOOL, { &bNoJump }, "Remove jumps of atoms across the box" },
         { "-x", FALSE, etBOOL, { &bX }, "Plot X-component" },
         { "-y", FALSE, etBOOL, { &bY }, "Plot Y-component" },
@@ -646,15 +660,15 @@ int gmx_traj(int argc, char* argv[])
         { "-fp", FALSE, etBOOL, { &bFP }, "Full precision output" },
         { "-bin", FALSE, etREAL, { &binwidth }, "Binwidth for velocity histogram (nm/ps)" },
         { "-ctime",
-          FALSE,
-          etREAL,
-          { &ctime },
-          "Use frame at this time for x in [TT]-cv[tt] and [TT]-cf[tt] instead of the average x" },
+                  FALSE,
+                  etREAL,
+                  { &ctime },
+                  "Use frame at this time for x in [TT]-cv[tt] and [TT]-cf[tt] instead of the average x" },
         { "-scale",
-          FALSE,
-          etREAL,
-          { &scale },
-          "Scale factor for [REF].pdb[ref] output, 0 is autoscale" }
+                  FALSE,
+                  etREAL,
+                  { &scale },
+                  "Scale factor for [REF].pdb[ref] output, 0 is autoscale" }
     };
     FILE *       outx = nullptr, *outv = nullptr, *outf = nullptr, *outb = nullptr, *outt = nullptr;
     FILE *       outekt = nullptr, *outekr = nullptr;
@@ -670,7 +684,6 @@ int gmx_traj(int argc, char* argv[])
     t_trxstatus* status;
     t_trxstatus* status_out = nullptr;
     gmx_rmpbc_t  gpbc       = nullptr;
-    int          i, j;
     int          nr_xfr, nr_vfr, nr_ffr;
     char**       grpname;
     int *        isize0, *isize;
@@ -787,7 +800,7 @@ int gmx_traj(int argc, char* argv[])
         ngroups = isize0[0];
         snew(isize, ngroups);
         snew(index, ngroups);
-        for (i = 0; i < ngroups; i++)
+        for (int i = 0; i < ngroups; i++)
         {
             if (index0[0][i] < 0 || index0[0][i] >= mols->nr)
             {
@@ -795,7 +808,7 @@ int gmx_traj(int argc, char* argv[])
             }
             isize[i] = atndx[index0[0][i] + 1] - atndx[index0[0][i]];
             snew(index[i], isize[i]);
-            for (j = 0; j < isize[i]; j++)
+            for (int j = 0; j < isize[i]; j++)
             {
                 index[i][j] = atndx[index0[0][i]] + j;
             }
@@ -809,7 +822,7 @@ int gmx_traj(int argc, char* argv[])
     if (bCom)
     {
         snew(mass, top.atoms.nr);
-        for (i = 0; i < top.atoms.nr; i++)
+        for (int i = 0; i < top.atoms.nr; i++)
         {
             mass[i] = top.atoms.atom[i].m;
         }
@@ -912,7 +925,7 @@ int gmx_traj(int argc, char* argv[])
     if ((flags == 0) && !bOB)
     {
         fprintf(stderr, "Please select one or more output file options\n");
-        exit(0);
+        std::exit(0);
     }
 
     read_first_frame(oenv, &status, ftp2fn(efTRX, NFILE, fnm), &fr, flags);
@@ -960,7 +973,7 @@ int gmx_traj(int argc, char* argv[])
             {
                 snew(xp, fr.natoms);
             }
-            for (i = 0; i < fr.natoms; i++)
+            for (int i = 0; i < fr.natoms; i++)
             {
                 copy_rvec(fr.x[i], xp[i]);
             }
@@ -1016,7 +1029,7 @@ int gmx_traj(int argc, char* argv[])
         if (bOT && fr.bV)
         {
             fprintf(outt, " %g", time);
-            for (i = 0; i < ngroups; i++)
+            for (int i = 0; i < ngroups; i++)
             {
                 fprintf(outt, sffmt, temp(fr.v, mass, isize[i], index[i]));
             }
@@ -1025,7 +1038,7 @@ int gmx_traj(int argc, char* argv[])
         if (bEKT && fr.bV)
         {
             fprintf(outekt, " %g", time);
-            for (i = 0; i < ngroups; i++)
+            for (int i = 0; i < ngroups; i++)
             {
                 fprintf(outekt, sffmt, ektrans(fr.v, mass, isize[i], index[i]));
             }
@@ -1034,7 +1047,7 @@ int gmx_traj(int argc, char* argv[])
         if (bEKR && fr.bX && fr.bV)
         {
             fprintf(outekr, " %g", time);
-            for (i = 0; i < ngroups; i++)
+            for (int i = 0; i < ngroups; i++)
             {
                 fprintf(outekr, sffmt, ekrot(fr.x, fr.v, mass, isize[i], index[i]));
             }
@@ -1043,7 +1056,7 @@ int gmx_traj(int argc, char* argv[])
         if ((bCV || bCF) && fr.bX
             && (ctime < 0 || (fr.time >= ctime * 0.999999 && fr.time <= ctime * 1.000001)))
         {
-            for (i = 0; i < fr.natoms; i++)
+            for (int i = 0; i < fr.natoms; i++)
             {
                 rvec_inc(sumx[i], fr.x[i]);
             }
@@ -1051,7 +1064,7 @@ int gmx_traj(int argc, char* argv[])
         }
         if (bCV && fr.bV)
         {
-            for (i = 0; i < fr.natoms; i++)
+            for (int i = 0; i < fr.natoms; i++)
             {
                 rvec_inc(sumv[i], fr.v[i]);
             }
@@ -1059,7 +1072,7 @@ int gmx_traj(int argc, char* argv[])
         }
         if (bCF && fr.bF)
         {
-            for (i = 0; i < fr.natoms; i++)
+            for (int i = 0; i < fr.natoms; i++)
             {
                 rvec_inc(sumf[i], fr.f[i]);
             }
@@ -1125,7 +1138,7 @@ int gmx_traj(int argc, char* argv[])
                         "If atoms jump across the box you should use the -nojump or -ctime "
                         "option\n\n");
             }
-            for (i = 0; i < isize[0]; i++)
+            for (int i = 0; i < isize[0]; i++)
             {
                 svmul(1.0 / nr_xfr, sumx[index[0][i]], sumx[index[0][i]]);
             }

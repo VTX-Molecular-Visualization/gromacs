@@ -42,14 +42,23 @@
 
 #include "gromacs/math/densityfittingforce.h"
 
+#include <cmath>
+
+#include <algorithm>
+#include <string>
+#include <vector>
+
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 #include "gromacs/math/multidimarray.h"
 #include "gromacs/math/units.h"
 #include "gromacs/math/utilities.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/mdspan/extensions.h"
+#include "gromacs/mdspan/layouts.h"
+#include "gromacs/utility/real.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "testutils/testasserts.h"
 #include "testutils/testmatchers.h"
@@ -119,7 +128,8 @@ TEST(DensityFittingForce, pullsTowardsDerivative)
 
     const RVec result =
             forceEvaluator.evaluateForce({ gridCenter, 1. }, densityDerivative.asConstView());
-    real expected = -1 / sqrt(2 * 2 * 2 * M_PI * M_PI * M_PI) * exp(-0.5) * exp(-0.5) * exp(-0.5);
+    real expected = -1 / std::sqrt(2 * 2 * 2 * M_PI * M_PI * M_PI) * std::exp(-0.5) * std::exp(-0.5)
+                    * std::exp(-0.5);
 
     EXPECT_FLOAT_EQ(expected, result[XX]);
     EXPECT_FLOAT_EQ(expected, result[YY]);

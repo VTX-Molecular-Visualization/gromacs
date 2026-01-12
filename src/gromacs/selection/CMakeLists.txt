@@ -47,7 +47,7 @@ target_compile_definitions(scanner PRIVATE HAVE_CONFIG_H)
 # are awkward to suppress inline, so we do it in the compilation
 # command (after testing that the compiler supports the
 # suppressions).
-if (WIN32)
+if (MSVC)
     gmx_target_warning_suppression(scanner /wd4101 HAS_NO_MSVC_UNUSED)
     gmx_target_warning_suppression(scanner /wd4244 HAS_NO_MSVC_LOSSY_CONVERSION)
     gmx_target_warning_suppression(scanner /wd4267 HAS_NO_MSVC_LOSSY_CONVERSION_SIZE_T_TO_INT)
@@ -73,8 +73,7 @@ set(libgromacs_object_library_dependencies ${libgromacs_object_library_dependenc
 
 # Public interface for modules, including dependencies and interfaces
 #target_include_directories(selection PUBLIC
-target_include_directories(selection INTERFACE
-                           $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+#                           $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 #target_link_libraries(selection PUBLIC
 target_link_libraries(selection INTERFACE
                       legacy_api

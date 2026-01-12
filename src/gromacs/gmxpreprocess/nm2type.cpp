@@ -39,6 +39,7 @@
 #include <cstring>
 
 #include <algorithm>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -50,12 +51,16 @@
 #include "gromacs/gmxpreprocess/pdb2top.h"
 #include "gromacs/gmxpreprocess/toppush.h"
 #include "gromacs/math/utilities.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/mdtypes/md_enums.h"
+#include "gromacs/topology/atoms.h"
+#include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/futil.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
+#include "gromacs/utility/vec.h"
 
 static void rd_nm2type_file(const std::filesystem::path& filename, int* nnm, t_nm2type** nmp)
 {
@@ -71,7 +76,7 @@ static void rd_nm2type_file(const std::filesystem::path& filename, int* nnm, t_n
     fp = fflib_open(filename);
     if (nullptr == fp)
     {
-        gmx_fatal(FARGS, "Can not find %s in library directory", filename.u8string().c_str());
+        gmx_fatal(FARGS, "Can not find %s in library directory", filename.string().c_str());
     }
 
     nnnm = *nnm;
@@ -93,18 +98,18 @@ static void rd_nm2type_file(const std::filesystem::path& filename, int* nnm, t_n
                 if (nb > 0)
                 {
                     snew(newbuf, nb);
-                    strcpy(format, "%*s%*s%*s%*s%*s");
+                    std::strcpy(format, "%*s%*s%*s%*s%*s");
                     for (i = 0; (i < nb); i++)
                     {
                         /* Complicated format statement */
-                        strcpy(f1, format);
-                        strcat(f1, "%s%lf");
+                        std::strcpy(f1, format);
+                        std::strcat(f1, "%s%lf");
                         if (sscanf(buf, f1, nbbuf, &(nm2t[nnnm].blen[i])) != 2)
                         {
                             gmx_fatal(FARGS, "Error on line %d of %s", line, libfilename);
                         }
                         newbuf[i] = gmx_strdup(nbbuf);
-                        strcat(format, "%*s%*s");
+                        std::strcat(format, "%*s%*s");
                     }
                 }
                 else
@@ -179,7 +184,7 @@ static int match_str(const char* atom, const char* template_string)
     {
         return ematchElem;
     }
-    else if (strcmp(template_string, "*") == 0)
+    else if (std::strcmp(template_string, "*") == 0)
     {
         return ematchWild;
     }

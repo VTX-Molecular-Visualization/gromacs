@@ -42,17 +42,31 @@
 
 #include "gromacs/selection/selectioncollection.h"
 
+#include <cstddef>
+#include <cstdint>
+
+#include <filesystem>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
 #include <gtest/gtest.h>
 
 #include "gromacs/options/basicoptions.h"
 #include "gromacs/options/ioptionscontainer.h"
 #include "gromacs/selection/indexutil.h"
 #include "gromacs/selection/selection.h"
+#include "gromacs/selection/selectionenums.h"
+#include "gromacs/topology/atoms.h"
 #include "gromacs/topology/topology.h"
 #include "gromacs/trajectory/trajectoryframe.h"
 #include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/flags.h"
+#include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/stringutil.h"
 
 #include "testutils/interactivetest.h"
@@ -63,6 +77,12 @@
 
 #include "toputils.h"
 
+struct gmx_ana_indexgrps_t;
+
+namespace gmx
+{
+namespace test
+{
 namespace
 {
 
@@ -131,7 +151,7 @@ void SelectionCollectionTest::setTopology()
 void SelectionCollectionTest::loadIndexGroups(const char* filename)
 {
     GMX_RELEASE_ASSERT(grps_ == nullptr, "External groups can only be loaded once");
-    std::string fullpath = gmx::test::TestFileManager::getInputFilePath(filename).u8string();
+    std::string fullpath = gmx::test::TestFileManager::getInputFilePath(filename).string();
     gmx_ana_indexgrps_init(&grps_, nullptr, fullpath.c_str());
     sc_.setIndexGroups(grps_);
 }
@@ -434,8 +454,8 @@ TEST_F(SelectionCollectionTest, HandlesForceRequestForCenterOfGeometry)
 
 TEST_F(SelectionCollectionTest, ParsesSelectionsFromFile)
 {
-    ASSERT_NO_THROW_GMX(sel_ = sc_.parseFromFile(
-                                gmx::test::TestFileManager::getInputFilePath("selfile.dat").u8string()));
+    ASSERT_NO_THROW_GMX(
+            sel_ = sc_.parseFromFile(gmx::test::TestFileManager::getInputFilePath("selfile.dat")));
     // These should match the contents of selfile.dat
     ASSERT_EQ(2U, sel_.size());
     EXPECT_STREQ("resname RA RB", sel_[0].selectionText());
@@ -1555,3 +1575,5 @@ TEST_F(SelectionCollectionDataTest, CopiedSelectionWithIndexPostCompilation)
 }
 
 } // namespace
+} // namespace test
+} // namespace gmx

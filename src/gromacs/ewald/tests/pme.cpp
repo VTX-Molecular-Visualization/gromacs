@@ -41,10 +41,13 @@
  */
 #include "gmxpre.h"
 
+#include "gromacs/ewald/pme.h"
+
+#include <string>
+
 #include <gtest/gtest.h>
 
 #include "gromacs/utility/real.h"
-#include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/stringcompare.h"
 
 #include "testutils/testasserts.h"

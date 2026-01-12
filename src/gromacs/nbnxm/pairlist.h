@@ -35,33 +35,29 @@
 #ifndef GMX_NBNXM_PAIRLIST_H
 #define GMX_NBNXM_PAIRLIST_H
 
-#include <cstddef>
+#include "config.h"
 
+#include <algorithm>
+#include <iterator>
 #include <memory>
 #include <vector>
 
 #include "gromacs/gpu_utils/hostallocator.h"
-#include "gromacs/math/vectypes.h"
-#include "gromacs/mdtypes/locality.h"
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/defaultinitializationallocator.h"
-#include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/real.h"
 
-#include "pairlistparams.h"
+#include "nbnxm_enums.h"
 
-struct NbnxnPairlistCpuWork;
-struct NbnxnPairlistGpuWork;
-struct t_nblist;
+namespace gmx
+{
+class AtomPairlist;
 
+//! Currently hard coded default GPU pairlist layout
+static constexpr auto sc_layoutType = PairlistType::Hierarchical8x8x8;
 
-//! Convenience type for vector with aligned memory
-template<typename T>
-using AlignedVector = std::vector<T, gmx::AlignedAllocator<T>>;
-
-//! Convenience type for vector that avoids initialization at resize()
-template<typename T>
-using FastVector = std::vector<T, gmx::DefaultInitializationAllocator<T>>;
+struct NbnxmPairlistCpuWork;
+struct NbnxmPairlistGpuWork;
 
 /*! \brief Cache-line protection buffer
  *
@@ -98,6 +94,7 @@ class JClusterList
 public:
     //! The list of packed j-cluster groups
     FastVector<nbnxn_cj_t> list_;
+
     //! Return the j-cluster index for \c index from the pack list
     int cj(int index) const { return list_[index].cj; }
     //! Return the exclusion mask for \c index
@@ -105,11 +102,11 @@ public:
     //! Return the exclusion mask for \c index
     unsigned int& excl(int index) { return list_[index].excl; }
     //! Return the size of the list (not the number of packed elements)
-    gmx::Index size() const noexcept { return list_.size(); }
+    Index size() const noexcept { return list_.size(); }
     //! Return whether the list is empty
     bool empty() const noexcept { return size() == 0; }
     //! Resize the list
-    void resize(gmx::Index count) { list_.resize(count); }
+    void resize(Index count) { list_.resize(count); }
     //! Add a new element to the list
     void push_back(const decltype(list_)::value_type& value) { list_.push_back(value); }
 };
@@ -139,18 +136,6 @@ public:
 // TODO: Rename according to convention when moving into Nbnxn namespace
 //! All interaction mask is the same for all kernels
 constexpr unsigned int NBNXN_INTERACTION_MASK_ALL = 0xffffffffU;
-//! 4x4 kernel diagonal mask
-constexpr unsigned int NBNXN_INTERACTION_MASK_DIAG = 0x08ceU;
-//! 4x2 kernel diagonal masks
-//! \{
-constexpr unsigned int NBNXN_INTERACTION_MASK_DIAG_J2_0 = 0x0002U;
-constexpr unsigned int NBNXN_INTERACTION_MASK_DIAG_J2_1 = 0x002fU;
-//! \}
-//! 4x8 kernel diagonal masks
-//! \{
-constexpr unsigned int NBNXN_INTERACTION_MASK_DIAG_J8_0 = 0xf0f8fcfeU;
-constexpr unsigned int NBNXN_INTERACTION_MASK_DIAG_J8_1 = 0x0080c0e0U;
-//! \}
 //! \}
 
 /*! \brief Lower limit for square interaction distances in nonbonded kernels.
@@ -169,18 +154,21 @@ constexpr double c_nbnxnMinDistanceSquared = 1.0e-36;
 constexpr float c_nbnxnMinDistanceSquared = 3.82e-07F; // r > 6.2e-4
 #endif
 
+//! Returns the index of atom with index \p atomIndex within a split (or whole when not split) cluster-pair
+template<PairlistType layoutType>
+static inline int atomIndexInClusterpairSplit(const int atomIndex)
+{
+    constexpr int c_nbnxmClusterpairSplitSize =
+            detail::c_nbnxnGpuClusterSize / sc_gpuClusterPairSplit(layoutType);
 
-/*! \brief The number of clusters in a super-cluster, used for GPU
- *
- * Configured via GMX_GPU_NB_NUM_CLUSTER_PER_CELL_[XYZ] CMake options.
- * Typically 8 (2*2*2), but can be 4 (1*2*2) when targeting Intel Ponte Vecchio. */
-constexpr int c_nbnxnGpuNumClusterPerSupercluster =
-        c_gpuNumClusterPerCellX * c_gpuNumClusterPerCellY * c_gpuNumClusterPerCellZ;
+    return atomIndex & (c_nbnxmClusterpairSplitSize - 1);
+}
 
-/*! \brief With GPU kernels we group cluster pairs in 4 to optimize memory usage
- * of integers containing 32 bits.
- */
-constexpr int c_nbnxnGpuJgroupSize = (32 / c_nbnxnGpuNumClusterPerSupercluster);
+//! Whether we want to use GPU for neighbour list sorting
+constexpr bool nbnxmSortListsOnGpu()
+{
+    return (GMX_GPU && !GMX_GPU_OPENCL);
+}
 
 /*! \internal
  * \brief Simple pair-list i-unit
@@ -198,10 +186,17 @@ struct nbnxn_ci_t
 };
 
 //! Grouped pair-list i-unit
-typedef struct nbnxn_sci
+struct nbnxn_sci_t
 {
     //! Returns the number of j-cluster groups in this entry
     int numJClusterGroups() const { return cjPackedEnd - cjPackedBegin; }
+
+    //! Check if two instances are the same.
+    bool operator==(const nbnxn_sci_t& other) const
+    {
+        return sci == other.sci && shift == other.shift && cjPackedBegin == other.cjPackedBegin
+               && cjPackedEnd == other.cjPackedEnd;
+    }
 
     //! i-super-cluster
     int sci;
@@ -211,7 +206,7 @@ typedef struct nbnxn_sci
     int cjPackedBegin;
     //! End index into cjPacked (ie. one past the last element)
     int cjPackedEnd;
-} nbnxn_sci_t;
+};
 
 //! Interaction data for a j-group for one warp
 struct nbnxn_im_ei_t
@@ -220,16 +215,27 @@ struct nbnxn_im_ei_t
     unsigned int imask = 0U;
     //! Index into the exclusion array for 1 warp, default index 0 which means no exclusions
     int excl_ind = 0;
+    //! Check if two instances are the same.
+    bool operator==(const nbnxn_im_ei_t& other) const
+    {
+        return imask == other.imask && excl_ind == other.excl_ind;
+    }
 };
 
 //! Packed j-cluster list element
-typedef struct
+struct nbnxn_cj_packed_t
 {
     //! The packed j-clusters
-    int cj[c_nbnxnGpuJgroupSize];
+    int cj[sc_gpuJgroupSize(sc_layoutType)];
     //! The i-cluster mask data for 2 warps
-    nbnxn_im_ei_t imei[c_nbnxnGpuClusterpairSplit];
-} nbnxn_cj_packed_t;
+    nbnxn_im_ei_t imei[sc_gpuClusterPairSplit(sc_layoutType)];
+    //! Check if two instances are the same.
+    bool operator==(const nbnxn_cj_packed_t& other) const
+    {
+        return std::equal(std::begin(imei), std::end(imei), std::begin(other.imei), std::end(other.imei))
+               && std::equal(std::begin(cj), std::end(cj), std::begin(other.cj), std::end(other.cj));
+    }
+};
 
 /*! \brief Packed j-cluster list
  *
@@ -238,28 +244,25 @@ typedef struct
 class PackedJClusterList
 {
 public:
-    explicit PackedJClusterList(const gmx::PinningPolicy pinningPolicy) :
-        list_({}, { pinningPolicy })
-    {
-    }
+    explicit PackedJClusterList(const PinningPolicy pinningPolicy) : list_({}, { pinningPolicy }) {}
     //! The list of packed j-cluster groups
-    gmx::HostVector<nbnxn_cj_packed_t> list_;
+    HostVector<nbnxn_cj_packed_t> list_;
     //! Return the j-cluster index for \c index from the pack list
     int cj(const int index) const
     {
-        return list_[index / c_nbnxnGpuJgroupSize].cj[index & (c_nbnxnGpuJgroupSize - 1)];
+        return list_[index / sc_gpuJgroupSize(sc_layoutType)].cj[index & (sc_gpuJgroupSize(sc_layoutType) - 1)];
     }
     //! Return the i-cluster interaction mask for the first cluster in \c index
     unsigned int imask0(const int index) const
     {
-        return list_[index / c_nbnxnGpuJgroupSize].imei[0].imask;
+        return list_[index / sc_gpuJgroupSize(sc_layoutType)].imei[0].imask;
     }
     //! Return the size of the list (not the number of packed elements)
-    gmx::Index size() const noexcept { return list_.size(); }
+    Index size() const noexcept { return list_.size(); }
     //! Return whether the list is empty
     bool empty() const noexcept { return size() == 0; }
     //! Resize the packed list
-    void resize(gmx::Index count) { list_.resize(count); }
+    void resize(Index count) { list_.resize(count); }
     //! Add a new element to the packed list
     void push_back(const decltype(list_)::value_type& value) { list_.push_back(value); }
 };
@@ -279,13 +282,18 @@ struct nbnxn_excl_t
     MSVC_DIAGNOSTIC_RESET
 
     //! Topology exclusion interaction bits per warp
-    unsigned int pair[c_nbnxnGpuExclSize];
+    unsigned int pair[sc_gpuExclSize(sc_layoutType)];
+    //! Check if two instances are the same.
+    bool operator==(const nbnxn_excl_t& other) const
+    {
+        return std::equal(std::begin(pair), std::end(pair), std::begin(other.pair), std::end(other.pair));
+    }
 };
 
 //! Cluster pairlist type for use on CPUs
 struct NbnxnPairlistCpu
 {
-    NbnxnPairlistCpu();
+    NbnxnPairlistCpu(int iClusterSize);
 
     //! Cache protection
     gmx_cache_protect_t cp0;
@@ -309,7 +317,7 @@ struct NbnxnPairlistCpu
     int ncjInUse;
 
     //! Working data storage for list construction
-    std::unique_ptr<NbnxnPairlistCpuWork> work;
+    std::unique_ptr<NbnxmPairlistCpuWork> work;
 
     //! Cache protection
     gmx_cache_protect_t cp1;
@@ -327,7 +335,7 @@ struct NbnxnPairlistGpu
      *
      * \param[in] pinningPolicy  Sets the pinning policy for all buffers used on the GPU
      */
-    NbnxnPairlistGpu(gmx::PinningPolicy pinningPolicy);
+    NbnxnPairlistGpu(PinningPolicy pinningPolicy);
 
     //! Cache protection
     gmx_cache_protect_t cp0;
@@ -341,19 +349,21 @@ struct NbnxnPairlistGpu
     //! The radius for constructing the list
     real rlist;
     //! The i-super-cluster list, indexes into cjPacked list;
-    gmx::HostVector<nbnxn_sci_t> sci;
+    HostVector<nbnxn_sci_t> sci;
     //! The list of packed j-cluster groups
     PackedJClusterList cjPacked;
     //! Atom interaction bits (non-exclusions)
-    gmx::HostVector<nbnxn_excl_t> excl;
+    HostVector<nbnxn_excl_t> excl;
     //! The total number of i-clusters
     int nci_tot;
 
     //! Working data storage for list construction
-    std::unique_ptr<NbnxnPairlistGpuWork> work;
+    std::unique_ptr<NbnxmPairlistGpuWork> work;
 
     //! Cache protection
     gmx_cache_protect_t cp1;
 };
+
+} // namespace gmx
 
 #endif

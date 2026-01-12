@@ -44,9 +44,13 @@
 
 #include <algorithm>
 #include <array>
+#include <filesystem>
 #include <iterator>
 #include <map>
 #include <numeric>
+#include <string>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest-param-test.h>
@@ -281,7 +285,7 @@ TEST_P(MockHardwareTopologyTest, DetectsHardware)
     }
 
     HardwareTopology hwTopFromMap(checkCpus ? allowedProcessorIdMap : logicalProcessorIdMap,
-                                  TestFileManager::getInputFilePath(filePath).u8string());
+                                  TestFileManager::getInputFilePath(filePath).string());
     runTest(hwTopFromMap);
 }
 
@@ -347,7 +351,7 @@ TEST_P(MockHardwareTopologySpecialSystemTest, DetectsHardware)
     std::vector<int> allowedCpus(systemSize);
     std::iota(allowedCpus.begin(), allowedCpus.end(), firstAvailableCpu);
 
-    HardwareTopology hwTopFromSysFs(TestFileManager::getInputFilePath(filePath).u8string(), allowedCpus);
+    HardwareTopology hwTopFromSysFs(TestFileManager::getInputFilePath(filePath).string(), allowedCpus);
     runTest(hwTopFromSysFs);
 };
 

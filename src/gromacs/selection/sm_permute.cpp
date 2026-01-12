@@ -40,15 +40,23 @@
  */
 #include "gmxpre.h"
 
-#include "gromacs/math/vec.h"
+#include <string>
+
+#include "gromacs/selection/indexutil.h"
 #include "gromacs/selection/position.h"
+#include "gromacs/selection/selparam.h"
+#include "gromacs/selection/selvalue.h"
+#include "gromacs/topology/block.h"
 #include "gromacs/utility/arraysize.h"
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/vec.h"
 
 #include "selmethod.h"
 #include "selmethod_impl.h"
+
+struct gmx_mtop_t;
 
 /*! \internal \brief
  * Data structure for the \p permute selection modifier.
@@ -83,7 +91,6 @@ static void* init_data_permute(int npar, gmx_ana_selparam_t* param);
  * \param[in] npar  Not used (should be 2).
  * \param[in] param Method parameters (should point to \ref smparams_permute).
  * \param[in] data  Should point to a \p t_methoddata_permute.
- * \returns   0 if the input permutation is valid, -1 on error.
  */
 static void init_permute(const gmx_mtop_t* top, int npar, gmx_ana_selparam_t* param, void* data);
 /*! \brief

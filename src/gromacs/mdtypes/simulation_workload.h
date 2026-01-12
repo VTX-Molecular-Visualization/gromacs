@@ -65,8 +65,6 @@ class StepWorkload
 public:
     //! Whether the state has changed, always set unless TPI is used.
     bool stateChanged = false;
-    //! Whether the box might have changed
-    bool haveDynamicBox = false;
     //! Whether neighbor searching needs to be done this step
     bool doNeighborSearch = false;
     //! Whether the slow forces need to be computed this step (in addition to the faster forces)
@@ -137,8 +135,12 @@ public:
     bool haveCpuLocalForceWork = false;
     //! Whether there are currently any non-local forces to be computed on the CPU and, with GPU update and DD, later reduced on the GPU.
     bool haveCpuNonLocalForceWork = false;
-    //! Whether the current nstlist step-range Free energy work on the CPU.
-    bool haveFreeEnergyWork = false;
+    //! Whether the current nstlist step-range has free-energy work (on CPU or GPU).
+    bool haveNonbondedFreeEnergyWork = false;
+    //! Whether the current nstlist step-range has free-energy work on the CPU.
+    bool haveCpuNonbondedFreeEnergyWork = false;
+    //! Whether the current nstlist step-range has free-energy work on the GPU.
+    bool haveGpuNonbondedFreeEnergyWork = false;
     //! Whether the CPU force buffer has contributions to local atoms that need to be reduced on the GPU (with DD).
     // This depends on whether there are CPU-based force tasks
     // or when DD is active the halo exchange has resulted in contributions
@@ -167,10 +169,18 @@ public:
     bool computeNonbondedAtMtsLevel1 = false;
     //! Whether total dipole needs to be computed
     bool computeMuTot = false;
+    //! Whether the box might change over the course of the simulation
+    bool haveDynamicBox = false;
     //! If we have calculation of short range nonbondeds on CPU
     bool useCpuNonbonded = false;
     //! If we have calculation of short range nonbondeds on GPU
     bool useGpuNonbonded = false;
+    //! If we have calculation of nonbonded fe on CPU
+    bool useCpuNonbondedFE = false;
+    //! If we have calculation of nonbonded fe on GPU
+    bool useGpuNonbondedFE = false;
+    //! If we have foreign energy calculations of nonbonded fe on GPU
+    bool useGpuForeignNonbondedFE = false;
     //! If we have calculation of long range PME in GPU
     bool useCpuPme = false;
     //! If we have calculation of long range PME in GPU
@@ -185,6 +195,8 @@ public:
     bool useGpuXBufferOpsWhenAllowed = false;
     //! If F buffer operations are allowed on GPU (actual use depends on other activities that step).
     bool useGpuFBufferOpsWhenAllowed = false;
+    //! Whether filler particles are part of the local state
+    bool haveFillerParticlesInLocalState = false;
     //! If PP domain decomposition is active.
     bool havePpDomainDecomposition = false;
     //! If domain decomposition halo exchange is performed on CPU (in CPU-only runs or with staged GPU communication).

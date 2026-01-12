@@ -39,6 +39,8 @@
  */
 #include "gmxpre.h"
 
+#include <cstdio>
+
 #include "gromacs/options/basicoptions.h"
 #include "gromacs/options/ioptionscontainer.h"
 #include "gromacs/selection/selection.h"
@@ -47,9 +49,14 @@
 #include "gromacs/trajectoryanalysis/analysissettings.h"
 #include "gromacs/trajectoryanalysis/cmdlinerunner.h"
 #include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/vectypes.h"
+
+struct t_pbc;
+struct t_trxframe;
 
 namespace gmx
 {
+class TopologyInformation;
 
 class SelectionTester : public TrajectoryAnalysisModule
 {

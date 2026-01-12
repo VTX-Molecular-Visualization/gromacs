@@ -46,82 +46,124 @@
 
 #include "gromacs/gpu_utils/device_context.h"
 #include "gromacs/gpu_utils/device_stream.h"
+#include "gromacs/hardware/device_information.h"
 #include "gromacs/utility/exceptions.h"
 
-
-static sycl::property_list makeQueuePropertyList(bool enableProfiling, DeviceStreamPriority priority)
+//! Return a SYCL property list for an in-order queue, plus other supplied property values
+template<typename... PropertyT>
+static sycl::property_list makeQueuePropertyList(PropertyT... properties)
 {
-    // If hipSYCL priority extension is present, extract the priority range
-    // and use the lowest or highest priority supported for DeviceStreamPriority::Low and
-    // DeviceStreamPriority::High, respectively.
-#ifdef HIPSYCL_EXT_QUEUE_PRIORITY
-    // For simplicity, we assume 0 to be the default priority (guaranteed for CUDA, verified for HIP)
-    int defaultPrioValue = 0;
-    int highPrioValue    = 0;
-
-#    if GMX_HIPSYCL_HAVE_CUDA_TARGET || GMX_HIPSYCL_HAVE_HIP_TARGET
-#        if GMX_HIPSYCL_HAVE_CUDA_TARGET
-    const auto status         = cudaDeviceGetStreamPriorityRange(nullptr, &highPrioValue);
-    const auto apiSuccessCode = cudaSuccess;
-#        elif GMX_HIPSYCL_HAVE_HIP_TARGET
-    auto       status         = hipDeviceGetStreamPriorityRange(nullptr, &highPrioValue);
-    const auto apiSuccessCode = hipSuccess;
-#        endif
-    if (status != apiSuccessCode)
-    {
-        GMX_THROW(gmx::InternalError("[cuda|hip]DeviceGetStreamPriorityRange failed"));
-    }
-#    endif
-
-#    define HIPSYCL_PRIORITY_ATTRIBUTE_HIGH \
-        sycl::property::queue::hipSYCL_priority { highPrioValue }
-#    define HIPSYCL_PRIORITY_ATTRIBUTE_DEFAULT \
-        sycl::property::queue::hipSYCL_priority { defaultPrioValue }
-#elif defined(SYCL_EXT_ONEAPI_QUEUE_PRIORITY)
-#    define HIPSYCL_PRIORITY_ATTRIBUTE_HIGH \
-        sycl::ext::oneapi::property::queue::priority_high {}
-#    define HIPSYCL_PRIORITY_ATTRIBUTE_DEFAULT \
-        sycl::ext::oneapi::property::queue::priority_normal {}
-#else
-#    define HIPSYCL_PRIORITY_ATTRIBUTE_HIGH
-#    define HIPSYCL_PRIORITY_ATTRIBUTE_DEFAULT
-#endif
-
-    if (enableProfiling)
-    {
-        if (priority == DeviceStreamPriority::High)
-        {
-            return { sycl::property::queue::in_order(),
-                     sycl::property::queue::enable_profiling(),
-                     HIPSYCL_PRIORITY_ATTRIBUTE_HIGH };
-        }
-        else
-        {
-            return { sycl::property::queue::in_order(),
-                     sycl::property::queue::enable_profiling(),
-                     HIPSYCL_PRIORITY_ATTRIBUTE_DEFAULT };
-        }
-    }
-    else // !enableProfiling
-    {
-        if (priority == DeviceStreamPriority::High)
-        {
-            return { sycl::property::queue::in_order(), HIPSYCL_PRIORITY_ATTRIBUTE_HIGH };
-        }
-        else
-        {
-            return { sycl::property::queue::in_order(), HIPSYCL_PRIORITY_ATTRIBUTE_DEFAULT };
-        }
-    }
-#undef HIPSYCL_PRIORITY_ATTRIBUTE_HIGH
-#undef HIPSYCL_PRIORITY_ATTRIBUTE_DEFAULT
+    return sycl::property_list{ sycl::property::queue::in_order(), properties... };
 }
 
-DeviceStream::DeviceStream(const DeviceContext& deviceContext, DeviceStreamPriority priority, const bool useTiming)
+//! Return a SYCL property list for a queue with the requested properties
+template<typename... PropertyT>
+static sycl::property_list makeQueuePropertyList(const bool enableProfiling, PropertyT... properties)
 {
-    const std::vector<sycl::device> devicesInContext = deviceContext.context().get_devices();
-    // The context is constructed to have exactly one device
-    const sycl::device device = devicesInContext[0];
+    if (enableProfiling)
+    {
+        return makeQueuePropertyList(sycl::property::queue::enable_profiling(), properties...);
+    }
+    else
+    {
+        return makeQueuePropertyList(properties...);
+    }
+}
+
+#if GMX_SYCL_ACPP
+static auto acppPriorityProperty(int value)
+{
+#    if defined(ACPP_EXT_QUEUE_PRIORITY) // Since ACpp 24.06
+    return sycl::property::queue::AdaptiveCpp_priority{ value };
+#    elif defined(HIPSYCL_EXT_QUEUE_PRIORITY)
+    return sycl::property::queue::hipSYCL_priority{ value };
+#    else
+    GMX_RELEASE_ASSERT(false,
+                       "acppPriorityProperty should only be called when the queue priority "
+                       "extensions are supported");
+#    endif
+}
+#endif
+
+//! Return a SYCL property list for a queue with the requested properties, where supported
+// Query backend min/max priority (when available) and compute a middle value for the normal priority
+static sycl::property_list makeQueuePropertyList(const bool                 enableProfiling,
+                                                 const DeviceStreamPriority priority,
+                                                 const DeviceContext&       deviceContext)
+{
+#if defined(ACPP_EXT_QUEUE_PRIORITY) || defined(HIPSYCL_EXT_QUEUE_PRIORITY)
+    // We query the backend for min/max priority values for suppoted backends,
+    // for others we leave priorities at 0 (default in CUDA/HIP so reasonable to assume as default).
+    int highPrioValue   = 0;
+    int lowPrioValue    = 0;
+    int normalPrioValue = 0;
+
+#    if defined(ACPP_EXT_QUEUE_PROPERTY_PRIORITY_RANGE) // Merged in October 2025
+    std::tie(lowPrioValue, highPrioValue) =
+            deviceContext.deviceInfo().syclDevice.get_info<sycl::info::device::AdaptiveCpp_priority_range>();
+#    else
+    if (deviceContext.deviceInfo().deviceVendor == DeviceVendor::Nvidia)
+    {
+#        if GMX_ACPP_HAVE_CUDA_TARGET
+        const auto status = cudaDeviceGetStreamPriorityRange(&highPrioValue, &lowPrioValue);
+        if (status != cudaSuccess)
+        {
+            GMX_THROW(gmx::InternalError("cudaDeviceGetStreamPriorityRange failed"));
+        }
+#        endif
+    }
+    else if (deviceContext.deviceInfo().deviceVendor == DeviceVendor::Amd)
+    {
+#        if GMX_ACPP_HAVE_HIP_TARGET
+        const auto status = hipDeviceGetStreamPriorityRange(&highPrioValue, &lowPrioValue);
+        if (status != hipSuccess)
+        {
+            GMX_THROW(gmx::InternalError("hipDeviceGetStreamPriorityRange failed"));
+        }
+#        endif
+    }
+#    endif
+    normalPrioValue = (highPrioValue + lowPrioValue) / 2;
+
+    int chosenPrioValue;
+    if (priority == DeviceStreamPriority::High)
+    {
+        chosenPrioValue = highPrioValue;
+    }
+    else if (priority == DeviceStreamPriority::Low)
+    {
+        chosenPrioValue = lowPrioValue;
+    }
+    else // DeviceStreamPriority::Normal
+    {
+        chosenPrioValue = normalPrioValue;
+    }
+    return makeQueuePropertyList(enableProfiling, acppPriorityProperty(chosenPrioValue));
+#elif defined(SYCL_EXT_ONEAPI_QUEUE_PRIORITY) // Use oneAPI DPC++ extension
+    GMX_UNUSED_VALUE(deviceContext);
+    if (priority == DeviceStreamPriority::High)
+    {
+        return makeQueuePropertyList(enableProfiling, sycl::ext::oneapi::property::queue::priority_high{});
+    }
+    else if (priority == DeviceStreamPriority::Low)
+    {
+        return makeQueuePropertyList(enableProfiling, sycl::ext::oneapi::property::queue::priority_low{});
+    }
+    else // DeviceStreamPriority::Normal
+    {
+        return makeQueuePropertyList(enableProfiling,
+                                     sycl::ext::oneapi::property::queue::priority_normal{});
+    }
+#else                                         // No way to specify the priority
+    GMX_UNUSED_VALUE(priority);
+    GMX_UNUSED_VALUE(deviceContext);
+    return makeQueuePropertyList(enableProfiling);
+#endif
+}
+
+static sycl::queue makeQueue(const DeviceContext& deviceContext, DeviceStreamPriority priority, const bool useTiming)
+{
+    const sycl::device& device = deviceContext.deviceInfo().syclDevice;
 
     bool enableProfiling = false;
     if (useTiming)
@@ -129,14 +171,22 @@ DeviceStream::DeviceStream(const DeviceContext& deviceContext, DeviceStreamPrior
         const bool deviceSupportsTiming = device.has(sycl::aspect::queue_profiling);
         enableProfiling                 = deviceSupportsTiming;
     }
-    stream_ = sycl::queue(
-            deviceContext.context(), device, makeQueuePropertyList(enableProfiling, priority));
+    return sycl::queue(deviceContext.context(),
+                       device,
+                       makeQueuePropertyList(enableProfiling, priority, deviceContext));
+}
+
+DeviceStream::DeviceStream(const DeviceContext& deviceContext,
+                           DeviceStreamPriority priority,
+                           const bool           useTiming) :
+    stream_(makeQueue(deviceContext, priority, useTiming))
+{
 }
 
 DeviceStream::~DeviceStream()
 {
-#if GMX_SYCL_HIPSYCL
-    // Prevents use-after-free errors in hipSYCL's CUDA backend during unit tests
+#if GMX_SYCL_ACPP
+    // Prevents use-after-free errors in ACpp's CUDA backend during unit tests
     try
     {
         synchronize();

@@ -60,14 +60,19 @@
 #    include "gromacs/gpu_utils/syclutils.h"
 #endif
 
+#if GMX_GPU_HIP
+#    include "hip/nbnxm_hip_types.h"
+#endif
+
 #include "gromacs/gpu_utils/gpu_utils.h"
-#include "gromacs/math/vec.h"
+#include "gromacs/mdtypes/enerdata.h"
 #include "gromacs/mdtypes/simulation_workload.h"
 #include "gromacs/nbnxm/nbnxm.h"
 #include "gromacs/pbcutil/ishift.h"
 #include "gromacs/timing/gpu_timing.h"
 #include "gromacs/timing/wallcycle.h"
 #include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/vec.h"
 
 #include "gpu_common_utils.h"
 #include "nbnxm_gpu.h"
@@ -75,10 +80,6 @@
 namespace gmx
 {
 class ListedForcesGpu;
-}
-
-namespace Nbnxm
-{
 
 /*! \brief Count pruning kernel time if either kernel has been triggered
  *
@@ -86,14 +87,14 @@ namespace Nbnxm
  *   - 1st pass prune: ran during the current step (prior to the force kernel);
  *   - rolling prune:  ran at the end of the previous step (prior to the current step H2D xq);
  *
- * Note that the resetting of Nbnxm::GpuTimers::didPrune and Nbnxm::GpuTimers::didRollingPrune
+ * Note that the resetting of GpuTimers::didPrune and GpuTimers::didRollingPrune
  * should happen after calling this function.
  *
  * \param[in] timers   structs with GPU timer objects
  * \param[inout] timings  GPU task timing data
  * \param[in] iloc        interaction locality
  */
-static void countPruneKernelTime(Nbnxm::GpuTimers*          timers,
+static void countPruneKernelTime(GpuTimers*                 timers,
                                  gmx_wallclock_gpu_nbnxn_t* timings,
                                  const InteractionLocality  iloc)
 {
@@ -133,6 +134,8 @@ static void countPruneKernelTime(Nbnxm::GpuTimers*          timers,
  * \param[in]  reduceFshift   True if shift force reduction should be done
  * \param[out] e_lj           Variable to accumulate LJ energy into
  * \param[out] e_el           Variable to accumulate electrostatic energy into
+ * \param[out] dvdl_lj        Variable to accumulate LJ energy derivatives into
+ * \param[out] dvdl_el        Variable to accumulate electrostatic energy derivatives into
  * \param[out] fshift         Pointer to the array of shift forces to accumulate into
  */
 static inline void gpu_reduce_staged_outputs(const NBStagingData&      nbst,
@@ -141,6 +144,8 @@ static inline void gpu_reduce_staged_outputs(const NBStagingData&      nbst,
                                              const bool                reduceFshift,
                                              real*                     e_lj,
                                              real*                     e_el,
+                                             double*                   dvdl_lj,
+                                             double*                   dvdl_el,
                                              rvec*                     fshift)
 {
     /* add up energies and shift forces (only once at local F wait) */
@@ -148,16 +153,48 @@ static inline void gpu_reduce_staged_outputs(const NBStagingData&      nbst,
     {
         if (reduceEnergies)
         {
-            *e_lj += *nbst.eLJ;
-            *e_el += *nbst.eElec;
+            *e_lj += nbst.eLJ[0];
+            *e_el += nbst.eElec[0];
+            *dvdl_lj += nbst.dvdlLJ[0];
+            *dvdl_el += nbst.dvdlElec[0];
         }
 
         if (reduceFshift)
         {
-            for (int i = 0; i < gmx::c_numShiftVectors; i++)
+            for (int i = 0; i < c_numShiftVectors; i++)
             {
                 rvec_inc(fshift[i], nbst.fShift[i]);
             }
+        }
+    }
+}
+
+/*! \brief Reduce free energy lambda data staged internally in the nbnxm module.
+ *
+ *
+ * \param[in]  nbst           Nonbonded staging data
+ * \param[in]  iLocality      Interaction locality specifier
+ * \param[in]  nLambda       Number of foreign lambdas
+ * \param[out] foreign_term   Variable to accumulate foreign lambda terms into
+ */
+static inline void gpu_reduce_staged_foreign_term(const NBStagingData&      nbst,
+                                                  const InteractionLocality iLocality,
+                                                  const int                 nLambda,
+                                                  ForeignLambdaTerms*       foreign_term)
+{
+    /* add up energies and shift forces (only once at local F wait) */
+    if (iLocality == InteractionLocality::Local)
+    {
+        for (int idx = 0; idx < nLambda + 1; idx++)
+        {
+            foreign_term->accumulate(idx,
+                                     FreeEnergyPerturbationCouplingType::Vdw,
+                                     nbst.eLJForeign[idx],
+                                     nbst.dvdlLJForeign[idx]);
+            foreign_term->accumulate(idx,
+                                     FreeEnergyPerturbationCouplingType::Coul,
+                                     nbst.eElecForeign[idx],
+                                     nbst.dvdlElecForeign[idx]);
         }
     }
 }
@@ -184,10 +221,10 @@ static inline void gpu_reduce_staged_outputs(const NBStagingData&      nbst,
  */
 template<typename GpuPairlist>
 static inline void gpu_accumulate_timings(gmx_wallclock_gpu_nbnxn_t* timings,
-                                          Nbnxm::GpuTimers*          timers,
+                                          GpuTimers*                 timers,
                                           const GpuPairlist*         plist,
                                           AtomLocality               atomLocality,
-                                          const gmx::StepWorkload&   stepWork,
+                                          const StepWorkload&        stepWork,
                                           bool                       doTiming)
 {
     /* timing data accumulation */
@@ -250,13 +287,16 @@ static inline void gpu_accumulate_timings(gmx_wallclock_gpu_nbnxn_t* timings,
  * objects.
  */
 //NOLINTNEXTLINE(misc-definitions-in-headers)
-bool gpu_try_finish_task(NbnxmGpu*                nb,
-                         const gmx::StepWorkload& stepWork,
-                         const AtomLocality       aloc,
-                         real*                    e_lj,
-                         real*                    e_el,
-                         gmx::ArrayRef<gmx::RVec> shiftForces,
-                         GpuTaskCompletion        completionKind)
+bool gpu_try_finish_task(NbnxmGpu*           nb,
+                         const StepWorkload& stepWork,
+                         const AtomLocality  aloc,
+                         real*               e_lj,
+                         real*               e_el,
+                         double*             dvdl_lj,
+                         double*             dvdl_el,
+                         ArrayRef<RVec>      shiftForces,
+                         ForeignLambdaTerms* foreign_term,
+                         GpuTaskCompletion   completionKind)
 {
     GMX_ASSERT(nb, "Need a valid nbnxn_gpu object");
 
@@ -297,7 +337,8 @@ bool gpu_try_finish_task(NbnxmGpu*                nb,
         // TODO: this needs to be moved later because conditional wait could brake timing
         // with a future OpenCL implementation, but with CUDA timing is anyway disabled
         // in all cases where we skip the wait.
-        gpu_accumulate_timings(nb->timings, nb->timers, nb->plist[iLocality], aloc, stepWork, nb->bDoTime);
+        gpu_accumulate_timings(
+                nb->timings.get(), nb->timers, nb->plist[iLocality].get(), aloc, stepWork, nb->bDoTime);
 
         if (stepWork.computeEnergy || stepWork.computeVirial)
         {
@@ -307,7 +348,15 @@ bool gpu_try_finish_task(NbnxmGpu*                nb,
                                       stepWork.computeVirial,
                                       e_lj,
                                       e_el,
+                                      dvdl_lj,
+                                      dvdl_el,
                                       as_rvec_array(shiftForces.data()));
+        }
+        const int nLambda = nb->fephostdata->allLambdaCoul.size();
+        // reduce foreign energies
+        if (nLambda > 0 && stepWork.computeDhdl)
+        {
+            gpu_reduce_staged_foreign_term(nb->nbst, iLocality, nLambda, foreign_term);
         }
     }
 
@@ -335,32 +384,48 @@ bool gpu_try_finish_task(NbnxmGpu*                nb,
  * \param[in] nb The nonbonded data GPU structure
  * \param[in]  stepWork     Force schedule flags
  * \param[in] aloc Atom locality identifier
- * \param[out] e_lj Pointer to the LJ energy output to accumulate into
- * \param[out] e_el Pointer to the electrostatics energy output to accumulate into
+ * \param[in] haveSoftCore Whether SoftCore has been used
+ * \param[out] enerd Pointer to the energy data to accumulate energies into
  * \param[out] shiftForces Shift forces buffer to accumulate into
  * \param[out] wcycle Pointer to wallcycle data structure
  * \return            The number of cycles the gpu wait took
  */
 //NOLINTNEXTLINE(misc-definitions-in-headers) TODO: move into source file
-float gpu_wait_finish_task(NbnxmGpu*                nb,
-                           const gmx::StepWorkload& stepWork,
-                           AtomLocality             aloc,
-                           real*                    e_lj,
-                           real*                    e_el,
-                           gmx::ArrayRef<gmx::RVec> shiftForces,
-                           gmx_wallcycle*           wcycle)
+float gpu_wait_finish_task(NbnxmGpu*           nb,
+                           const StepWorkload& stepWork,
+                           AtomLocality        aloc,
+                           const bool          haveSoftCore,
+                           gmx_enerdata_t*     enerd,
+                           ArrayRef<RVec>      shiftForces,
+                           gmx_wallcycle*      wcycle)
 {
     auto cycleCounter = (atomToInteractionLocality(aloc) == InteractionLocality::Local)
                                 ? WallCycleCounter::WaitGpuNbL
                                 : WallCycleCounter::WaitGpuNbNL;
 
     wallcycle_start(wcycle, cycleCounter);
-    gpu_try_finish_task(nb, stepWork, aloc, e_lj, e_el, shiftForces, GpuTaskCompletion::Wait);
+    real*   e_lj = enerd->grpp.energyGroupPairTerms[NonBondedEnergyTerms::LJSR].data();
+    real*   e_el = enerd->grpp.energyGroupPairTerms[NonBondedEnergyTerms::CoulombSR].data();
+    double *dvdl_lj, *dvdl_el;
+    if (haveSoftCore)
+    {
+        dvdl_lj = &enerd->dvdl_nonlin[FreeEnergyPerturbationCouplingType::Vdw];
+        dvdl_el = &enerd->dvdl_nonlin[FreeEnergyPerturbationCouplingType::Coul];
+    }
+    else
+    {
+        dvdl_lj = &enerd->dvdl_lin[FreeEnergyPerturbationCouplingType::Vdw];
+        dvdl_el = &enerd->dvdl_lin[FreeEnergyPerturbationCouplingType::Coul];
+    }
+    ForeignLambdaTerms* foreign_term = &enerd->foreignLambdaTerms;
+
+    gpu_try_finish_task(
+            nb, stepWork, aloc, e_lj, e_el, dvdl_lj, dvdl_el, shiftForces, foreign_term, GpuTaskCompletion::Wait);
     float waitTime = wallcycle_stop(wcycle, cycleCounter);
 
     return waitTime;
 }
 
-} // namespace Nbnxm
+} // namespace gmx
 
 #endif

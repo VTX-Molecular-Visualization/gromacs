@@ -50,8 +50,10 @@
 #include "gromacs/gpu_utils/devicebuffer_datatype.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/gmxassert.h"
+#include "gromacs/utility/vectypes.h"
 
-#if !GMX_GPU_CUDA && !GMX_GPU_SYCL
+class DeviceContext;
+class GpuEventSynchronizer;
 
 namespace gmx
 {
@@ -112,5 +114,3 @@ void PmeForceSenderGpu::waitForEvents()
 
 
 } // namespace gmx
-
-#endif // !GMX_GPU_CUDA

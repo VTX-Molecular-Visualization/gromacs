@@ -52,17 +52,23 @@
 
 #include <cmath>
 
+#include <memory>
+#include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include "gromacs/gpu_utils/capabilities.h"
 #include "gromacs/hardware/device_management.h"
-#include "gromacs/math/vec.h"
-#include "gromacs/math/vectypes.h"
+#include "gromacs/math/paddedvector.h"
 #include "gromacs/mdtypes/mdatom.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "testutils/refdata.h"
+#include "testutils/test_device.h"
 #include "testutils/test_hardware_environment.h"
 #include "testutils/testasserts.h"
 
@@ -209,8 +215,7 @@ TEST_P(LeapFrogTest, SimpleIntegration)
     // Add runners for CPU version
     runners.emplace_back(std::make_unique<LeapFrogHostTestRunner>());
     // If supported, add runners for the GPU version for each available GPU
-    const bool addGpuRunners = GPU_LEAPFROG_SUPPORTED;
-    if (addGpuRunners)
+    if (GpuConfigurationCapabilities::Update)
     {
         for (const auto& testDevice : getTestHardwareEnvironment()->getTestDeviceList())
         {

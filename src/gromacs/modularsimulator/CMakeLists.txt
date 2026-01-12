@@ -40,7 +40,7 @@ if (GMX_OPENMP)
     set_target_properties(modularsimulator PROPERTIES COMPILE_OPTIONS $<TARGET_PROPERTY:OpenMP::OpenMP_CXX,INTERFACE_COMPILE_OPTIONS>)
 endif ()
 
-if (WIN32)
+if (MSVC)
     gmx_target_warning_suppression(modularsimulator /wd4244 HAS_NO_MSVC_LOSSY_CONVERSION)
     gmx_target_warning_suppression(modularsimulator /wd4996 HAS_NO_MSVC_UNSAFE_FUNCTION)
 endif ()
@@ -75,8 +75,8 @@ target_link_libraries(modularsimulator PRIVATE
 )
 
 # Public interface for modules, including dependencies and interfaces
-target_include_directories(modularsimulator PUBLIC
-                           $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+#target_include_directories(modularsimulator PUBLIC
+#                           $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 
 if (BUILD_SHARED_LIBS)
     set_target_properties(modularsimulator PROPERTIES POSITION_INDEPENDENT_CODE ON)

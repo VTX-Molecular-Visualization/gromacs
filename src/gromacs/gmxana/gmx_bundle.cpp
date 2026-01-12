@@ -34,25 +34,39 @@
 #include "gmxpre.h"
 
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
+#include <filesystem>
+#include <string>
 #include <vector>
 
+#include "gromacs/commandline/filenm.h"
 #include "gromacs/commandline/pargs.h"
 #include "gromacs/fileio/confio.h"
+#include "gromacs/fileio/filetypes.h"
+#include "gromacs/fileio/oenv.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/fileio/xvgr.h"
 #include "gromacs/gmxana/gmx_ana.h"
 #include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/pbcutil/rmpbc.h"
+#include "gromacs/topology/atoms.h"
 #include "gromacs/topology/index.h"
 #include "gromacs/topology/topology.h"
 #include "gromacs/trajectory/trajectoryframe.h"
 #include "gromacs/utility/arraysize.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/gmxassert.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
+
+enum class PbcType : int;
+struct gmx_output_env_t;
 
 #define MAX_ENDS 3
 
@@ -215,11 +229,11 @@ int gmx_bundle(int argc, char* argv[])
     static int      n    = 0;
     static gmx_bool bZ   = FALSE;
     t_pargs         pa[] = { { "-na", FALSE, etINT, { &n }, "Number of axes" },
-                     { "-z",
-                       FALSE,
-                       etBOOL,
-                       { &bZ },
-                       "Use the [IT]z[it]-axis as reference instead of the average axis" } };
+                             { "-z",
+                               FALSE,
+                               etBOOL,
+                               { &bZ },
+                               "Use the [IT]z[it]-axis as reference instead of the average axis" } };
     FILE *          flen, *fdist, *fz, *ftilt, *ftiltr, *ftiltl;
     FILE *          fkink = nullptr, *fkinkr = nullptr, *fkinkl = nullptr;
     t_trxstatus*    status;
@@ -387,7 +401,7 @@ int gmx_bundle(int argc, char* argv[])
             fprintf(flen, " %6g", bun.len[i]);
             fprintf(fdist, " %6g", norm(bun.mid[i]));
             fprintf(fz, " %6g", bun.mid[i][ZZ]);
-            fprintf(ftilt, " %6g", gmx::c_rad2Deg * acos(bun.dir[i][ZZ]));
+            fprintf(ftilt, " %6g", gmx::c_rad2Deg * std::acos(bun.dir[i][ZZ]));
             comp = bun.mid[i][XX] * bun.dir[i][XX] + bun.mid[i][YY] * bun.dir[i][YY];
             fprintf(ftiltr, " %6g", gmx::c_rad2Deg * std::asin(comp / std::hypot(comp, bun.dir[i][ZZ])));
             comp = bun.mid[i][YY] * bun.dir[i][XX] - bun.mid[i][XX] * bun.dir[i][YY];
@@ -398,7 +412,7 @@ int gmx_bundle(int argc, char* argv[])
                 rvec_sub(bun.end[2][i], bun.end[1][i], vb);
                 unitv(va, va);
                 unitv(vb, vb);
-                fprintf(fkink, " %6g", gmx::c_rad2Deg * acos(iprod(va, vb)));
+                fprintf(fkink, " %6g", gmx::c_rad2Deg * std::acos(iprod(va, vb)));
                 cprod(va, vb, vc);
                 copy_rvec(bun.mid[i], vr);
                 vr[ZZ] = 0;

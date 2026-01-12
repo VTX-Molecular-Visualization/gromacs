@@ -44,9 +44,14 @@
 #ifndef GMX_MDLIB_SHAKE_H
 #define GMX_MDLIB_SHAKE_H
 
-#include "gromacs/math/vec.h"
+#include <cstdio>
+
+#include <vector>
+
 #include "gromacs/topology/block.h"
 #include "gromacs/utility/real.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
 
 struct InteractionList;
 class InteractionDefinitions;

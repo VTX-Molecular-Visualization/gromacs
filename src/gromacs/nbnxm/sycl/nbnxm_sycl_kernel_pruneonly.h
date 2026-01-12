@@ -44,27 +44,20 @@
 namespace gmx
 {
 enum class InteractionLocality;
-}
 struct NbnxmGpu;
-
-namespace Nbnxm
-{
-using gmx::InteractionLocality;
 
 /*! \brief Launch SYCL NBNXM prune-only kernel.
  *
  * \param nb Non-bonded parameters.
  * \param iloc Interaction locality.
  * \param numParts Total number of rolling-prune parts.
- * \param part Number of the part to prune.
- * \param numSciInPart Number of superclusters in \p part.
+ * \param numSciInPartMax Maximum number of superclusters in a part.
  */
 void launchNbnxmKernelPruneOnly(NbnxmGpu*                 nb,
                                 const InteractionLocality iloc,
                                 const int                 numParts,
-                                const int                 part,
-                                const int                 numSciInPart);
+                                const int                 numSciInPartMax);
 
-} // namespace Nbnxm
+} // namespace gmx
 
 #endif // GMX_NBNXM_SYCL_NBNXM_SYCL_KERNEL_PRUNEONLY_H

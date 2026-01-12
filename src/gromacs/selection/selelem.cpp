@@ -44,19 +44,26 @@
 
 #include <cstring>
 
+#include <filesystem>
+
 #include "gromacs/selection/indexutil.h"
 #include "gromacs/selection/position.h"
 #include "gromacs/selection/selectionenums.h"
+#include "gromacs/selection/selparam.h"
+#include "gromacs/selection/selvalue.h"
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "keywords.h"
 #include "mempool.h"
 #include "poscalc.h"
 #include "selmethod.h"
+
+struct gmx_ana_indexgrps_t;
 
 /*!
  * \param[in] sel Selection for which the string is requested
@@ -225,11 +232,6 @@ void SelectionTreeElement::freeExpressionData()
             gmx_ana_poscalc_free(u.expr.pc);
             u.expr.pc = nullptr;
         }
-    }
-    if (type == SEL_ARITHMETIC)
-    {
-        sfree(u.arith.opstr);
-        u.arith.opstr = nullptr;
     }
     if (type == SEL_SUBEXPR || type == SEL_ROOT || (type == SEL_CONST && v.type == GROUP_VALUE))
     {

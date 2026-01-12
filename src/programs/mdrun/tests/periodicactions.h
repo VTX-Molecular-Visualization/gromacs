@@ -43,7 +43,12 @@
 
 #include "config.h"
 
+#include <filesystem>
+#include <string>
 #include <tuple>
+#include <vector>
+
+#include <gtest/gtest.h>
 
 #include "gromacs/trajectory/energyframe.h"
 #include "gromacs/utility/strconvert.h"
@@ -51,6 +56,9 @@
 
 #include "testutils/simulationdatabase.h"
 #include "testutils/testasserts.h"
+#include "testutils/testfilemanager.h"
+
+#include "programs/mdrun/tests/comparison_helpers.h"
 
 #include "energycomparison.h"
 #include "energyreader.h"
@@ -101,7 +109,7 @@ public:
     //! Generate reference data from mdrun writing everything every step.
     void prepareReferenceData();
     //! Names for the output files from the reference mdrun call
-    ReferenceFileNames referenceFileNames_ = { fileManager_.getTemporaryFilePath("reference.edr").u8string() };
+    ReferenceFileNames referenceFileNames_ = { fileManager_.getTemporaryFilePath("reference.edr").string() };
     //! Functor for energy comparison
     EnergyComparison energyComparison_{ EnergyComparison::defaultEnergyTermsToCompare(),
                                         MaxNumFrames::compareAllFrames() };

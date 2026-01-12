@@ -34,26 +34,40 @@
 #include "gmxpre.h"
 
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
+#include <filesystem>
+#include <string>
+
+#include "gromacs/commandline/filenm.h"
 #include "gromacs/commandline/pargs.h"
 #include "gromacs/fileio/confio.h"
+#include "gromacs/fileio/filetypes.h"
 #include "gromacs/fileio/pdbio.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/gmxana/eigio.h"
 #include "gromacs/gmxana/gmx_ana.h"
 #include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
-#include "gromacs/math/vec.h"
+#include "gromacs/random/seed.h"
 #include "gromacs/random/threefry.h"
 #include "gromacs/random/uniformintdistribution.h"
+#include "gromacs/topology/atoms.h"
 #include "gromacs/topology/index.h"
 #include "gromacs/topology/topology.h"
 #include "gromacs/utility/arraysize.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/futil.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
+
+enum class PbcType : int;
+struct gmx_output_env_t;
 
 
 int gmx_nmens(int argc, char* argv[])
@@ -257,7 +271,7 @@ int gmx_nmens(int argc, char* argv[])
         t = s + 1;
         write_trx(out, natoms, index, atoms, 0, t, box, xout2, nullptr, nullptr);
         fprintf(stderr, "\rGenerated %d structures", s + 1);
-        fflush(stderr);
+        std::fflush(stderr);
     }
     fprintf(stderr, "\n");
     close_trx(out);

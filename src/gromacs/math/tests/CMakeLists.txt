@@ -35,6 +35,7 @@ gmx_add_unit_test(MathUnitTests math-test
     CPP_SOURCE_FILES
         arrayrefwithpadding.cpp
         boxmatrix.cpp
+        complex.cpp
         coordinatetransformation.cpp
         densityfit.cpp
         dofit.cpp
@@ -48,6 +49,5 @@ gmx_add_unit_test(MathUnitTests math-test
         neldermead.cpp
         optimization.cpp
         paddedvector.cpp
-        vectypes.cpp
         )
 target_link_libraries(math-test PRIVATE math)

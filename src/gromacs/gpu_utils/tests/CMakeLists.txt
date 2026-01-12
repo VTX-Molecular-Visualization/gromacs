@@ -43,29 +43,48 @@ gmx_add_unit_test(GpuUtilsUnitTests gpu_utils-test HARDWARE_DETECTION
         clfftinitializer.cpp
         device_availability.cpp
         device_stream_manager.cpp
-        hostallocator.cpp
         pinnedmemorychecker.cpp
         
     GPU_CPP_SOURCE_FILES
         device_buffer.cpp
         gpueventsynchronizer.cpp
+        hostallocator.cpp
         typecasts.cpp
 
     CUDA_CU_SOURCE_FILES
         devicetransfers.cu
         typecasts_runner.cu
 
+    HIP_CPP_SOURCE_FILES
+        devicetransfers_hip.cpp
+        typecasts_runner_hip.cpp
+
     OPENCL_CPP_SOURCE_FILES
         devicetransfers_ocl.cpp
 
     SYCL_CPP_SOURCE_FILES
         devicetransfers_sycl.cpp
+        sycl_kernel_utils.cpp
 
     NON_GPU_CPP_SOURCE_FILES
         devicetransfers.cpp
     )
 target_link_libraries(gpu_utils-test PRIVATE gpu_utils)
-target_include_directories(gpu_utils-test PRIVATE ${PROJECT_SOURCE_DIR}/src/gromacs/math/tests)
+target_link_libraries(gpu_utils-test PRIVATE math)
+
+# Library MPI is a runtime dependency, but the tests can be compiled
+# in thread-MPI builds for developer convenience.
+if (GMX_MPI OR GMX_THREAD_MPI)
+    gmx_add_mpi_unit_test(GpuUtilsMpiTests gpu_utils-mpi-test 2 HARDWARE_DETECTION MPI
+    GPU_CPP_SOURCE_FILES
+        gpu_aware_mpi.cpp
+    )
+    # The unit test binary and target are not created with winthreads,
+    # so set up the linking conditionally.
+    if (TARGET gpu_utils-mpi-test)
+        target_link_libraries(gpu_utils-mpi-test PRIVATE gpu_utils utility)
+    endif()
+endif()
 
 if (GMX_NVSHMEM)
     gmx_add_mpi_unit_test(NvshmemTests nvshmem-test 2 HARDWARE_DETECTION NVSHMEM

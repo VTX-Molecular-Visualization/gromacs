@@ -35,14 +35,16 @@
 #ifndef GMX_GMXPREPROCESS_READIR_H
 #define GMX_GMXPREPROCESS_READIR_H
 
+#include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "gromacs/fileio/readinp.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/mdtypes/multipletimestepping.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/real.h"
+#include "gromacs/utility/vectypes.h"
 
 namespace gmx
 {
@@ -123,11 +125,14 @@ void check_ir(const char*                    mdparin,
 //! Returns the index of string \p s in \p indexGroups or exit with a verbose fatal error when not found
 int getGroupIndex(const std::string& s, gmx::ArrayRef<const IndexGroup> indexGroups);
 
+//! Do checks that are relevant when constraints are present
 void double_check(t_inputrec* ir, matrix box, bool bHasNormalConstraints, bool bHasAnyConstraints, WarningHandler* wi);
-/* Do more checks */
 
-void triple_check(const char* mdparin, t_inputrec* ir, gmx_mtop_t* sys, WarningHandler* wi);
-/* Do even more checks */
+//! Processes constant acceleration options
+void processConstantAcceleration(t_inputrec* ir, const gmx_mtop_t& sys);
+
+//! Do checks that can only be done when a complete topology is available
+void triple_check(const char* mdparin, const t_inputrec& ir, const gmx_mtop_t& sys, WarningHandler* wi);
 
 void get_ir(const char*     mdparin,
             const char*     mdparout,
@@ -141,13 +146,13 @@ void get_ir(const char*     mdparin,
  * function is called. Also prints the input file back to mdparout.
  */
 
-void do_index(const char*                    mdparin,
-              const char*                    ndx,
-              gmx_mtop_t*                    mtop,
-              bool                           bVerbose,
-              const gmx::MDModulesNotifiers& mdModulesNotifiers,
-              t_inputrec*                    ir,
-              WarningHandler*                wi);
+void do_index(const char*                                 mdparin,
+              const std::optional<std::filesystem::path>& ndx,
+              gmx_mtop_t*                                 mtop,
+              bool                                        bVerbose,
+              const gmx::MDModulesNotifiers&              mdModulesNotifiers,
+              t_inputrec*                                 ir,
+              WarningHandler*                             wi);
 /* Read the index file and assign grp numbers to atoms.
  */
 

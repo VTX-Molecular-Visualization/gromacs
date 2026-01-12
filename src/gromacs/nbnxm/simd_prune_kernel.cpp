@@ -36,6 +36,7 @@
 
 #include "simd_prune_kernel.h"
 
+#include "gromacs/math/functions.h"
 #include "gromacs/nbnxm/atomdata.h"
 #include "gromacs/nbnxm/nbnxm_simd.h"
 #include "gromacs/nbnxm/pairlist.h"
@@ -47,26 +48,14 @@
 #    include "simd_load_store_functions.h"
 #endif
 
-//! Returns the base 2 log of \p x
-template<int x>
-gmx_unused static constexpr int sc_log2()
+namespace gmx
 {
-    static_assert(x == 2 || x == 4);
-
-    switch (x)
-    {
-        case 2: return 1; break;
-        case 4: return 2; break;
-    }
-
-    return 0;
-}
 
 template<KernelLayout kernelLayout>
-void nbnxmSimdPruneKernel(NbnxnPairlistCpu*              nbl,
-                          const nbnxn_atomdata_t&        nbat,
-                          gmx::ArrayRef<const gmx::RVec> shiftvec,
-                          real                           rlistInner)
+void nbnxmSimdPruneKernel(NbnxnPairlistCpu*       nbl,
+                          const nbnxn_atomdata_t& nbat,
+                          ArrayRef<const RVec>    shiftvec,
+                          real                    rlistInner)
 {
 #if GMX_SIMD
     using namespace gmx;
@@ -74,10 +63,8 @@ void nbnxmSimdPruneKernel(NbnxnPairlistCpu*              nbl,
     // The number of j-clusters stored in a SIMD register
     constexpr int c_numJClustersPerSimdRegister = (kernelLayout == KernelLayout::r2xMM ? 2 : 1);
 
-    // The i-cluster size
-    constexpr int c_iClusterSize = 4;
-    // The j-cluster size
-    constexpr int c_jClusterSize(GMX_SIMD_REAL_WIDTH / c_numJClustersPerSimdRegister);
+    constexpr int c_iClusterSize = sc_iClusterSize(kernelLayout);
+    constexpr int c_jClusterSize = sc_jClusterSize(kernelLayout);
 
     // The stride of all atom data arrays
     constexpr int c_stride = std::max(c_iClusterSize, c_jClusterSize);
@@ -188,7 +175,7 @@ void nbnxmSimdPruneKernel(NbnxnPairlistCpu*              nbl,
                 wco[i] = (rsq[i] < rlist2_S);
             }
 
-            constexpr int numIterations = sc_log2<nR>();
+            constexpr int numIterations = StaticLog2<nR>::value;
             for (int iter = 0; iter < numIterations; iter++)
             {
                 const int offset = (1 << iter);
@@ -230,15 +217,17 @@ void nbnxmSimdPruneKernel(NbnxnPairlistCpu*              nbl,
 }
 
 #if GMX_HAVE_NBNXM_SIMD_2XMM
-template void nbnxmSimdPruneKernel<KernelLayout::r2xMM>(NbnxnPairlistCpu*              nbl,
-                                                        const nbnxn_atomdata_t&        nbat,
-                                                        gmx::ArrayRef<const gmx::RVec> shiftvec,
-                                                        real                           rlistInner);
+template void nbnxmSimdPruneKernel<KernelLayout::r2xMM>(NbnxnPairlistCpu*       nbl,
+                                                        const nbnxn_atomdata_t& nbat,
+                                                        ArrayRef<const RVec>    shiftvec,
+                                                        real                    rlistInner);
 #endif
 
 #if GMX_HAVE_NBNXM_SIMD_4XM
-template void nbnxmSimdPruneKernel<KernelLayout::r4xM>(NbnxnPairlistCpu*              nbl,
-                                                       const nbnxn_atomdata_t&        nbat,
-                                                       gmx::ArrayRef<const gmx::RVec> shiftvec,
-                                                       real                           rlistInner);
+template void nbnxmSimdPruneKernel<KernelLayout::r4xM>(NbnxnPairlistCpu*       nbl,
+                                                       const nbnxn_atomdata_t& nbat,
+                                                       ArrayRef<const RVec>    shiftvec,
+                                                       real                    rlistInner);
 #endif
+
+} // namespace gmx

@@ -34,27 +34,41 @@
 #include "gmxpre.h"
 
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 #include <algorithm>
 #include <array>
+#include <filesystem>
+#include <string>
+#include <vector>
 
+#include "gromacs/commandline/filenm.h"
 #include "gromacs/commandline/pargs.h"
 #include "gromacs/commandline/viewit.h"
+#include "gromacs/fileio/filetypes.h"
+#include "gromacs/fileio/oenv.h"
 #include "gromacs/fileio/tpxio.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/fileio/xvgr.h"
 #include "gromacs/gmxana/gmx_ana.h"
 #include "gromacs/math/nrjac.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/pbcutil/rmpbc.h"
 #include "gromacs/topology/index.h"
 #include "gromacs/topology/topology.h"
+#include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/arraysize.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/booltype.h"
 #include "gromacs/utility/cstringutil.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
+
+enum class PbcType : int;
+struct gmx_output_env_t;
 
 static void gyro_eigen(double** gyr, double* eig, double** eigv, int* ord)
 {
@@ -407,7 +421,7 @@ int gmx_polystat(int argc, char* argv[])
                 "%10.3f %8.4f %8.4f %8.4f %8.4f %8.4f",
                 t * output_env_get_time_factor(oenv),
                 std::sqrt(sum_eed2),
-                sqrt(sum_gyro),
+                std::sqrt(sum_gyro),
                 std::sqrt(eig[ord[0]]),
                 std::sqrt(eig[ord[1]]),
                 std::sqrt(eig[ord[2]]));

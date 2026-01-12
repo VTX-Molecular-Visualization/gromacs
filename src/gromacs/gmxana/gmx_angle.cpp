@@ -34,12 +34,17 @@
 #include "gmxpre.h"
 
 #include <cmath>
+#include <cstdio>
 
 #include <algorithm>
+#include <filesystem>
+#include <string>
 
+#include "gromacs/commandline/filenm.h"
 #include "gromacs/commandline/pargs.h"
 #include "gromacs/commandline/viewit.h"
 #include "gromacs/correlationfunctions/autocorr.h"
+#include "gromacs/fileio/filetypes.h"
 #include "gromacs/fileio/trrio.h"
 #include "gromacs/fileio/xvgr.h"
 #include "gromacs/gmxana/angle_correction.h"
@@ -47,13 +52,18 @@
 #include "gromacs/gmxana/gstat.h"
 #include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/topology/index.h"
 #include "gromacs/utility/arraysize.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/pleasecite.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
+
+struct gmx_output_env_t;
 
 static void dump_dih_trr(int nframes, int nangles, real** dih, const char* fn, real* time)
 {
@@ -131,28 +141,28 @@ int gmx_g_angle(int argc, char* argv[])
     t_pargs            pa[]     = {
         { "-type", FALSE, etENUM, { opt }, "Type of angle to analyse" },
         { "-all",
-          FALSE,
-          etBOOL,
-          { &bALL },
-          "Plot all angles separately in the averages file, in the order of appearance in the "
-          "index file." },
+                         FALSE,
+                         etBOOL,
+                         { &bALL },
+                         "Plot all angles separately in the averages file, in the order of appearance in the "
+                                        "index file." },
         { "-binwidth",
-          FALSE,
-          etREAL,
-          { &binwidth },
-          "binwidth (degrees) for calculating the distribution" },
+                         FALSE,
+                         etREAL,
+                         { &binwidth },
+                         "binwidth (degrees) for calculating the distribution" },
         { "-periodic", FALSE, etBOOL, { &bPBC }, "Print dihedral angles modulo 360 degrees" },
         { "-chandler",
-          FALSE,
-          etBOOL,
-          { &bChandler },
-          "Use Chandler correlation function (N[trans] = 1, N[gauche] = 0) rather than cosine "
-          "correlation function. Trans is defined as phi < -60 or phi > 60." },
+                         FALSE,
+                         etBOOL,
+                         { &bChandler },
+                         "Use Chandler correlation function (N[trans] = 1, N[gauche] = 0) rather than cosine "
+                                        "correlation function. Trans is defined as phi < -60 or phi > 60." },
         { "-avercorr",
-          FALSE,
-          etBOOL,
-          { &bAverCorr },
-          "Average the correlation functions for the individual angles/dihedrals" }
+                         FALSE,
+                         etBOOL,
+                         { &bAverCorr },
+                         "Average the correlation functions for the individual angles/dihedrals" }
     };
     static const char* bugs[] = {
         "Counting transitions only works for dihedrals with multiplicity 3"
@@ -166,7 +176,7 @@ int gmx_g_angle(int argc, char* argv[])
     real          maxang, S2, norm_fac, maxstat;
     unsigned long mode;
     int           nframes, maxangstat, mult, *angstat;
-    int           i, j, nangles, first, last;
+    int           nangles, first, last;
     gmx_bool      bAver, bRb, bPeriodic, bFrac, /* calculate fraction too?  */
             bTrans,                             /* worry about transtions too? */
             bCorr;                              /* correlation function ? */
@@ -304,12 +314,12 @@ int gmx_g_angle(int argc, char* argv[])
     {
         sprintf(title, "Average Angle: %s", grpname);
         out = xvgropen(opt2fn("-ov", NFILE, fnm), title, "Time (ps)", "Angle (degrees)", oenv);
-        for (i = 0; (i < nframes); i++)
+        for (int i = 0; (i < nframes); i++)
         {
             fprintf(out, "%10.5f  %8.3f", time[i], aver_angle[i] * gmx::c_rad2Deg);
             if (bALL)
             {
-                for (j = 0; (j < nangles); j++)
+                for (int j = 0; (j < nangles); j++)
                 {
                     if (bPBC)
                     {
@@ -336,7 +346,7 @@ int gmx_g_angle(int argc, char* argv[])
         sprintf(title, "Trans fraction: %s", grpname);
         out   = xvgropen(opt2fn("-of", NFILE, fnm), title, "Time (ps)", "Fraction", oenv);
         tfrac = 0.0;
-        for (i = 0; (i < nframes); i++)
+        for (int i = 0; (i < nframes); i++)
         {
             fprintf(out, "%10.5f  %10.3f\n", time[i], trans_frac[i]);
             tfrac += trans_frac[i];
@@ -369,9 +379,9 @@ int gmx_g_angle(int argc, char* argv[])
                 real     dval, sixty = gmx::c_deg2Rad * 60;
                 gmx_bool bTest;
 
-                for (i = 0; (i < nangles); i++)
+                for (int i = 0; (i < nangles); i++)
                 {
-                    for (j = 0; (j < nframes); j++)
+                    for (int j = 0; (j < nframes); j++)
                     {
                         dval = dih[i][j];
                         if (bRb)
@@ -440,7 +450,7 @@ int gmx_g_angle(int argc, char* argv[])
     else
     { /* Incorrect  for Std. Dev. */
         real delta, b_aver = aver_angle[0];
-        for (i = 0; (i < nframes); i++)
+        for (int i = 0; (i < nframes); i++)
         {
             delta = correctRadianAngleRange(aver_angle[i] - b_aver);
             b_aver += delta;
@@ -476,7 +486,7 @@ int gmx_g_angle(int argc, char* argv[])
     if (bPeriodic)
     {
         maxstat = 0;
-        for (i = first; (i <= last); i++)
+        for (int i = first; (i <= last); i++)
         {
             maxstat = std::max(maxstat, angstat[i] * norm_fac);
         }
@@ -493,7 +503,7 @@ int gmx_g_angle(int argc, char* argv[])
             fprintf(out, "@    yaxis  tick minor 0.0025\n");
         }
     }
-    for (i = first; (i <= last); i++)
+    for (int i = first; (i <= last); i++)
     {
         fprintf(out, "%10g  %10f\n", i * binwidth + 180.0 - maxang, angstat[i] * norm_fac);
     }

@@ -15,8 +15,8 @@ For getting, building and installing |Gromacs|, see the
 :doc:`/install-guide/index`.
 For background on algorithms and implementations, see the
 :ref:`reference manual part <gmx-reference-manual-rst>` of the documentation.
-If you have questions not answered by these resources, 
-please visit the |Gromacs| `users forum <https://gromacs.bioexcel.eu/>`_
+If you have questions not answered by these resources,
+please visit the |Gromacs| `user discussion forum`_
 and search for a potential answer or ask a question from the community.
 
 |GMX_MANUAL_DOI_STRING|
@@ -43,6 +43,7 @@ and search for a potential answer or ask a question from the community.
    run-time-errors
    cmdline
    terminology
+   validation
    environment-variables
    floating-point
    security

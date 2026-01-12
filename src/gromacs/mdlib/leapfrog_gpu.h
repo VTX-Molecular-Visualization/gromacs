@@ -47,6 +47,8 @@
 
 #if GMX_GPU_CUDA
 #    include "gromacs/gpu_utils/gputraits.cuh"
+#elif GMX_GPU_HIP
+#    include "gromacs/gpu_utils/gputraits_hip.h"
 #endif
 #if GMX_GPU_SYCL
 #    include "gromacs/gpu_utils/gputraits_sycl.h"
@@ -58,6 +60,7 @@
 #include "gromacs/gpu_utils/hostallocator.h"
 #include "gromacs/math/matrix.h"
 #include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/gmxassert.h"
 
 class DeviceContext;
 class DeviceStream;
@@ -79,6 +82,30 @@ enum class NumTempScaleValues
     Multiple = 2, //!< Multiple T-scaling values, need to use T-group indices
     Count    = 3  //!< Number of valid values
 };
+
+
+//! Convert \p doTemperatureScaling and \p numTempScaleValues to \ref NumTempScaleValues.
+inline NumTempScaleValues getTempScalingType(bool doTemperatureScaling, int numTempScaleValues)
+{
+    if (!doTemperatureScaling)
+    {
+        return NumTempScaleValues::None;
+    }
+    else if (numTempScaleValues == 1)
+    {
+        return NumTempScaleValues::Single;
+    }
+    else if (numTempScaleValues > 1)
+    {
+        return NumTempScaleValues::Multiple;
+    }
+    else
+    {
+        GMX_RELEASE_ASSERT(
+                false, "Temperature coupling was requested with no temperature coupling groups.");
+        return NumTempScaleValues::Count;
+    }
+}
 
 // Avoid check-source warnings about the duplicate class enum
 #ifndef DOXYGEN
@@ -102,7 +129,7 @@ class LeapFrogGpu
 public:
     /*! \brief Constructor.
      *
-     * \param[in] deviceContext       Device context (dummy in CUDA).
+     * \param[in] deviceContext       Device context.
      * \param[in] deviceStream        Device stream to use.
      * \param[in] numTempScaleValues  Number of temperature scale groups.
      */
@@ -115,7 +142,7 @@ public:
      * Updates coordinates and velocities on the GPU. The current coordinates are saved for constraints.
      *
      * \param[in,out] d_x                      Coordinates to update
-     * \param[out]    d_xp                     Place to save the values of initial coordinates coordinates to.
+     * \param[out]    d_x0                     Place to save the values of initial coordinates coordinates to.
      * \param[in,out] d_v                      Velocities (will be updated).
      * \param[in]     d_f                      Forces.
      * \param[in]     dt                       Timestep.
@@ -126,7 +153,7 @@ public:
      * \param[in]     prVelocityScalingMatrix  Parrinello-Rahman velocity scaling matrix
      */
     void integrate(DeviceBuffer<Float3>              d_x,
-                   DeviceBuffer<Float3>              d_xp,
+                   DeviceBuffer<Float3>              d_x0,
                    DeviceBuffer<Float3>              d_v,
                    DeviceBuffer<Float3>              d_f,
                    float                             dt,

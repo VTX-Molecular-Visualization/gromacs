@@ -42,6 +42,9 @@
 
 #include "gromacs/utility/path.h"
 
+#include <filesystem>
+#include <string>
+#include <string_view>
 #include <utility>
 
 #include <gtest/gtest.h>
@@ -92,12 +95,12 @@ TEST_P(PathSearchTest, SearchOperationsWork)
     }
     {
         std::string result;
-        ASSERT_NO_THROW_GMX(result = stripExtension(input).generic_u8string());
+        ASSERT_NO_THROW_GMX(result = stripExtension(input).generic_string());
         checker.checkString(result, "stripExtension");
     }
     {
         std::string result;
-        ASSERT_NO_THROW_GMX(result = concatenateBeforeExtension(input, "_34").generic_u8string());
+        ASSERT_NO_THROW_GMX(result = concatenateBeforeExtension(input, "_34").generic_string());
         checker.checkString(result, "concatenateBeforeExtension");
     }
 }

@@ -43,9 +43,12 @@
 #include "rdf.h"
 
 #include <cmath>
+#include <cstddef>
 
 #include <algorithm>
 #include <limits>
+#include <memory>
+#include <string>
 #include <vector>
 
 #include "gromacs/analysisdata/analysisdata.h"
@@ -54,11 +57,13 @@
 #include "gromacs/analysisdata/modules/plot.h"
 #include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
-#include "gromacs/math/vec.h"
+#include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/options/basicoptions.h"
 #include "gromacs/options/filenameoption.h"
 #include "gromacs/options/ioptionscontainer.h"
+#include "gromacs/options/optionfiletype.h"
 #include "gromacs/pbcutil/pbc.h"
+#include "gromacs/selection/indexutil.h"
 #include "gromacs/selection/nbsearch.h"
 #include "gromacs/selection/selection.h"
 #include "gromacs/selection/selectionoption.h"
@@ -67,11 +72,19 @@
 #include "gromacs/trajectoryanalysis/analysismodule.h"
 #include "gromacs/trajectoryanalysis/analysissettings.h"
 #include "gromacs/trajectoryanalysis/topologyinformation.h"
+#include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/exceptions.h"
+#include "gromacs/utility/listoflists.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
 
 namespace gmx
 {
+class AnalysisDataParallelOptions;
+class SelectionCollection;
 
 namespace analysismodules
 {
@@ -124,7 +137,7 @@ public:
 
     TrajectoryAnalysisModuleDataPointer startFrames(const AnalysisDataParallelOptions& opt,
                                                     const SelectionCollection& selections) override;
-    void                                analyzeFrame(int frnr, const t_trxframe& fr, t_pbc* pbc, TrajectoryAnalysisModuleData* pdata) override;
+    void analyzeFrame(int frnr, const t_trxframe& fr, t_pbc* pbc, TrajectoryAnalysisModuleData* pdata) override;
 
     void finishAnalysis(int nframes) override;
     void writeOutput() override;
@@ -536,7 +549,7 @@ void Rdf::analyzeFrame(int frnr, const t_trxframe& fr, t_pbc* pbc, TrajectoryAna
             {
                 std::fill(surfaceDist2.begin(), surfaceDist2.end(), std::numeric_limits<real>::max());
                 AnalysisNeighborhoodPairSearch pairSearch = nbsearch.startPairSearch(sel[g].position(i));
-                AnalysisNeighborhoodPair       pair;
+                AnalysisNeighborhoodPair pair;
                 while (pairSearch.findNextPair(&pair))
                 {
                     const real r2    = pair.distance2();
@@ -547,9 +560,9 @@ void Rdf::analyzeFrame(int frnr, const t_trxframe& fr, t_pbc* pbc, TrajectoryAna
                     }
                 }
                 // Accumulate the RDF from the distances to the surface.
-                for (size_t i = 0; i < surfaceDist2.size(); ++i)
+                for (size_t j = 0; j < surfaceDist2.size(); ++j)
                 {
-                    const real r2 = surfaceDist2[i];
+                    const real r2 = surfaceDist2[j];
                     // Here, we need to check for rmax, since the value might
                     // be above the cutoff if no points were close to some
                     // surface positions.

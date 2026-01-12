@@ -44,6 +44,11 @@
 
 #include <cstdio>
 
+#include <filesystem>
+#include <memory>
+#include <string>
+#include <vector>
+
 #include "gromacs/selection/selection.h"
 #include "gromacs/selection/selectioncollection.h"
 #include "gromacs/selection/selectionoption.h"
@@ -54,13 +59,14 @@
 
 namespace gmx
 {
+class IOptionsContainer;
 
 /********************************************************************
  * SelectionOptionManager::Impl
  */
 
 /*! \internal \brief
- * Private implemention class for SelectionOptionManager.
+ * Private implementation class for SelectionOptionManager.
  *
  * \ingroup module_selection
  */

@@ -33,16 +33,26 @@
  */
 #include "gmxpre.h"
 
+#include <cinttypes>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
 #include <algorithm>
+#include <filesystem>
+#include <optional>
+#include <string>
+#include <vector>
 
+#include "gromacs/commandline/filenm.h"
 #include "gromacs/commandline/pargs.h"
 #include "gromacs/commandline/viewit.h"
 #include "gromacs/fileio/confio.h"
+#include "gromacs/fileio/filetypes.h"
 #include "gromacs/fileio/matio.h"
+#include "gromacs/fileio/oenv.h"
+#include "gromacs/fileio/rgb.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/fileio/xvgr.h"
 #include "gromacs/gmxana/cluster_methods.h"
@@ -50,20 +60,30 @@
 #include "gromacs/gmxana/gmx_ana.h"
 #include "gromacs/linearalgebra/eigensolver.h"
 #include "gromacs/math/do_fit.h"
-#include "gromacs/math/vec.h"
+#include "gromacs/math/functions.h"
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/pbcutil/rmpbc.h"
 #include "gromacs/random/threefry.h"
 #include "gromacs/random/uniformintdistribution.h"
 #include "gromacs/random/uniformrealdistribution.h"
+#include "gromacs/topology/atoms.h"
 #include "gromacs/topology/index.h"
 #include "gromacs/topology/topology.h"
 #include "gromacs/utility/arraysize.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/futil.h"
+#include "gromacs/utility/gmxassert.h"
+#include "gromacs/utility/path.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
+
+enum class PbcType : int;
+struct gmx_output_env_t;
 
 /* print to two file pointers at once (i.e. stderr and log) */
 static inline void lo_ffprintf(FILE* fp1, FILE* fp2, const char* buf)
@@ -298,34 +318,6 @@ static void mark_clusters(int nf, real** mat, real val, t_clusters* clust)
     }
 }
 
-static char* parse_filename(const char* fn, int maxnr)
-{
-    int         i;
-    char*       fnout;
-    const char* ext;
-    char        buf[STRLEN];
-
-    if (std::strchr(fn, '%'))
-    {
-        gmx_fatal(FARGS, "will not number filename %s containing '%c'", fn, '%');
-    }
-    /* number of digits needed in numbering */
-    i = static_cast<int>((std::log(static_cast<real>(maxnr)) / std::log(10.0)) + 1);
-    /* split fn and ext */
-    ext = std::strrchr(fn, '.');
-    if (!ext)
-    {
-        gmx_fatal(FARGS, "cannot separate extension in filename %s", fn);
-    }
-    ext++;
-    /* insert e.g. '%03d' between fn and ext */
-    sprintf(buf, "%s%%0%dd.%s", fn, i, ext);
-    snew(fnout, std::strlen(buf) + 1);
-    std::strcpy(fnout, buf);
-
-    return fnout;
-}
-
 static void ana_trans(t_clusters*             clust,
                       int                     nf,
                       const char*             transfn,
@@ -443,7 +435,7 @@ static void analyze_clusters(int                     nf,
 {
     FILE*        size_fp = nullptr;
     FILE*        ndxfn   = nullptr;
-    char         buf[STRLEN], buf1[40], buf2[40], buf3[40], *trxsfn;
+    char         buf[STRLEN], buf1[40], buf2[40], buf3[40];
     t_trxstatus* trxout  = nullptr;
     t_trxstatus* trxsout = nullptr;
     int          i, i1, cl, nstr, *structure, first = 0, midstr;
@@ -455,13 +447,15 @@ static void analyze_clusters(int                     nf,
     clear_mat(zerobox);
 
     ffprintf_d(stderr, log, buf, "\nFound %d clusters\n\n", clust->ncl);
-    trxsfn = nullptr;
+    std::optional<int> numDigitsRequiredForClusterFilename;
     if (trxfn)
     {
         /* do we write all structures? */
         if (write_ncl)
         {
-            trxsfn = parse_filename(trxfn, std::max(write_ncl, clust->ncl));
+            const int maxIndexRequired = std::max(write_ncl, clust->ncl);
+            numDigitsRequiredForClusterFilename =
+                    int((std::log(real(maxIndexRequired)) / std::log(10.0)) + 1);
             snew(bWrite, nf);
         }
         ffprintf_ss(stderr,
@@ -499,7 +493,13 @@ static void analyze_clusters(int                     nf,
             {
                 sprintf(buf3, " with more than %d structures", write_nst);
             }
-            sprintf(buf, "Writing %s for %sclusters%s to %s\n", buf1, buf2, buf3, trxsfn);
+            sprintf(buf,
+                    "Writing %s for %sclusters%s to %s%%0%d%%d\n",
+                    buf1,
+                    buf2,
+                    buf3,
+                    trxfn,
+                    numDigitsRequiredForClusterFilename.value());
             ffprintf(stderr, log, buf);
         }
 
@@ -695,9 +695,10 @@ static void analyze_clusters(int                     nf,
             if (cl < write_ncl + 1 && nstr > write_nst)
             {
                 /* Dump all structures for this cluster */
-                /* generate numbered filename (there is a %d in trxfn!) */
-                sprintf(buf, trxsfn, cl);
-                trxsout = open_trx(buf, "w");
+                /* generate numbered filename like 'stem_0003.ext' */
+                auto filename = gmx::concatenateBeforeExtension(
+                        trxfn, gmx::formatString("%0*d", numDigitsRequiredForClusterFilename.value(), cl));
+                trxsout = open_trx(filename, "w");
                 for (i = 0; i < nstr; i++)
                 {
                     bWrite[i] = TRUE;
@@ -764,10 +765,6 @@ static void analyze_clusters(int                     nf,
         }
     }
     sfree(structure);
-    if (trxsfn)
-    {
-        sfree(trxsfn);
-    }
 
     if (size_fp)
     {
@@ -1281,7 +1278,7 @@ int gmx_cluster(int argc, char* argv[])
                         "\r# RMSD calculations left: "
                         "%" PRId64 "   ",
                         nrms);
-                fflush(stderr);
+                std::fflush(stderr);
             }
             sfree(x1);
         }
@@ -1310,7 +1307,7 @@ int gmx_cluster(int argc, char* argv[])
                         "\r# RMSD calculations left: "
                         "%" PRId64 "   ",
                         nrms);
-                fflush(stderr);
+                std::fflush(stderr);
             }
             /* Clean up work arrays */
             for (i = 0; (i < isize); i++)

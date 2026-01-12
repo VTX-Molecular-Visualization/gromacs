@@ -37,18 +37,23 @@
 
 #include <cmath>
 
+#include <array>
+#include <filesystem>
+#include <string>
+
 #include "gromacs/ewald/ewald_utils.h"
 #include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
 #include "gromacs/math/utilities.h"
-#include "gromacs/math/vec.h"
-#include "gromacs/mdtypes/commrec.h"
 #include "gromacs/mdtypes/forcerec.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/interaction_const.h"
 #include "gromacs/mdtypes/md_enums.h"
+#include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/gmxassert.h"
+#include "gromacs/utility/mpicomm.h"
+#include "gromacs/utility/vec.h"
 
 /* There's nothing special to do here if just masses are perturbed,
  * but if either charge or type is perturbed then the implementation
@@ -61,7 +66,7 @@
  * undefined when LJ-PME is not active. This works because
  * bHaveChargeOrTypePerturbed handles the control flow. */
 void ewald_LRcorrection(const int                      numAtomsLocal,
-                        const t_commrec*               commrec,
+                        const gmx::MpiComm&            mpiComm,
                         int                            numThreads,
                         int                            thread,
                         const real                     epsilonR,
@@ -130,7 +135,7 @@ void ewald_LRcorrection(const int                      numAtomsLocal,
             for (int q = 0; q < (bHaveChargePerturbed ? 2 : 1); q++)
             {
                 /* Avoid charge corrections with near-zero net charge */
-                if (fabs(qsum[q]) > 1e-4)
+                if (std::fabs(qsum[q]) > 1e-4)
                 {
                     chargecorr[q] = 2 * dipole_coeff * qsum[q];
                 }
@@ -170,7 +175,7 @@ void ewald_LRcorrection(const int                      numAtomsLocal,
     }
 
     /* Global corrections only on main process */
-    if (MAIN(commrec) && thread == 0)
+    if (mpiComm.isMainRank() && thread == 0)
     {
         for (int q = 0; q < (bHaveChargePerturbed ? 2 : 1); q++)
         {

@@ -55,6 +55,8 @@
 #    include "gromacs/gpu_utils/gpuregiontimer.cuh"
 #elif GMX_GPU_OPENCL
 #    include "gromacs/gpu_utils/gpuregiontimer_ocl.h"
+#elif GMX_GPU_HIP
+#    include "gromacs/gpu_utils/gpuregiontimer_hip.h"
 #elif GMX_GPU_SYCL
 #    include "gromacs/gpu_utils/gpuregiontimer_sycl.h"
 #endif
@@ -113,12 +115,7 @@ struct PmeGpuSpecific
     {
     }
 
-    /*! \brief
-     * A handle to the GPU context.
-     * TODO: this is currently extracted from the implementation of pmeGpu->programHandle_,
-     * but should be a constructor parameter to PmeGpu, as well as PmeGpuProgram,
-     * managed by high-level code.
-     */
+    /*! \brief A handle to the device context. */
     const DeviceContext& deviceContext_;
 
     /*! \brief The GPU stream where everything related to the PME happens. */

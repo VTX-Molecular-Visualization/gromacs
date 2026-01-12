@@ -43,25 +43,46 @@
 
 #include "velocityscalingtemperaturecoupling.h"
 
+#include <cmath>
+#include <cstdio>
+
+#include <algorithm>
+#include <functional>
 #include <numeric>
+#include <type_traits>
 
 #include "gromacs/domdec/domdec_network.h"
+#include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/mdlib/coupling.h"
 #include "gromacs/mdlib/stat.h"
+#include "gromacs/mdrun/isimulator.h"
 #include "gromacs/mdtypes/checkpointdata.h"
 #include "gromacs/mdtypes/commrec.h"
 #include "gromacs/mdtypes/group.h"
 #include "gromacs/mdtypes/inputrec.h"
+#include "gromacs/mdtypes/md_enums.h"
+#include "gromacs/mdtypes/observablesreducer.h"
+#include "gromacs/modularsimulator/energydata.h"
+#include "gromacs/modularsimulator/modularsimulatorinterfaces.h"
+#include "gromacs/modularsimulator/propagator.h"
+#include "gromacs/utility/basedefinitions.h"
+#include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/strconvert.h"
+#include "gromacs/utility/vec.h"
 
 #include "modularsimulator.h"
 #include "simulatoralgorithm.h"
 
 namespace gmx
 {
+class FreeEnergyPerturbationData;
+class StatePropagatorData;
+enum class ReferenceTemperatureChangeAlgorithm;
+template<CheckpointDataOperation operation>
+class CheckpointData;
 
 /*! \internal
  * \brief Data used by the concrete temperature coupling implementations
@@ -108,9 +129,11 @@ public:
 
     //! Write private data to checkpoint
     virtual void writeCheckpoint(std::optional<WriteCheckpointData> checkpointData,
-                                 const t_commrec*                   cr) = 0;
+                                 const MpiComm&                     mpiComm) = 0;
     //! Read private data from checkpoint
-    virtual void readCheckpoint(std::optional<ReadCheckpointData> checkpointData, const t_commrec* cr) = 0;
+    virtual void readCheckpoint(std::optional<ReadCheckpointData> checkpointData,
+                                const MpiComm&                    mpiComm,
+                                gmx_domdec_t*                     dd) = 0;
 
     //! Update the reference temperature and update and return the temperature coupling integral
     virtual real updateReferenceTemperatureAndIntegral(int  temperatureGroup,
@@ -192,12 +215,13 @@ public:
 
     //! No data to write to checkpoint
     void writeCheckpoint(std::optional<WriteCheckpointData> gmx_unused checkpointData,
-                         const t_commrec gmx_unused* cr) override
+                         const MpiComm gmx_unused&                     mpiComm) override
     {
     }
     //! No data to read from checkpoints
     void readCheckpoint(std::optional<ReadCheckpointData> gmx_unused checkpointData,
-                        const t_commrec gmx_unused* cr) override
+                        const MpiComm gmx_unused&                    mpiComm,
+                        gmx_domdec_t gmx_unused*                     dd) override
     {
     }
 
@@ -274,12 +298,13 @@ public:
 
     //! No data to write to checkpoint
     void writeCheckpoint(std::optional<WriteCheckpointData> gmx_unused checkpointData,
-                         const t_commrec gmx_unused* cr) override
+                         const MpiComm gmx_unused&                     mpiComm) override
     {
     }
     //! No data to read from checkpoints
     void readCheckpoint(std::optional<ReadCheckpointData> gmx_unused checkpointData,
-                        const t_commrec gmx_unused* cr) override
+                        const MpiComm gmx_unused&                    mpiComm,
+                        gmx_domdec_t gmx_unused*                     dd) override
     {
     }
 
@@ -437,24 +462,26 @@ public:
     }
 
     //! Write thermostat dof to checkpoint
-    void writeCheckpoint(std::optional<WriteCheckpointData> checkpointData, const t_commrec* cr) override
+    void writeCheckpoint(std::optional<WriteCheckpointData> checkpointData, const MpiComm& mpiComm) override
     {
-        if (MAIN(cr))
+        if (mpiComm.isMainRank())
         {
             doCheckpointData(&checkpointData.value());
         }
     }
     //! Read thermostat dof from checkpoint
-    void readCheckpoint(std::optional<ReadCheckpointData> checkpointData, const t_commrec* cr) override
+    void readCheckpoint(std::optional<ReadCheckpointData> checkpointData,
+                        const MpiComm&                    mpiComm,
+                        gmx_domdec_t*                     dd) override
     {
-        if (MAIN(cr))
+        if (mpiComm.isMainRank())
         {
             doCheckpointData(&checkpointData.value());
         }
-        if (haveDDAtomOrdering(*cr))
+        if (dd)
         {
-            dd_bcast(cr->dd, xi_.size() * sizeof(real), xi_.data());
-            dd_bcast(cr->dd, xiVelocities_.size() * sizeof(real), xiVelocities_.data());
+            dd_bcast(dd, xi_.size() * sizeof(real), xi_.data());
+            dd_bcast(dd, xiVelocities_.size() * sizeof(real), xiVelocities_.data());
         }
     }
 
@@ -546,11 +573,13 @@ VelocityScalingTemperatureCoupling::VelocityScalingTemperatureCoupling(
         throw NotImplementedError("Temperature coupling " + std::string(enumValueToString(couplingType))
                                   + " is not implemented for modular simulator.");
     }
-    energyData->addConservedEnergyContribution([this](Step gmx_used_in_debug step, Time /*unused*/) {
-        GMX_ASSERT(conservedEnergyContributionStep_ == step,
-                   "VelocityScalingTemperatureCoupling conserved energy step mismatch.");
-        return conservedEnergyContribution_;
-    });
+    energyData->addConservedEnergyContribution(
+            [this](Step gmx_used_in_debug step, Time /*unused*/)
+            {
+                GMX_ASSERT(conservedEnergyContributionStep_ == step,
+                           "VelocityScalingTemperatureCoupling conserved energy step mismatch.");
+                return conservedEnergyContribution_;
+            });
 }
 
 void VelocityScalingTemperatureCoupling::connectWithMatchingPropagator(const PropagatorConnection& connectionData,
@@ -576,8 +605,8 @@ void VelocityScalingTemperatureCoupling::elementSetup()
     }
 }
 
-void VelocityScalingTemperatureCoupling::scheduleTask(Step                       step,
-                                                      Time gmx_unused            time,
+void VelocityScalingTemperatureCoupling::scheduleTask(Step            step,
+                                                      Time gmx_unused time,
                                                       const RegisterRunFunction& registerRunFunction)
 {
     /* The thermostat will need a valid kinetic energy when it is running.
@@ -592,10 +621,12 @@ void VelocityScalingTemperatureCoupling::scheduleTask(Step                      
         && reportPreviousConservedEnergy_ == ReportPreviousStepConservedEnergy::Yes)
     {
         // add conserved energy before we do T-coupling
-        registerRunFunction([this, step]() {
-            conservedEnergyContribution_     = conservedEnergyContribution();
-            conservedEnergyContributionStep_ = step;
-        });
+        registerRunFunction(
+                [this, step]()
+                {
+                    conservedEnergyContribution_     = conservedEnergyContribution();
+                    conservedEnergyContributionStep_ = step;
+                });
     }
     if (do_per_step(step + nstcouple_ + offset_, nstcouple_))
     {
@@ -609,10 +640,12 @@ void VelocityScalingTemperatureCoupling::scheduleTask(Step                      
         && reportPreviousConservedEnergy_ == ReportPreviousStepConservedEnergy::No)
     {
         // add conserved energy after we did T-coupling
-        registerRunFunction([this, step]() {
-            conservedEnergyContribution_     = conservedEnergyContribution();
-            conservedEnergyContributionStep_ = step;
-        });
+        registerRunFunction(
+                [this, step]()
+                {
+                    conservedEnergyContribution_     = conservedEnergyContribution();
+                    conservedEnergyContributionStep_ = step;
+                });
     }
 }
 
@@ -681,9 +714,10 @@ void VelocityScalingTemperatureCoupling::doCheckpointData(CheckpointData<operati
 }
 
 void VelocityScalingTemperatureCoupling::saveCheckpointState(std::optional<WriteCheckpointData> checkpointData,
-                                                             const t_commrec*                   cr)
+                                                             const MpiComm& mpiComm,
+                                                             gmx_domdec_t*  dd)
 {
-    if (MAIN(cr))
+    if (mpiComm.isMainRank())
     {
         doCheckpointData<CheckpointDataOperation::Write>(&checkpointData.value());
     }
@@ -691,27 +725,31 @@ void VelocityScalingTemperatureCoupling::saveCheckpointState(std::optional<Write
             checkpointData
                     ? std::make_optional(checkpointData->subCheckpointData("thermostat impl"))
                     : std::nullopt,
-            cr);
+            mpiComm);
+
+    GMX_UNUSED_VALUE(dd);
 }
 
 void VelocityScalingTemperatureCoupling::restoreCheckpointState(std::optional<ReadCheckpointData> checkpointData,
-                                                                const t_commrec* cr)
+                                                                const MpiComm& mpiComm,
+                                                                gmx_domdec_t*  dd)
 {
-    if (MAIN(cr))
+    if (mpiComm.isMainRank())
     {
         doCheckpointData<CheckpointDataOperation::Read>(&checkpointData.value());
     }
-    if (haveDDAtomOrdering(*cr))
+    if (dd)
     {
-        dd_bcast(cr->dd,
-                 ssize(temperatureCouplingIntegral_) * int(sizeof(double)),
+        dd_bcast(dd,
+                 gmx::ssize(temperatureCouplingIntegral_) * int(sizeof(double)),
                  temperatureCouplingIntegral_.data());
     }
     temperatureCouplingImpl_->readCheckpoint(
             checkpointData
                     ? std::make_optional(checkpointData->subCheckpointData("thermostat impl"))
                     : std::nullopt,
-            cr);
+            mpiComm,
+            dd);
 }
 
 const std::string& VelocityScalingTemperatureCoupling::clientID()
@@ -736,10 +774,10 @@ std::optional<SignallerCallback> VelocityScalingTemperatureCoupling::registerEne
 ISimulatorElement* VelocityScalingTemperatureCoupling::getElementPointerImpl(
         LegacySimulatorData*                    legacySimulatorData,
         ModularSimulatorAlgorithmBuilderHelper* builderHelper,
-        StatePropagatorData gmx_unused* statePropagatorData,
-        EnergyData*                     energyData,
-        FreeEnergyPerturbationData gmx_unused* freeEnergyPerturbationData,
-        GlobalCommunicationHelper gmx_unused* globalCommunicationHelper,
+        StatePropagatorData gmx_unused*         statePropagatorData,
+        EnergyData*                             energyData,
+        FreeEnergyPerturbationData gmx_unused*  freeEnergyPerturbationData,
+        GlobalCommunicationHelper gmx_unused*   globalCommunicationHelper,
         ObservablesReducer* /*observablesReducer*/,
         Offset                            offset,
         UseFullStepKE                     useFullStepKE,
@@ -763,13 +801,11 @@ ISimulatorElement* VelocityScalingTemperatureCoupling::getElementPointerImpl(
     auto* thermostat = static_cast<VelocityScalingTemperatureCoupling*>(element);
     // Capturing pointer is safe because lifetime is handled by caller
     builderHelper->registerTemperaturePressureControl(
-            [thermostat, propagatorTag](const PropagatorConnection& connection) {
-                thermostat->connectWithMatchingPropagator(connection, propagatorTag);
-            });
+            [thermostat, propagatorTag](const PropagatorConnection& connection)
+            { thermostat->connectWithMatchingPropagator(connection, propagatorTag); });
     builderHelper->registerReferenceTemperatureUpdate(
-            [thermostat](ArrayRef<const real> temperatures, ReferenceTemperatureChangeAlgorithm algorithm) {
-                thermostat->updateReferenceTemperature(temperatures, algorithm);
-            });
+            [thermostat](ArrayRef<const real> temperatures, ReferenceTemperatureChangeAlgorithm algorithm)
+            { thermostat->updateReferenceTemperature(temperatures, algorithm); });
     return element;
 }
 

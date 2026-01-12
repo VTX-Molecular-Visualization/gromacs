@@ -41,18 +41,32 @@
  */
 #include "nblib/gmxcalculatorcpu.h"
 
+#include <algorithm>
+#include <iterator>
+#include <type_traits>
+
 #include "gromacs/ewald/ewald_utils.h"
 #include "gromacs/mdtypes/enerdata.h"
+#include "gromacs/mdtypes/forcerec.h"
 #include "gromacs/mdtypes/interaction_const.h"
+#include "gromacs/mdtypes/locality.h"
+#include "gromacs/mdtypes/md_enums.h"
+#include "gromacs/mdtypes/simulation_workload.h"
 #include "gromacs/nbnxm/atomdata.h"
 #include "gromacs/nbnxm/nbnxm.h"
 #include "gromacs/nbnxm/pairlistset.h"
 #include "gromacs/nbnxm/pairlistsets.h"
 #include "gromacs/nbnxm/pairsearch.h"
+#include "gromacs/pbcutil/ishift.h"
+#include "gromacs/pbcutil/pbc.h"
+#include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/listoflists.h"
 #include "gromacs/utility/range.h"
+#include "gromacs/utility/vec.h"
 
 #include "nblib/exception.h"
+#include "nblib/kerneloptions.h"
 #include "nblib/nbnxmsetuphelpers.h"
 #include "nblib/topology.h"
 #include "nblib/tpr.h"
@@ -71,7 +85,7 @@ public:
     CpuImpl(gmx::ArrayRef<int>     particleTypeIdOfAllParticles,
             gmx::ArrayRef<real>    nonBondedParams,
             gmx::ArrayRef<real>    charges,
-            gmx::ArrayRef<int64_t> particleInteractionFlags,
+            gmx::ArrayRef<int32_t> particleInteractionFlags,
             gmx::ArrayRef<int>     exclusionRanges,
             gmx::ArrayRef<int>     exclusionElements,
             const NBKernelOptions& options);
@@ -108,7 +122,7 @@ private:
 GmxNBForceCalculatorCpu::CpuImpl::CpuImpl(gmx::ArrayRef<int>     particleTypeIdOfAllParticles,
                                           gmx::ArrayRef<real>    nonBondedParams,
                                           gmx::ArrayRef<real>    charges,
-                                          gmx::ArrayRef<int64_t> particleInteractionFlags,
+                                          gmx::ArrayRef<int32_t> particleInteractionFlags,
                                           gmx::ArrayRef<int>     exclusionRanges,
                                           gmx::ArrayRef<int>     exclusionElements,
                                           const NBKernelOptions& options) :
@@ -155,14 +169,14 @@ void GmxNBForceCalculatorCpu::CpuImpl::updatePairlist(gmx::ArrayRef<gmx::RVec> c
                                   upperCorner,
                                   nullptr,
                                   { 0, int(coordinates.size()) },
+                                  coordinates.size(),
                                   particleDensity,
                                   system_.particleInfo_,
                                   coordinates,
-                                  0,
                                   nullptr);
 
     backend_.nbv_->constructPairlist(
-            gmx::InteractionLocality::Local, backend_.exclusions_, 0, &backend_.nrnb_);
+            gmx::InteractionLocality::Local, backend_.exclusions_, false, 0, &backend_.nrnb_);
 
     // Set Particle Types and Charges and VdW params
     backend_.nbv_->setAtomProperties(
@@ -205,7 +219,7 @@ void GmxNBForceCalculatorCpu::CpuImpl::compute(gmx::ArrayRef<const gmx::RVec> co
             gmx::InteractionLocality::Local,
             backend_.interactionConst_,
             backend_.stepWork_,
-            enbvClearFYes,
+            gmx::enbvClearFYes,
             backend_.forcerec_.shift_vec,
             backend_.enerd_.grpp.energyGroupPairTerms[backend_.forcerec_.haveBuckingham ? NonBondedEnergyTerms::BuckinghamSR
                                                                                         : NonBondedEnergyTerms::LJSR],
@@ -270,7 +284,7 @@ void GmxNBForceCalculatorCpu::CpuImpl::compute(gmx::ArrayRef<const gmx::RVec> co
 GmxNBForceCalculatorCpu::GmxNBForceCalculatorCpu(gmx::ArrayRef<int>  particleTypeIdOfAllParticles,
                                                  gmx::ArrayRef<real> nonBondedParams,
                                                  gmx::ArrayRef<real> charges,
-                                                 gmx::ArrayRef<int64_t> particleInteractionFlags,
+                                                 gmx::ArrayRef<int32_t> particleInteractionFlags,
                                                  gmx::ArrayRef<int>     exclusionRanges,
                                                  gmx::ArrayRef<int>     exclusionElements,
                                                  const NBKernelOptions& options)
@@ -330,7 +344,7 @@ std::unique_ptr<GmxNBForceCalculatorCpu> setupGmxForceCalculatorCpu(const Topolo
     std::vector<real> nonBondedParameters = createNonBondedParameters(
             topology.getParticleTypes(), topology.getNonBondedInteractionMap());
 
-    std::vector<int64_t> particleInteractionFlags = createParticleInfoAllVdw(topology.numParticles());
+    std::vector<int32_t> particleInteractionFlags = createParticleInfoAllVdw(topology.numParticles());
 
     return std::make_unique<GmxNBForceCalculatorCpu>(topology.getParticleTypeIdOfAllParticles(),
                                                      nonBondedParameters,

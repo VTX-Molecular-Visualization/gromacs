@@ -41,12 +41,25 @@
  */
 #include "gmxpre.h"
 
-#include "config.h"
-
+#include "gromacs/gpu_utils/capabilities.h"
+#include "gromacs/gpu_utils/devicebuffer_datatype.h"
+#include "gromacs/math/matrix.h"
 #include "gromacs/mdlib/update_constrain_gpu.h"
+#include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/gmxassert.h"
+#include "gromacs/utility/real.h"
+#include "gromacs/utility/vectypes.h"
 
-#if !GMX_GPU_CUDA && !GMX_GPU_SYCL
+class DeviceContext;
+class DeviceStream;
+class GpuEventSynchronizer;
+class InteractionDefinitions;
+enum class PbcType : int;
+struct gmx_mtop_t;
+struct gmx_wallcycle;
+struct t_grp_tcstat;
+struct t_inputrec;
+struct t_mdatoms;
 
 namespace gmx
 {
@@ -127,9 +140,7 @@ bool UpdateConstrainGpu::isNumCoupledConstraintsSupported(const gmx_mtop_t& /* m
 
 bool UpdateConstrainGpu::areConstraintsSupported()
 {
-    return false;
+    return GpuConfigurationCapabilities::Update;
 }
 
 } // namespace gmx
-
-#endif /* !GMX_GPU_CUDA && !GMX_GPU_SYCL */

@@ -36,6 +36,7 @@
 #include "xlate.h"
 
 #include <cctype>
+#include <cstdio>
 #include <cstring>
 
 #include <string>
@@ -43,13 +44,18 @@
 
 #include "gromacs/gmxpreprocess/fflibutil.h"
 #include "gromacs/gmxpreprocess/grompp_impl.h"
+#include "gromacs/topology/atoms.h"
 #include "gromacs/topology/residuetypes.h"
 #include "gromacs/topology/symtab.h"
+#include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/fileptr.h"
 #include "gromacs/utility/futil.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/strdb.h"
+#include "gromacs/utility/stringutil.h"
 
 #include "hackblock.h"
 
@@ -88,15 +94,15 @@ static void get_xlatoms(const std::filesystem::path& filename, FILE* fp, int* np
         {
             gmx_fatal(FARGS,
                       "Expected a residue name and two atom names in file '%s', not '%s'",
-                      filename.u8string().c_str(),
+                      filename.string().c_str(),
                       line);
         }
 
         srenew(xl, n + 1);
-        xl[n].filebase = gmx_strdup(filebase.u8string().c_str());
+        xl[n].filebase = gmx_strdup(filebase.string().c_str());
 
         /* Use wildcards... */
-        if (strcmp(rbuf, "*") != 0)
+        if (std::strcmp(rbuf, "*") != 0)
         {
             xl[n].res = gmx_strdup(rbuf);
         }
@@ -106,7 +112,7 @@ static void get_xlatoms(const std::filesystem::path& filename, FILE* fp, int* np
         }
 
         /* Replace underscores in the string by spaces */
-        while ((_ptr = strchr(abuf, '_')) != nullptr)
+        while ((_ptr = std::strchr(abuf, '_')) != nullptr)
         {
             *_ptr = ' ';
         }
@@ -188,14 +194,14 @@ void rename_atoms(const std::filesystem::path&           xlfile,
             rnm = *(atoms->resinfo[resind].rtp);
         }
 
-        strcpy(atombuf, *(atoms->atomname[a]));
+        std::strcpy(atombuf, *(atoms->atomname[a]));
         bReorderedNum = FALSE;
         if (bReorderNum)
         {
-            if (isdigit(atombuf[0]))
+            if (std::isdigit(atombuf[0]))
             {
                 c = atombuf[0];
-                for (i = 0; (static_cast<size_t>(i) < strlen(atombuf) - 1); i++)
+                for (i = 0; (static_cast<size_t>(i) < std::strlen(atombuf) - 1); i++)
                 {
                     atombuf[i] = atombuf[i + 1];
                 }
@@ -233,7 +239,7 @@ void rename_atoms(const std::filesystem::path&           xlfile,
                     }
                     bMatch = (ptr0[0] == '\0' && ptr1[0] == '\0');
                 }
-                if (bMatch && strcmp(atombuf, xlatom[i].atom) == 0)
+                if (bMatch && std::strcmp(atombuf, xlatom[i].atom) == 0)
                 {
                     /* We have a match. */
                     /* Don't free the old atomname,

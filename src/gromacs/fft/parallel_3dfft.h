@@ -42,6 +42,7 @@
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/gmxmpi.h"
 #include "gromacs/utility/real.h"
+#include "gromacs/utility/vectypes.h"
 
 typedef struct gmx_parallel_3dfft* gmx_parallel_3dfft_t;
 

@@ -46,11 +46,15 @@
 
 #include <filesystem>
 #include <mutex>
+#include <string>
 #include <system_error>
 #include <tuple>
 
 #include <sys/stat.h>
 #include <sys/types.h>
+
+#include "gromacs/utility/fileptr.h"
+#include "gromacs/utility/unique_cptr.h"
 
 #ifdef HAVE_UNISTD_H
 #    include <unistd.h>
@@ -129,11 +133,11 @@ void gmx_set_max_backup_count(int count)
 {
     if (count < 0)
     {
-        const char* env = getenv("GMX_MAXBACKUP");
+        const char* env = std::getenv("GMX_MAXBACKUP");
         if (env != nullptr)
         {
             // TODO: Check that the value is converted properly.
-            count = strtol(env, nullptr, 10);
+            count = std::strtol(env, nullptr, 10);
             if (count < 0)
             {
                 count = 0;
@@ -194,7 +198,7 @@ int gmx_ffclose(FILE* fp)
     {
         if (fp != nullptr)
         {
-            ret = fclose(fp);
+            ret = std::fclose(fp);
         }
     }
     else if (ps->fp == fp)
@@ -226,7 +230,7 @@ int gmx_ffclose(FILE* fp)
         {
             if (fp != nullptr)
             {
-                ret = fclose(fp);
+                ret = std::fclose(fp);
             }
         }
     }
@@ -249,7 +253,7 @@ void frewind(FILE* fp)
         }
         ps = ps->prev;
     }
-    rewind(fp);
+    std::rewind(fp);
 }
 
 int gmx_fseek(FILE* stream, gmx_off_t offset, int whence)
@@ -260,7 +264,7 @@ int gmx_fseek(FILE* stream, gmx_off_t offset, int whence)
 #    if HAVE__FSEEKI64
     return _fseeki64(stream, offset, whence);
 #    else
-    return fseek(stream, offset, whence);
+    return std::fseek(stream, offset, whence);
 #    endif
 #endif
 }
@@ -277,7 +281,7 @@ gmx_off_t gmx_ftell(FILE* stream)
     return ftello64(stream);
 #        endif
 #    else
-    return ftell(stream);
+    return std::ftell(stream);
 #    endif
 #endif
 }
@@ -296,7 +300,7 @@ static FILE* uncompress(const std::filesystem::path& fn, const char* mode)
     fprintf(stderr, "Going to execute '%s'\n", buf.c_str());
     if ((fp = popen(buf.c_str(), mode)) == nullptr)
     {
-        gmx_open(fn.u8string());
+        gmx_open(fn.string());
     }
     push_ps(fp);
 
@@ -311,7 +315,7 @@ static FILE* gunzip(const std::filesystem::path& fn, const char* mode)
     fprintf(stderr, "Going to execute '%s'\n", buf.c_str());
     if ((fp = popen(buf.c_str(), mode)) == nullptr)
     {
-        gmx_open(fn.u8string());
+        gmx_open(fn.string());
     }
     push_ps(fp);
 
@@ -341,7 +345,7 @@ static std::filesystem::path backup_fn(const std::filesystem::path& file)
     }
     do
     {
-        buf = gmx::formatString("%s/#%s.%d#", directory.u8string().c_str(), fn.u8string().c_str(), count);
+        buf = gmx::formatString("%s/#%s.%d#", directory.string().c_str(), fn.string().c_str(), count);
         count++;
     } while ((count <= s_maxBackupCount) && gmx_fexist(buf));
 
@@ -354,7 +358,7 @@ static std::filesystem::path backup_fn(const std::filesystem::path& file)
                   "Won't make more than %d backups of %s for you.\n"
                   "The env.var. GMX_MAXBACKUP controls this maximum, -1 disables backups.",
                   s_maxBackupCount,
-                  fn.u8string().c_str());
+                  fn.string().c_str());
     }
 
     return buf;
@@ -375,15 +379,15 @@ void make_backup(const std::filesystem::path& name)
         {
             fprintf(stderr,
                     "\nBack Off! I just backed up %s to %s\n",
-                    name.u8string().c_str(),
-                    backup.u8string().c_str());
+                    name.string().c_str(),
+                    backup.string().c_str());
         }
         else
         {
             fprintf(stderr,
                     "\nSorry couldn't backup %s to %s\n",
-                    name.u8string().c_str(),
-                    backup.u8string().c_str());
+                    name.string().c_str(),
+                    backup.string().c_str());
         }
     }
 }
@@ -405,28 +409,28 @@ FILE* gmx_ffopen(const std::filesystem::path& file, const char* mode)
     bool bRead = (mode[0] == 'r' && mode[1] != '+');
     if (!bRead || gmx_fexist(file))
     {
-        if ((ff = fopen(file.u8string().c_str(), mode)) == nullptr)
+        if ((ff = std::fopen(file.string().c_str(), mode)) == nullptr)
         {
-            gmx_file(file.u8string());
+            gmx_file(file.string());
         }
         /* Check whether we should be using buffering (default) or not
          * (for debugging)
          */
         const char* bufsize = nullptr;
-        if (bUnbuffered || ((bufsize = getenv("GMX_LOG_BUFFER")) != nullptr))
+        if (bUnbuffered || ((bufsize = std::getenv("GMX_LOG_BUFFER")) != nullptr))
         {
             /* Check whether to use completely unbuffered */
-            const int bs = bUnbuffered ? 0 : strtol(bufsize, nullptr, 10);
+            const int bs = bUnbuffered ? 0 : std::strtol(bufsize, nullptr, 10);
             if (bs <= 0)
             {
-                setbuf(ff, nullptr);
+                std::setbuf(ff, nullptr);
             }
             else
             {
                 // Note: this leaks memory, because one has to free ptr after closing the file.
                 char* ptr = nullptr;
                 snew(ptr, bs + 8);
-                if (setvbuf(ff, ptr, _IOFBF, bs) != 0)
+                if (std::setvbuf(ff, ptr, _IOFBF, bs) != 0)
                 {
                     gmx_file("Buffering File");
                 }
@@ -498,7 +502,7 @@ static int makeTemporaryFilename(char* buf)
 {
     int len = 0;
 
-    if ((len = strlen(buf)) < 7)
+    if ((len = std::strlen(buf)) < 7)
     {
         gmx_fatal(FARGS, "Buf passed to gmx_tmpnam must be at least 7 bytes long");
     }
@@ -514,7 +518,7 @@ static int makeTemporaryFilename(char* buf)
     _mktemp(buf);
     if (buf == NULL)
     {
-        gmx_fatal(FARGS, "Error creating temporary file %s: %s", buf, strerror(errno));
+        gmx_fatal(FARGS, "Error creating temporary file %s: %s", buf, std::strerror(errno));
     }
     int fd = 0;
 #else
@@ -527,7 +531,7 @@ static int makeTemporaryFilename(char* buf)
 
     if (fd < 0)
     {
-        gmx_fatal(FARGS, "Error creating temporary file %s: %s", buf, strerror(errno));
+        gmx_fatal(FARGS, "Error creating temporary file %s: %s", buf, std::strerror(errno));
     }
 #endif
     return fd;
@@ -548,7 +552,7 @@ FILE* gmx_fopen_temporary(char* buf)
     int   fd    = makeTemporaryFilename(buf);
 
 #if GMX_NATIVE_WINDOWS
-    if ((fpout = fopen(buf, "w")) == NULL)
+    if ((fpout = std::fopen(buf, "w")) == NULL)
     {
         gmx_fatal(FARGS, "Cannot open temporary file %s", buf);
     }
@@ -570,13 +574,13 @@ void gmx_file_rename(const std::filesystem::path& oldname, const std::filesystem
     /* This just lets the F@H checksumming system know about the rename */
     if (errorCode.value() == 0)
     {
-        fcRename(oldname.u8string().c_str(), newname.u8string().c_str());
+        fcRename(oldname.string().c_str(), newname.string().c_str());
     }
 #endif
     if (errorCode.value() != 0)
     {
         auto errorMsg = gmx::formatString(
-                "Failed to rename %s to %s.", oldname.u8string().c_str(), newname.u8string().c_str());
+                "Failed to rename %s to %s.", oldname.string().c_str(), newname.string().c_str());
         GMX_THROW(gmx::FileIOError(errorMsg));
     }
 }
@@ -653,7 +657,7 @@ void gmx_chdir(const std::filesystem::path& directory)
     if (errorCode.value() != 0)
     {
         auto message = gmx::formatString("Cannot change directory to '%s'. Reason: %s",
-                                         directory.u8string().c_str(),
+                                         directory.string().c_str(),
                                          errorCode.message().c_str());
         GMX_THROW(gmx::FileIOError(message));
     }

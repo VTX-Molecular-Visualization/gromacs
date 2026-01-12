@@ -45,17 +45,18 @@
 
 #include <memory>
 
-#include "gromacs/math/vectypes.h"
+#include "gromacs/utility/vectypes.h"
 
+struct gmx_domdec_t;
 struct gmx_localtop_t;
 struct gmx_mtop_t;
-struct t_commrec;
 struct t_inputrec;
 class t_state;
 
 namespace gmx
 {
 enum class DDBondedChecking : bool;
+class MpiComm;
 class MDLogger;
 class ObservablesReducerBuilder;
 } // namespace gmx
@@ -83,20 +84,18 @@ class LocalTopologyChecker
 public:
     /*! \brief Constructor
      * \param[in]    mdlog            Logger
-     * \param[in]    cr               Communication object
+     * \param[in]    mpiComm          Communication object for my group
+     * \param[in]    dd               Domain decomposition object
      * \param[in]    mtop             Global system topology
      * \param[in]    ddBondedChecking Tells for which bonded interactions presence should be checked
-     * \param[in]    localTopology    The local topology
-     * \param[in]    localState       The local state
      * \param[in]    useUpdateGroups  Whether update groups are in use
      * \param[in]    observablesReducerBuilder  Handle to builder for ObservablesReducer
      */
     LocalTopologyChecker(const MDLogger&            mdlog,
-                         const t_commrec*           cr,
+                         const MpiComm&             mpiComm,
+                         const gmx_domdec_t&        dd,
                          const gmx_mtop_t&          mtop,
                          DDBondedChecking           ddBondedChecking,
-                         const gmx_localtop_t&      localTopology,
-                         const t_state&             localState,
                          bool                       useUpdateGroups,
                          ObservablesReducerBuilder* observablesReducerBuilder);
     //! Destructor
@@ -110,8 +109,13 @@ public:
      * observables reduction whenever that reduction is required by
      * another module. In case of a single domain a direct assertion
      * is performed instead.
+     * \param[in] localTopology                  The local topology
+     * \param[in] numBondedInteractionsToReduce  The number of interactions in \p localTopology
+     * \param[in] localState                     The local state, for printing distances, can be nullptr
      */
-    void scheduleCheckOfLocalTopology(int numBondedInteractionsToReduce);
+    void scheduleCheckOfLocalTopology(const gmx_localtop_t& localTopology,
+                                      int                   numBondedInteractionsToReduce,
+                                      const t_state*        localState);
 
 private:
     class Impl;

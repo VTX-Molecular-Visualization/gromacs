@@ -47,19 +47,28 @@
 
 #include <cmath>
 
+#include <filesystem>
+#include <string>
+#include <vector>
+
 #include <gtest/gtest.h>
 
 #include "gromacs/fileio/oenv.h"
 #include "gromacs/fileio/xvgr.h"
+#include "gromacs/utility/exceptions.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
 
 #include "testutils/refdata.h"
 #include "testutils/testasserts.h"
 #include "testutils/testfilemanager.h"
 
+struct gmx_output_env_t;
+
 namespace gmx
 {
-
+namespace test
+{
 namespace
 {
 #if HAVE_LMFIT
@@ -83,19 +92,18 @@ protected:
     // Static initiation, only run once every test.
     static void SetUpTestSuite()
     {
-        double**                 tempValues = nullptr;
-        std::vector<std::string> fileName;
-        fileName.push_back(test::TestFileManager::getInputFilePath("testINVEXP.xvg").u8string());
-        fileName.push_back(test::TestFileManager::getInputFilePath("testPRES.xvg").u8string());
-        fileName.push_back(test::TestFileManager::getInputFilePath("testINVEXP79.xvg").u8string());
-        fileName.push_back(test::TestFileManager::getInputFilePath("testERF.xvg").u8string());
-        fileName.push_back(test::TestFileManager::getInputFilePath("testERREST.xvg").u8string());
+        double**                           tempValues = nullptr;
+        std::vector<std::filesystem::path> fileName;
+        fileName.push_back(test::TestFileManager::getInputFilePath("testINVEXP.xvg"));
+        fileName.push_back(test::TestFileManager::getInputFilePath("testPRES.xvg"));
+        fileName.push_back(test::TestFileManager::getInputFilePath("testINVEXP79.xvg"));
+        fileName.push_back(test::TestFileManager::getInputFilePath("testERF.xvg"));
+        fileName.push_back(test::TestFileManager::getInputFilePath("testERREST.xvg"));
         for (const auto& aName : fileName)
         {
-            const char* name = aName.c_str();
-            int         nrColumns;
-            ExpfitData  ed;
-            ed.nrLines_   = read_xvg(name, &tempValues, &nrColumns);
+            int        nrColumns;
+            ExpfitData ed;
+            ed.nrLines_   = read_xvg(aName, &tempValues, &nrColumns);
             ed.dt_        = tempValues[0][1] - tempValues[0][0];
             ed.startTime_ = tempValues[0][0];
             ed.endTime_   = tempValues[0][ed.nrLines_ - 1];
@@ -218,5 +226,5 @@ TEST_F(ExpfitTest, EffnPRES)
 #endif
 
 } // namespace
-
+} // namespace test
 } // namespace gmx

@@ -35,29 +35,47 @@
 
 #include "calc_verletbuf.h"
 
+#include "config.h"
+
 #include <cmath>
+#include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 
 #include <algorithm>
+#include <filesystem>
+#include <functional>
+#include <string>
+#include <tuple>
+#include <typeindex>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 #include "gromacs/ewald/ewald_utils.h"
 #include "gromacs/gmxlib/network.h"
 #include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/mdtypes/multipletimestepping.h"
 #include "gromacs/nbnxm/nbnxm.h"
+#include "gromacs/nbnxm/nbnxm_enums.h"
 #include "gromacs/nbnxm/nbnxm_geometry.h"
 #include "gromacs/nbnxm/nbnxm_simd.h"
+#include "gromacs/pbcutil/pbc.h"
+#include "gromacs/topology/atoms.h"
 #include "gromacs/topology/block.h"
+#include "gromacs/topology/forcefieldparameters.h"
+#include "gromacs/topology/idef.h"
 #include "gromacs/topology/ifunc.h"
 #include "gromacs/topology/topology.h"
+#include "gromacs/topology/topology_enums.h"
+#include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/real.h"
 #include "gromacs/utility/strconvert.h"
+#include "gromacs/utility/vec.h"
 
 /* The code in this file estimates a pairlist buffer length
  * given a target energy drift per atom per picosecond.
@@ -113,20 +131,25 @@ struct pot_derivatives_t
     real md3; // -V''' at the cutoff
 };
 
-VerletbufListSetup verletbufGetListSetup(Nbnxm::KernelType nbnxnKernelType)
+VerletbufListSetup verletbufGetListSetup(gmx::NbnxmKernelType nbnxnKernelType)
 {
     /* Note that the current buffer estimation code only handles clusters
      * of size 1, 2 or 4, so for 4x8 or 8x8 we use the estimate for 4x4.
      */
     VerletbufListSetup listSetup;
 
-    listSetup.cluster_size_i = Nbnxm::IClusterSizePerKernelType[nbnxnKernelType];
-    listSetup.cluster_size_j = Nbnxm::JClusterSizePerKernelType[nbnxnKernelType];
-
-    if (!Nbnxm::kernelTypeUsesSimplePairlist(nbnxnKernelType))
+    if (nbnxnKernelType == gmx::NbnxmKernelType::Gpu8x8x8)
     {
-        /* The GPU kernels (except for OpenCL) split the j-clusters in two halves */
-        listSetup.cluster_size_j /= 2;
+        // Use the default GPU 8x8x8 pairlist layout here, as the results are
+        // identical for anything above a cluster size of 4. This is asserted on later
+        // in mdrunner.cpp
+        listSetup.cluster_size_i = gmx::sc_gpuClusterSize(gmx::PairlistType::Hierarchical8x8x8);
+        listSetup.cluster_size_j = gmx::sc_gpuClusterSize(gmx::PairlistType::Hierarchical8x8x8);
+    }
+    else
+    {
+        listSetup.cluster_size_i = sc_iClusterSize(nbnxnKernelType);
+        listSetup.cluster_size_j = sc_jClusterSize(nbnxnKernelType);
     }
 
     return listSetup;
@@ -139,23 +162,23 @@ VerletbufListSetup verletbufGetSafeListSetup(ListSetupType listType)
      * i- and j-cluster sizes, so we potentially overestimate, but never
      * underestimate, the buffer drift.
      */
-    Nbnxm::KernelType nbnxnKernelType;
+    gmx::NbnxmKernelType nbnxnKernelType;
 
     if (listType == ListSetupType::Gpu)
     {
-        nbnxnKernelType = Nbnxm::KernelType::Gpu8x8x8;
+        nbnxnKernelType = gmx::NbnxmKernelType::Gpu8x8x8;
     }
 #if GMX_SIMD && GMX_USE_SIMD_KERNELS
     else if (listType == ListSetupType::CpuSimdWhenSupported)
     {
         /* We use the smallest cluster size to be on the safe side */
-        nbnxnKernelType = (sc_haveNbnxmSimd2xmmKernels ? Nbnxm::KernelType::Cpu4xN_Simd_2xNN
-                                                       : Nbnxm::KernelType::Cpu4xN_Simd_4xN);
+        nbnxnKernelType = (sc_haveNbnxmSimd2xmmKernels ? gmx::NbnxmKernelType::Cpu4xN_Simd_2xNN
+                                                       : gmx::NbnxmKernelType::Cpu4xN_Simd_4xN);
     }
 #endif
     else
     {
-        nbnxnKernelType = Nbnxm::KernelType::Cpu4x4_PlainC;
+        nbnxnKernelType = gmx::NbnxmKernelType::Cpu4x4_PlainC;
     }
 
     return verletbufGetListSetup(nbnxnKernelType);
@@ -190,7 +213,7 @@ static void get_vsite_masses(const gmx_moltype_t&  moltype,
             const t_iparams& ip = ffparams.iparams[ilist.iatoms[i]];
             const int        a1 = ilist.iatoms[i + 1];
 
-            if (ilist.functionType != F_VSITEN)
+            if (ilist.functionType != InteractionFunction::VirtualSiteN)
             {
                 /* Only vsiten can have more than four
                    constructing atoms, so NRAL(ft) <= 5 */
@@ -199,12 +222,9 @@ static void get_vsite_masses(const gmx_moltype_t&  moltype,
                 GMX_ASSERT(maxj <= 5, "This code expect at most 5 atoms in a vsite");
                 for (int j = 1; j < maxj; j++)
                 {
-                    const int aj = ilist.iatoms[i + 1 + j];
-                    cam[j]       = getMass(moltype.atoms, aj, setMassesToOne);
-                    if (cam[j] == 0)
-                    {
-                        cam[j] = vsite_m[aj];
-                    }
+                    const int  aj   = ilist.iatoms[i + 1 + j];
+                    const real mass = getMass(moltype.atoms, aj, setMassesToOne);
+                    cam[j]          = (mass == 0) ? vsite_m[aj] : mass;
                     /* A vsite should be constructed from normal atoms or
                      * vsites of lower complexity, which we have processed
                      * in a previous iteration.
@@ -214,20 +234,20 @@ static void get_vsite_masses(const gmx_moltype_t&  moltype,
 
                 switch (ilist.functionType)
                 {
-                    case F_VSITE2:
+                    case InteractionFunction::VirtualSite2:
                         /* Exact */
                         vsite_m[a1] = (cam[1] * cam[2])
                                       / (cam[2] * gmx::square(1 - ip.vsite.a)
                                          + cam[1] * gmx::square(ip.vsite.a));
                         break;
-                    case F_VSITE3:
+                    case InteractionFunction::VirtualSite3:
                         /* Exact */
                         vsite_m[a1] = (cam[1] * cam[2] * cam[3])
                                       / (cam[2] * cam[3] * gmx::square(1 - ip.vsite.a - ip.vsite.b)
                                          + cam[1] * cam[3] * gmx::square(ip.vsite.a)
                                          + cam[1] * cam[2] * gmx::square(ip.vsite.b));
                         break;
-                    case F_VSITEN:
+                    case InteractionFunction::VirtualSiteN:
                         GMX_RELEASE_ASSERT(false, "VsiteN should not end up in this code path");
                         break;
                     default:
@@ -239,7 +259,7 @@ static void get_vsite_masses(const gmx_moltype_t&  moltype,
                          * over-estimate of the displacement of the vsite.
                          * This condition holds for all H mass replacement
                          * vsite constructions, except for SP2/3 groups.
-                         * In SP3 groups one H will have a F_VSITE3
+                         * In SP3 groups one H will have a InteractionFunction::VirtualSite3
                          * construction, so even there the total drift
                          * estimate shouldn't be far off.
                          */
@@ -381,11 +401,12 @@ static AtomNonbondedAndKineticPropertiesResolutions getResolutions(const gmx_mto
             chargeRmsMax.add(atoms.atom[a].q, nmol);
         }
 
-        for (int ft = F_CONSTR; ft <= F_CONSTRNC; ft++)
+        for (InteractionFunction iftype :
+             { InteractionFunction::Constraints, InteractionFunction::ConstraintsNoCoupling })
         {
-            const InteractionList& il = moltype.ilist[ft];
+            const InteractionList& il = moltype.ilist[iftype];
 
-            for (int i = 0; i < il.size(); i += 1 + NRAL(ft))
+            for (int i = 0; i < il.size(); i += 1 + NRAL(iftype))
             {
                 const t_iparams& ip = mtop.ffparams.iparams[il.iatoms[i]];
                 if (!(useFep && ip.constr.dB != ip.constr.dA) && ip.constr.dA != 0)
@@ -395,9 +416,9 @@ static AtomNonbondedAndKineticPropertiesResolutions getResolutions(const gmx_mto
             }
         }
 
-        const InteractionList& il = moltype.ilist[F_SETTLE];
+        const InteractionList& il = moltype.ilist[InteractionFunction::SETTLE];
 
-        for (int i = 0; i < il.size(); i += 1 + NRAL(F_SETTLE))
+        for (int i = 0; i < il.size(); i += 1 + NRAL(InteractionFunction::SETTLE))
         {
             const t_iparams& ip = mtop.ffparams.iparams[il.iatoms[i]];
 
@@ -467,11 +488,12 @@ static std::vector<VerletbufAtomtype> getVerletBufferAtomtypes(const gmx_mtop_t&
         std::vector<AtomNonbondedAndKineticProperties> prop(
                 atoms->nr, AtomNonbondedAndKineticProperties(resolutions));
 
-        for (int ft = F_CONSTR; ft <= F_CONSTRNC; ft++)
+        for (InteractionFunction iftype :
+             { InteractionFunction::Constraints, InteractionFunction::ConstraintsNoCoupling })
         {
-            const InteractionList& il = moltype.ilist[ft];
+            const InteractionList& il = moltype.ilist[iftype];
 
-            for (int i = 0; i < il.size(); i += 1 + NRAL(ft))
+            for (int i = 0; i < il.size(); i += 1 + NRAL(iftype))
             {
                 const t_iparams& ip = mtop.ffparams.iparams[il.iatoms[i]];
                 /* When using free-energy perturbation constraint can be perturbed.
@@ -504,9 +526,9 @@ static std::vector<VerletbufAtomtype> getVerletBufferAtomtypes(const gmx_mtop_t&
             }
         }
 
-        const InteractionList& il = moltype.ilist[F_SETTLE];
+        const InteractionList& il = moltype.ilist[InteractionFunction::SETTLE];
 
-        for (int i = 0; i < il.size(); i += 1 + NRAL(F_SETTLE))
+        for (int i = 0; i < il.size(); i += 1 + NRAL(InteractionFunction::SETTLE))
         {
             const t_iparams* ip = &mtop.ffparams.iparams[il.iatoms[i]];
 
@@ -918,10 +940,10 @@ static real md3_force_switch(real p, real rswitch, real rc)
     real a, b;
     real md3_pot, md3_sw;
 
-    a = -((p + 4) * rc - (p + 1) * rswitch) / (pow(rc, p + 2) * gmx::square(rc - rswitch));
-    b = ((p + 3) * rc - (p + 1) * rswitch) / (pow(rc, p + 2) * gmx::power3(rc - rswitch));
+    a = -((p + 4) * rc - (p + 1) * rswitch) / (std::pow(rc, p + 2) * gmx::square(rc - rswitch));
+    b = ((p + 3) * rc - (p + 1) * rswitch) / (std::pow(rc, p + 2) * gmx::power3(rc - rswitch));
 
-    md3_pot = (p + 2) * (p + 1) * p * pow(rc, p + 3);
+    md3_pot = (p + 2) * (p + 1) * p * std::pow(rc, p + 3);
     md3_sw  = 2 * a + 6 * b * (rc - rswitch);
 
     return md3_pot + md3_sw;
@@ -980,7 +1002,7 @@ static std::pair<pot_derivatives_t, pot_derivatives_t> getVdwDerivatives(const t
         // -dV/dr of g(br)*r^-6 [where g(x) = exp(-x^2)(1+x^2+x^4/2),
         // see LJ-PME equations in manual] and r^-reppow
         ljDisp.md1 = -std::exp(-br2) * (br6 + 3.0 * br4 + 6.0 * br2 + 6.0) * std::pow(r, -7.0);
-        ljRep.md1  = repPow * pow(r, -(repPow + 1));
+        ljRep.md1  = repPow * std::pow(r, -(repPow + 1));
         // The contribution of the higher derivatives is negligible
     }
     else
@@ -1040,6 +1062,10 @@ static pot_derivatives_t getElecDerivatives(const t_inputrec& ir)
         elec.d2  = elfac / (rc * rc)
                   * (2 * b * (1 + br * br) * std::exp(-br * br) * M_2_SQRTPI + 2 * std::erfc(br) / rc);
     }
+    else if (ir.coulombtype == CoulombInteractionType::Fmm)
+    {
+        // No direct cut-off artifacts
+    }
     else
     {
         gmx_fatal(FARGS,
@@ -1052,7 +1078,7 @@ static pot_derivatives_t getElecDerivatives(const t_inputrec& ir)
 
 /* Returns the variance of the atomic displacement over timePeriod.
  *
- * Note: When not using BD with a non-mass dependendent friction coefficient,
+ * Note: When not using BD with a non-mass dependent friction coefficient,
  *       the return value still needs to be divided by the particle mass.
  */
 static real displacementVariance(const t_inputrec& ir, real temperature, real timePeriod)
@@ -1123,7 +1149,7 @@ static real computeEffectiveAtomDensity(gmx::ArrayRef<const gmx::RVec> coordinat
     for (int d = 0; d < DIM; d++)
     {
         GMX_RELEASE_ASSERT(cutoff < box[d][d], "The cutoff should be smaller than the boxsize");
-        numCells[d]    = int(lround(box[d][d] / cutoff));
+        numCells[d]    = int(std::lround(box[d][d] / cutoff));
         invCellSize[d] = numCells[d] / box[d][d];
     }
 
@@ -1286,7 +1312,7 @@ static real pressureError(gmx::ArrayRef<const VerletbufAtomtype> atomTypes,
         {
             fprintf(debug,
                     "Verlet buffer LJ max pressure error relative to average: factor %.2f\n",
-                    forceError * (1 + listLifetime) / forceErrorSum);
+                    forceErrorSum > 0 ? forceError * (1 + listLifetime) / forceErrorSum : 0);
         }
 
         prevStep       = step;
@@ -1356,7 +1382,7 @@ real calcVerletBufferSize(const gmx_mtop_t&         mtop,
     /* Resolution of the buffer size */
     resolution = 0.001;
 
-    env = getenv("GMX_VERLET_BUFFER_RES");
+    env = std::getenv("GMX_VERLET_BUFFER_RES");
     if (env != nullptr)
     {
         sscanf(env, "%lf", &resolution);
@@ -1460,7 +1486,7 @@ real calcVerletBufferSize(const gmx_mtop_t&         mtop,
                                            mtop.ffparams,
                                            ir,
                                            ensembleTemperature,
-                                           { ljDisp, ljRep },
+                                                           { ljDisp, ljRep },
                                            listIsDynamicallyPruned,
                                            nstlist,
                                            rl,
@@ -1637,7 +1663,7 @@ static std::vector<AtomConstraintProps> getAtomConstraintProps(const gmx_moltype
     for (const auto& ilist : extractILists(moltype.ilist, IF_CONSTRAINT))
     {
         // Settles are handled separately
-        if (ilist.functionType == F_SETTLE)
+        if (ilist.functionType == InteractionFunction::SETTLE)
         {
             continue;
         }
@@ -1720,10 +1746,10 @@ static real chanceOfUpdateGroupCrossingCell(const gmx_moltype_t&          moltyp
             // All normal atoms must be connected by SETTLE
             for (const int atom : block)
             {
-                const auto& ilist = moltype.ilist[F_SETTLE];
+                const auto& ilist = moltype.ilist[InteractionFunction::SETTLE];
                 GMX_RELEASE_ASSERT(!ilist.empty(),
                                    "There should be at least one settle in this moltype");
-                for (int i = 0; i < ilist.size(); i += 1 + NRAL(F_SETTLE))
+                for (int i = 0; i < ilist.size(); i += 1 + NRAL(InteractionFunction::SETTLE))
                 {
                     if (atom == ilist.iatoms[i + 1])
                     {

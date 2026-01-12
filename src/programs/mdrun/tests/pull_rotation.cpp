@@ -74,15 +74,39 @@
  */
 #include "gmxpre.h"
 
+#include <cstddef>
+
+#include <filesystem>
+#include <map>
+#include <memory>
+#include <optional>
+#include <string>
+#include <tuple>
+#include <type_traits>
+#include <vector>
+
 #include <gtest/gtest.h>
 
 #include "gromacs/fileio/xvgr.h"
+#include "gromacs/math/multidimarray.h"
+#include "gromacs/mdspan/layouts.h"
+#include "gromacs/mdspan/mdspan.h"
 #include "gromacs/topology/ifunc.h"
 #include "gromacs/trajectory/energyframe.h"
+#include "gromacs/trajectory/trajectoryframe.h"
+#include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/real.h"
+#include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/vectypes.h"
 
+#include "testutils/cmdlinetest.h"
 #include "testutils/refdata.h"
+#include "testutils/testasserts.h"
+#include "testutils/testfilemanager.h"
 #include "testutils/trajectoryreader.h"
+
+#include "programs/mdrun/tests/comparison_helpers.h"
 
 #include "energycomparison.h"
 #include "energyreader.h"
@@ -191,11 +215,12 @@ void checkRotForcesAtStepZero(const std::string& fn, const std::vector<std::vect
 real getFirstRotEnergyValue(const std::string& fn)
 {
     auto E   = 0.0;
-    auto efr = openEnergyFileToReadTerms(fn, { interaction_function[F_COM_PULL].longname });
+    auto efr = openEnergyFileToReadTerms(
+            fn, { interaction_function[InteractionFunction::CenterOfMassPullingEnergy].longname });
     if (efr->readNextFrame())
     {
         auto fr = efr->frame();
-        E       = fr.at(interaction_function[F_COM_PULL].longname);
+        E = fr.at(interaction_function[InteractionFunction::CenterOfMassPullingEnergy].longname);
     }
     else
     {
@@ -275,7 +300,7 @@ TEST_P(RotationTest, CheckEnergiesForcesAndTraj)
         auto gromppCaller = CommandLine();
         auto rotrefFileName = std::filesystem::path(TestFileManager::getTestSimulationDatabaseDirectory())
                                       .append("rotref.trr");
-        gromppCaller.addOption("-ref", rotrefFileName.u8string());
+        gromppCaller.addOption("-ref", rotrefFileName.string());
         ASSERT_EQ(0, runner_.callGrompp(gromppCaller));
     }
 
@@ -284,7 +309,7 @@ TEST_P(RotationTest, CheckEnergiesForcesAndTraj)
     // Do a short MD simulation
     {
         auto mdrunCaller = CommandLine();
-        mdrunCaller.addOption("-ro", fn_xvg.u8string());
+        mdrunCaller.addOption("-ro", fn_xvg.string());
         ASSERT_EQ(0, runner_.callMdrun(mdrunCaller));
     }
 
@@ -333,8 +358,8 @@ TEST_P(RotationTest, CheckEnergiesForcesAndTraj)
         auto energyTolerance = absoluteTolerance(std::is_same_v<real, double> ? 1e-8 : 0.01);
 
         EnergyTermsToCompare energyTermsToCompare{
-            { { interaction_function[F_COM_PULL].longname, energyTolerance },
-              { interaction_function[F_EPOT].longname, energyTolerance } }
+            { { interaction_function[InteractionFunction::CenterOfMassPullingEnergy].longname, energyTolerance },
+              { interaction_function[InteractionFunction::PotentialEnergy].longname, energyTolerance } }
         };
         checkEnergiesAgainstReferenceData(runner_.edrFileName_, energyTermsToCompare, &checker);
     }

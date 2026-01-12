@@ -36,13 +36,18 @@
 
 #include "viewit.h"
 
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
 #include <array>
+#include <filesystem>
+#include <string>
 #include <type_traits>
+#include <vector>
 
 #include "gromacs/commandline/filenm.h"
+#include "gromacs/fileio/filetypes.h"
 #include "gromacs/fileio/oenv.h"
 #include "gromacs/utility/arraysize.h"
 #include "gromacs/utility/cstringutil.h"
@@ -76,7 +81,7 @@ void do_view(const gmx_output_env_t* oenv, const char* fn, const char* opts)
 
     if (output_env_get_view(oenv) && fn)
     {
-        if (getenv("DISPLAY") == nullptr)
+        if (std::getenv("DISPLAY") == nullptr)
         {
             fprintf(stderr, "Can not view %s, no DISPLAY environment variable.\n", fn);
         }
@@ -88,9 +93,9 @@ void do_view(const gmx_output_env_t* oenv, const char* fn, const char* opts)
             switch (ftp)
             {
                 case efXVG:
-                    if (!(cmd = getenv(env)))
+                    if (!(cmd = std::getenv(env)))
                     {
-                        if (getenv("GMX_USE_XMGR"))
+                        if (std::getenv("GMX_USE_XMGR"))
                         {
                             cmd = "xmgr";
                         }
@@ -103,7 +108,7 @@ void do_view(const gmx_output_env_t* oenv, const char* fn, const char* opts)
                 default:
                     if ((n = can_view(ftp)))
                     {
-                        if (!(cmd = getenv(env)))
+                        if (!(cmd = std::getenv(env)))
                         {
                             cmd = viewProgram[n];
                         }
@@ -114,11 +119,11 @@ void do_view(const gmx_output_env_t* oenv, const char* fn, const char* opts)
                         return;
                     }
             }
-            if (strlen(cmd))
+            if (std::strlen(cmd))
             {
                 sprintf(buf, "%s %s %s &", cmd, opts ? opts : "", fn);
                 fprintf(stderr, "Executing '%s'\n", buf);
-                if (0 != system(buf))
+                if (0 != std::system(buf))
                 {
                     gmx_fatal(FARGS, "Failed executing command: %s", buf);
                 }

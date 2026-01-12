@@ -94,7 +94,7 @@ Background
 *gmxapi* comes in three parts:
 
 * |Gromacs| gmxapi library for C++.
-* This Python package, supporting Python 3.7 and higher
+* This Python package, supporting Python 3.9 and higher
 * MD restraint plugins and sample gmxapi client code
 
 |Gromacs| requirements
@@ -120,7 +120,7 @@ building the gmxapi package.
 Build system requirements
 -------------------------
 
-gmxapi can be built for Python 3.7 and higher.
+gmxapi can be built for Python 3.9 and higher.
 
 You will need a C++ 17 compatible compiler and a reasonably up-to-date version
 of CMake.
@@ -152,7 +152,7 @@ that works.
 Python environment requirements
 -------------------------------
 
-gmxapi requires Python 3.7 or higher. Check your version with
+gmxapi requires Python 3.9 or higher. Check your version with
 :command:`python3 --version` or :command:`python --version`.
 
 ..  note::
@@ -857,7 +857,7 @@ though you have a successfully built the :py:mod:`gmxapi` package. If you want t
 troubleshoot, though, the main problems seem to be that automatic
 installation of required python packages may not work (requiring manual
 installations, such as with :command:`pip install somepackage`) and ambiguities
-between python versions. 
+between python versions.
 
 If you are working in a development branch of the repository, note that
 the upstream branch may be reset to ``main`` after a new release is

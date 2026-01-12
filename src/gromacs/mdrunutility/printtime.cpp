@@ -37,9 +37,14 @@
 
 #include "config.h"
 
+#include <ctime>
+
+#include <string>
+
 #include "gromacs/mdtypes/commrec.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/timing/walltime_accounting.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/strconvert.h"
 #include "gromacs/utility/sysinfo.h"
@@ -48,20 +53,18 @@ void print_time(FILE*                     out,
                 gmx_walltime_accounting_t walltime_accounting,
                 int64_t                   step,
                 const t_inputrec*         ir,
-                const t_commrec*          cr)
+                const gmx::MpiComm&       mpiCommSimulation)
 {
-    time_t finish;
-    double dt, elapsed_seconds, time_per_step;
+    std::time_t finish;
+    double      dt, elapsed_seconds, time_per_step;
 
-#if !GMX_THREAD_MPI
-    if (!PAR(cr))
-#endif
+    if (GMX_THREAD_MPI || mpiCommSimulation.isSerial())
     {
         fprintf(out, "\r");
     }
-    fputs("step ", out);
-    fputs(gmx::int64ToString(step).c_str(), out);
-    fflush(out);
+    std::fputs("step ", out);
+    std::fputs(gmx::int64ToString(step).c_str(), out);
+    std::fflush(out);
 
     if ((step >= ir->nstlist))
     {
@@ -75,11 +78,11 @@ void print_time(FILE*                     out,
         {
             if (dt >= 300)
             {
-                finish       = static_cast<time_t>(seconds_since_epoch + dt);
+                finish       = static_cast<std::time_t>(seconds_since_epoch + dt);
                 auto timebuf = gmx_ctime_r(&finish);
                 timebuf.erase(timebuf.find_first_of('\n'));
-                fputs(", will finish ", out);
-                fputs(timebuf.c_str(), out);
+                std::fputs(", will finish ", out);
+                std::fputs(timebuf.c_str(), out);
             }
             else
             {
@@ -91,16 +94,12 @@ void print_time(FILE*                     out,
             fprintf(out, " performance: %.1f ns/day    ", ir->delta_t / 1000 * 24 * 60 * 60 / time_per_step);
         }
     }
-#if !GMX_THREAD_MPI
-    if (PAR(cr))
+    if (!GMX_THREAD_MPI && mpiCommSimulation.isParallel())
     {
         fprintf(out, "\n");
     }
-#else
-    GMX_UNUSED_VALUE(cr);
-#endif
 
-    fflush(out);
+    std::fflush(out);
 }
 
 void print_date_and_time(FILE* fplog, int nodeid, const char* title, double the_time)
@@ -110,7 +109,7 @@ void print_date_and_time(FILE* fplog, int nodeid, const char* title, double the_
         return;
     }
 
-    time_t temp_time = static_cast<time_t>(the_time);
+    std::time_t temp_time = static_cast<std::time_t>(the_time);
 
     auto timebuf = gmx_ctime_r(&temp_time);
 
@@ -123,5 +122,5 @@ void print_start(FILE* fplog, const t_commrec* cr, gmx_walltime_accounting_t wal
 
     sprintf(buf, "Started %s", name);
     print_date_and_time(
-            fplog, cr->nodeid, buf, walltime_accounting_get_start_time_stamp(walltime_accounting));
+            fplog, cr->commMyGroup.rank(), buf, walltime_accounting_get_start_time_stamp(walltime_accounting));
 }

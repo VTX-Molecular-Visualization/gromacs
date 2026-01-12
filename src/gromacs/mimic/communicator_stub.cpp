@@ -33,19 +33,23 @@
  */
 #include "gmxpre.h"
 
+#include <cstdint>
+
 #include "gromacs/math/units.h"
 #include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/exceptions.h"
+#include "gromacs/utility/real.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "communicator.h"
+
+struct gmx_mtop_t;
 
 namespace gmx
 {
 
-#ifdef __clang__
-#    pragma clang diagnostic push
-#    pragma clang diagnostic ignored "-Wmissing-noreturn"
-#endif
+CLANG_DIAGNOSTIC_IGNORE("-Wmissing-noreturn")
 
 void MimicCommunicator::init()
 {
@@ -89,8 +93,6 @@ void MimicCommunicator::finalize()
             "GROMACS is compiled without MiMiC support! Please, reconfigure with -DGMX_MIMIC=ON"));
 }
 
-#ifdef __clang__
-#    pragma clang diagnostic pop
-#endif
+CLANG_DIAGNOSTIC_RESET
 
 } // namespace gmx

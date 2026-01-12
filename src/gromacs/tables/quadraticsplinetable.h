@@ -56,15 +56,19 @@
 #ifndef GMX_TABLES_QUADRATICSPLINETABLE_H
 #define GMX_TABLES_QUADRATICSPLINETABLE_H
 
+#include <cstddef>
+
 #include <functional>
 #include <initializer_list>
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include "gromacs/libgromacs_export.h"
 #include "gromacs/simd/simd.h"
 #include "gromacs/tables/tableinput.h"
 #include "gromacs/utility/alignedallocator.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/classhelpers.h"
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/gmxassert.h"
@@ -534,7 +538,7 @@ public:
             gatherLoadUBySimdIntTranspose<numFuncInTable>(
                     derivativeMultiTableData_.data() + funcIndex0, tabIndex, &t0, &t2); // works for scalar T too
             gatherLoadUBySimdIntTranspose<numFuncInTable>(derivativeMultiTableData_.data() + funcIndex0,
-                                                          tabIndex + T(1),
+                                                          tabIndex + decltype(tabIndex)(1),
                                                           &t1,
                                                           &t2); // works for scalar T too
             *derivativeValue1 = fma(t1 - t0, eps, t0);
@@ -542,7 +546,7 @@ public:
             gatherLoadUBySimdIntTranspose<numFuncInTable>(
                     derivativeMultiTableData_.data() + funcIndex1, tabIndex, &t0, &t2); // works for scalar T too
             gatherLoadUBySimdIntTranspose<numFuncInTable>(derivativeMultiTableData_.data() + funcIndex1,
-                                                          tabIndex + T(1),
+                                                          tabIndex + decltype(tabIndex)(1),
                                                           &t1,
                                                           &t2); // works for scalar T too
             *derivativeValue2 = fma(t1 - t0, eps, t0);

@@ -62,9 +62,12 @@
 #ifndef GMX_IMD_IMD_H
 #define GMX_IMD_IMD_H
 
-#include <memory>
+#include <cstdint>
 
-#include "gromacs/math/vectypes.h"
+#include <memory>
+#include <string_view>
+
+#include "gromacs/utility/vectypes.h"
 
 struct gmx_domdec_t;
 struct gmx_enerdata_t;
@@ -72,7 +75,6 @@ struct gmx_mtop_t;
 struct gmx_multisim_t;
 struct gmx_output_env_t;
 struct gmx_wallcycle;
-struct t_commrec;
 struct t_filenm;
 struct t_IMD;
 struct t_inputrec;
@@ -80,6 +82,7 @@ class t_state;
 
 namespace gmx
 {
+class MpiComm;
 enum class StartingBehavior;
 class IMDModule;
 class ImdSession;
@@ -90,10 +93,19 @@ struct MdrunOptions;
 template<typename>
 class ArrayRef;
 
-/*! \brief
- * Creates a module for interactive molecular dynamics.
+/*! \libinternal \brief Information about the interactive molecular dynamics module
+ *
+ * Provides name and method to create an interactive molecular dynamics module.
  */
-std::unique_ptr<IMDModule> createInteractiveMolecularDynamicsModule();
+struct InteractiveMolecularDynamicsModuleInfo
+{
+    /*! \brief
+     * Creates a module for interactive molecular dynamics.
+     */
+    static std::unique_ptr<IMDModule> create();
+    //! The name of the module
+    static constexpr std::string_view sc_name = "interactive-molecular-dynamics";
+};
 
 static const char IMDstr[] = "IMD:"; /**< Tag output from the IMD module with this string. */
 
@@ -123,7 +135,8 @@ void write_IMDgroup_to_file(bool              bIMD,
  * This function is called before the main MD loop over time steps.
  *
  * \param ir           The inputrec structure containing the MD input parameters
- * \param cr           Information structure for MPI communication.
+ * \param mpiComm      Communication object for my group.
+ * \param dd           Domain decomposition object, pass nullptr when DD is not active.
  * \param wcycle       Count wallcycles of IMD routines for diagnostic output.
  * \param enerd        Contains the GROMACS energies for the different interaction types.
  * \param ms           Handler for multi-simulations.
@@ -137,7 +150,8 @@ void write_IMDgroup_to_file(bool              bIMD,
  * \param startingBehavior  Describes whether this is a restart appending to output files
  */
 std::unique_ptr<ImdSession> makeImdSession(const t_inputrec*              ir,
-                                           const t_commrec*               cr,
+                                           const MpiComm&                 mpiComm,
+                                           const gmx_domdec_t*            dd,
                                            gmx_wallcycle*                 wcycle,
                                            gmx_enerdata_t*                enerd,
                                            const gmx_multisim_t*          ms,
@@ -154,7 +168,7 @@ class ImdSession
 {
 private:
     //! Private constructor, to force the use of makeImdSession()
-    ImdSession(const MDLogger& mdlog);
+    ImdSession(const MDLogger& mdlog, const MpiComm& mpiComm, const gmx_domdec_t* dd);
 
 public:
     ~ImdSession();
@@ -220,7 +234,8 @@ private:
 public:
     // Befriend the factory function.
     friend std::unique_ptr<ImdSession> makeImdSession(const t_inputrec*              ir,
-                                                      const t_commrec*               cr,
+                                                      const MpiComm&                 mpiComm,
+                                                      const gmx_domdec_t*            dd,
                                                       gmx_wallcycle*                 wcycle,
                                                       gmx_enerdata_t*                enerd,
                                                       const gmx_multisim_t*          ms,

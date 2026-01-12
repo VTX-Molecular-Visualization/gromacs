@@ -39,13 +39,19 @@
 #include <cstring>
 
 #include <algorithm>
+#include <filesystem>
 #include <list>
+#include <memory>
+#include <string>
+#include <vector>
 
 #include "gromacs/commandline/cmdlinehelpcontext.h"
 #include "gromacs/commandline/cmdlinehelpwriter.h"
 #include "gromacs/commandline/cmdlineparser.h"
+#include "gromacs/fileio/filetypes.h"
 #include "gromacs/fileio/oenv.h"
 #include "gromacs/fileio/timecontrol.h"
+#include "gromacs/options/abstractoption.h"
 #include "gromacs/options/basicoptions.h"
 #include "gromacs/options/behaviorcollection.h"
 #include "gromacs/options/filenameoption.h"
@@ -86,7 +92,7 @@ int opt2parg_int(const char* option, int nparg, t_pargs pa[])
 
     for (i = 0; (i < nparg); i++)
     {
-        if (strcmp(pa[i].option, option) == 0)
+        if (std::strcmp(pa[i].option, option) == 0)
         {
             return *pa[i].u.i;
         }
@@ -101,7 +107,7 @@ gmx_bool opt2parg_bool(const char* option, int nparg, t_pargs pa[])
 
     for (i = 0; (i < nparg); i++)
     {
-        if (strcmp(pa[i].option, option) == 0)
+        if (std::strcmp(pa[i].option, option) == 0)
         {
             return *pa[i].u.b;
         }
@@ -118,7 +124,7 @@ real opt2parg_real(const char* option, int nparg, t_pargs pa[])
 
     for (i = 0; (i < nparg); i++)
     {
-        if (strcmp(pa[i].option, option) == 0)
+        if (std::strcmp(pa[i].option, option) == 0)
         {
             return *pa[i].u.r;
         }
@@ -133,7 +139,7 @@ const char* opt2parg_str(const char* option, int nparg, t_pargs pa[])
 
     for (i = 0; (i < nparg); i++)
     {
-        if (strcmp(pa[i].option, option) == 0)
+        if (std::strcmp(pa[i].option, option) == 0)
         {
             return *(pa[i].u.c);
         }
@@ -148,7 +154,7 @@ gmx_bool opt2parg_bSet(const char* option, int nparg, const t_pargs* pa)
 
     for (i = 0; (i < nparg); i++)
     {
-        if (strcmp(pa[i].option, option) == 0)
+        if (std::strcmp(pa[i].option, option) == 0)
         {
             return pa[i].bSet;
         }
@@ -165,7 +171,7 @@ const char* opt2parg_enum(const char* option, int nparg, t_pargs pa[])
 
     for (i = 0; (i < nparg); i++)
     {
-        if (strcmp(pa[i].option, option) == 0)
+        if (std::strcmp(pa[i].option, option) == 0)
         {
             return pa[i].u.c[0];
         }
@@ -196,7 +202,7 @@ const gmx::EnumerationArray<XvgFormat, const char*> c_xvgFormatNames = {
  */
 XvgFormat getDefaultXvgFormat()
 {
-    const char* const select = getenv("GMX_VIEW_XVG");
+    const char* const select = std::getenv("GMX_VIEW_XVG");
     if (select != nullptr)
     {
         for (XvgFormat c : keysOf(c_xvgFormatNames))

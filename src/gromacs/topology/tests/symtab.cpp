@@ -41,13 +41,19 @@
 
 #include "gromacs/topology/symtab.h"
 
+#include <cstdio>
+
+#include <filesystem>
 #include <memory>
+#include <string>
+#include <vector>
 
 #include <gtest/gtest.h>
 
+#include "gromacs/serialization/inmemoryserializer.h"
 #include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/exceptions.h"
-#include "gromacs/utility/inmemoryserializer.h"
 #include "gromacs/utility/strconvert.h"
 #include "gromacs/utility/stringutil.h"
 #include "gromacs/utility/textreader.h"
@@ -95,10 +101,10 @@ private:
 void StringTableTest::checkTable(const StringTable& table)
 {
     TestFileManager files;
-    std::string     filename(files.getTemporaryFilePath("table.txt").u8string());
-    FILE*           fp = fopen(filename.c_str(), "w");
+    std::string     filename(files.getTemporaryFilePath("table.txt").string());
+    FILE*           fp = std::fopen(filename.c_str(), "w");
     table.printStringTableStorageToFile(fp, 4, "Test title");
-    fclose(fp);
+    std::fclose(fp);
     const std::string text = TextReader::readFileToString(filename);
     checker()->checkTextBlock(text, "Output");
 }

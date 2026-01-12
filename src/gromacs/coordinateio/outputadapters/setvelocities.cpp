@@ -44,6 +44,8 @@
 
 #include "setvelocities.h"
 
+#include <string>
+
 #include "gromacs/coordinateio/coordinatefileenums.h"
 #include "gromacs/trajectory/trajectoryframe.h"
 #include "gromacs/utility/exceptions.h"
@@ -58,7 +60,7 @@ void SetVelocities::checkAbilityDependencies(unsigned long abilities) const
         std::string errorMessage =
                 "Output file type does not support writing velocities. "
                 "Only GRO, TRR and TNG support this output.";
-        GMX_THROW(InconsistentInputError(errorMessage.c_str()));
+        GMX_THROW(InconsistentInputError(errorMessage));
     }
 }
 

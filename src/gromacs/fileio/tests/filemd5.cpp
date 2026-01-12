@@ -43,6 +43,8 @@
 #include <cstdio>
 
 #include <algorithm>
+#include <array>
+#include <filesystem>
 #include <numeric>
 #include <string>
 #include <vector>
@@ -52,6 +54,7 @@
 
 #include "gromacs/fileio/gmxfio.h"
 #include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/futil.h"
 
 #include "testutils/refdata.h"
 #include "testutils/testfilemanager.h"
@@ -72,9 +75,9 @@ public:
         std::vector<char> data(lengthInBytes);
         std::iota(data.begin(), data.end(), 1);
         // Binary mode ensures it works the same on all OS
-        FILE* fp = fopen(filename_.c_str(), "wb");
-        fwrite(data.data(), sizeof(char), data.size(), fp);
-        fclose(fp);
+        FILE* fp = std::fopen(filename_.string().c_str(), "wb");
+        std::fwrite(data.data(), sizeof(char), data.size(), fp);
+        std::fclose(fp);
     }
     ~FileMD5Test() override
     {
@@ -86,14 +89,14 @@ public:
     TestFileManager fileManager_;
     // Make sure the file extension is one that gmx_fio_open will
     // recognize to open as binary.
-    std::string filename_ = fileManager_.getTemporaryFilePath("data.edr").u8string();
-    t_fileio*   file_     = nullptr;
+    std::filesystem::path filename_ = fileManager_.getTemporaryFilePath("data.edr");
+    t_fileio*             file_     = nullptr;
 };
 
 TEST_F(FileMD5Test, CanComputeMD5)
 {
     prepareFile(1000);
-    file_ = gmx_fio_open(filename_.c_str(), "r+");
+    file_ = gmx_fio_open(filename_, "r+");
 
     std::array<unsigned char, 16> digest = { 0 };
     // Chosen to be less than the full file length
@@ -110,7 +113,7 @@ TEST_F(FileMD5Test, CanComputeMD5)
 TEST_F(FileMD5Test, ReturnsErrorIfFileModeIsWrong)
 {
     prepareFile(1000);
-    file_ = gmx_fio_open(filename_.c_str(), "r");
+    file_ = gmx_fio_open(filename_, "r");
 
     std::array<unsigned char, 16> digest;
     gmx_off_t                     offset             = 100;

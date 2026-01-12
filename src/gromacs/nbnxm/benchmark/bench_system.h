@@ -43,13 +43,16 @@
 #ifndef GMX_NBNXN_BENCH_SYSTEM_H
 #define GMX_NBNXN_BENCH_SYSTEM_H
 
+#include <cstdint>
+#include <cstdio>
+
 #include <string>
 #include <vector>
 
-#include "gromacs/math/vectypes.h"
 #include "gromacs/mdtypes/forcerec.h"
 #include "gromacs/utility/listoflists.h"
-#include "gromacs/utility/smalloc.h"
+#include "gromacs/utility/real.h"
+#include "gromacs/utility/vectypes.h"
 
 namespace gmx
 {
@@ -77,9 +80,9 @@ struct BenchmarkSystem
     //! Storage for atom partial charges.
     std::vector<real> charges;
     //! Atom info where all atoms are marked to have Van der Waals interactions
-    std::vector<int64_t> atomInfoAllVdw;
+    std::vector<int32_t> atomInfoAllVdw;
     //! Atom info where only oxygen atoms are marked to have Van der Waals interactions
-    std::vector<int64_t> atomInfoOxygenVdw;
+    std::vector<int32_t> atomInfoOxygenVdw;
     //! Information about exclusions.
     ListOfLists<int> excls;
     //! Storage for atom positions.

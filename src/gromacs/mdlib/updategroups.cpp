@@ -44,8 +44,12 @@
 #include "updategroups.h"
 
 #include <cmath>
+#include <cstdlib>
 
+#include <algorithm>
+#include <array>
 #include <unordered_map>
+#include <utility>
 #include <variant>
 
 #include "gromacs/math/functions.h"
@@ -53,12 +57,15 @@
 #include "gromacs/math/utilities.h"
 #include "gromacs/mdlib/constr.h"
 #include "gromacs/pbcutil/pbc.h"
+#include "gromacs/topology/block.h"
+#include "gromacs/topology/forcefieldparameters.h"
 #include "gromacs/topology/idef.h"
 #include "gromacs/topology/ifunc.h"
 #include "gromacs/topology/mtop_atomloops.h"
 #include "gromacs/topology/mtop_util.h"
 #include "gromacs/topology/topology.h"
 #include "gromacs/utility/enumerationhelpers.h"
+#include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/listoflists.h"
 #include "gromacs/utility/logger.h"
 #include "gromacs/utility/message_string_collector.h"
@@ -91,7 +98,7 @@ static bool hasFlexibleConstraints(const gmx_moltype_t& moltype, gmx::ArrayRef<c
 {
     for (auto& ilist : extractILists(moltype.ilist, IF_CONSTRAINT))
     {
-        if (ilist.functionType != F_SETTLE)
+        if (ilist.functionType != InteractionFunction::SETTLE)
         {
             for (size_t i = 0; i < ilist.iatoms.size(); i += ilistStride(ilist))
             {
@@ -117,14 +124,15 @@ static bool hasIncompatibleVsites(const gmx_moltype_t& moltype, gmx::ArrayRef<co
 
     for (auto& ilist : extractILists(moltype.ilist, IF_VSITE))
     {
-        if (ilist.functionType == F_VSITE2 || ilist.functionType == F_VSITE3)
+        if (ilist.functionType == InteractionFunction::VirtualSite2
+            || ilist.functionType == InteractionFunction::VirtualSite3)
         {
             for (size_t i = 0; i < ilist.iatoms.size(); i += ilistStride(ilist))
             {
                 const t_iparams& iparam = iparams[ilist.iatoms[i]];
                 real             coeffMin;
                 real             coeffSum;
-                if (ilist.functionType == F_VSITE2)
+                if (ilist.functionType == InteractionFunction::VirtualSite2)
                 {
                     coeffMin = iparam.vsite.a;
                     coeffSum = iparam.vsite.a;
@@ -159,7 +167,7 @@ static InteractionList jointConstraintList(const gmx_moltype_t& moltype)
 
     for (auto& ilist : extractILists(moltype.ilist, IF_CONSTRAINT))
     {
-        if (ilist.functionType == F_SETTLE)
+        if (ilist.functionType == InteractionFunction::SETTLE)
         {
             for (size_t i = 0; i < ilist.iatoms.size(); i += ilistStride(ilist))
             {
@@ -383,8 +391,8 @@ makeUpdateGroupingsPerMoleculeType(const gmx_moltype_t& moltype, gmx::ArrayRef<c
     }
 
     /* Combine all constraint ilists into a single one */
-    std::array<InteractionList, F_NRE> ilistsCombined;
-    ilistsCombined[F_CONSTR] = jointConstraintList(moltype);
+    InteractionLists ilistsCombined;
+    ilistsCombined[InteractionFunction::Constraints] = jointConstraintList(moltype);
     /* We "include" flexible constraints, but none are present (checked above) */
     const ListOfLists<int> at2con = make_at2con(
             moltype.atoms.nr, ilistsCombined, iparams, FlexibleConstraintTreatment::Include);
@@ -392,7 +400,8 @@ makeUpdateGroupingsPerMoleculeType(const gmx_moltype_t& moltype, gmx::ArrayRef<c
     int firstAtom = 0;
     while (firstAtom < moltype.atoms.nr)
     {
-        const auto detectionResult = detectGroup(firstAtom, moltype, at2con, ilistsCombined[F_CONSTR]);
+        const auto detectionResult = detectGroup(
+                firstAtom, moltype, at2con, ilistsCombined[InteractionFunction::Constraints]);
 
         if (std::holds_alternative<IncompatibilityReasons>(detectionResult))
         {
@@ -433,11 +442,11 @@ std::variant<std::vector<RangePartitioning>, std::string> makeUpdateGroupingsPer
 /*! \brief Returns a map of angles ilist.iatoms indices with the middle atom as key */
 static std::unordered_multimap<int, int> getAngleIndices(const gmx_moltype_t& moltype)
 {
-    const InteractionList& angles = moltype.ilist[F_ANGLES];
+    const InteractionList& angles = moltype.ilist[InteractionFunction::Angles];
 
     std::unordered_multimap<int, int> indices(angles.size());
 
-    for (int i = 0; i < angles.size(); i += 1 + NRAL(F_ANGLES))
+    for (int i = 0; i < angles.size(); i += 1 + NRAL(InteractionFunction::Angles))
     {
         indices.insert({ angles.iatoms[i + 2], i });
     }
@@ -473,17 +482,17 @@ static real constraintGroupRadius(const gmx_moltype_t&                     molty
     for (int i = 0; i < numPartnerAtoms; i++)
     {
         const int ind = at2con[centralAtom][i] * 3;
-        if (ind >= moltype.ilist[F_CONSTR].size())
+        if (ind >= moltype.ilist[InteractionFunction::Constraints].size())
         {
             /* This is a flexible constraint, we don't optimize for that */
             return -1;
         }
-        const int a1    = moltype.ilist[F_CONSTR].iatoms[ind + 1];
-        const int a2    = moltype.ilist[F_CONSTR].iatoms[ind + 2];
+        const int a1    = moltype.ilist[InteractionFunction::Constraints].iatoms[ind + 1];
+        const int a2    = moltype.ilist[InteractionFunction::Constraints].iatoms[ind + 2];
         partnerAtoms[i] = (a1 == centralAtom ? a2 : a1);
     }
 
-    const InteractionList&           angles      = moltype.ilist[F_ANGLES];
+    const InteractionList&           angles      = moltype.ilist[InteractionFunction::Angles];
     auto                             range       = angleIndices.equal_range(centralAtom);
     int                              angleType   = -1;
     std::array<int, numPartnerAtoms> numAngles   = { 0 };
@@ -615,7 +624,7 @@ static real computeMaxUpdateGroupRadius(const gmx_moltype_t&           moltype,
     GMX_RELEASE_ASSERT(!hasFlexibleConstraints(moltype, iparams),
                        "Flexible constraints are not supported here");
 
-    const InteractionList& settles = moltype.ilist[F_SETTLE];
+    const InteractionList& settles = moltype.ilist[InteractionFunction::SETTLE];
 
     const ListOfLists<int> at2con = make_at2con(moltype, iparams, FlexibleConstraintTreatment::Include);
 
@@ -656,16 +665,17 @@ static real computeMaxUpdateGroupRadius(const gmx_moltype_t&           moltype,
         bool isFirstConstraint    = true;
         for (const int constraint : at2con[maxAtom])
         {
-            int conIndex = constraint * (1 + NRAL(F_CONSTR));
+            int conIndex = constraint * (1 + NRAL(InteractionFunction::Constraints));
             int iparamsIndex;
-            if (conIndex < moltype.ilist[F_CONSTR].size())
+            if (conIndex < moltype.ilist[InteractionFunction::Constraints].size())
             {
-                iparamsIndex = moltype.ilist[F_CONSTR].iatoms[conIndex];
+                iparamsIndex = moltype.ilist[InteractionFunction::Constraints].iatoms[conIndex];
             }
             else
             {
                 iparamsIndex =
-                        moltype.ilist[F_CONSTRNC].iatoms[conIndex - moltype.ilist[F_CONSTR].size()];
+                        moltype.ilist[InteractionFunction::ConstraintsNoCoupling]
+                                .iatoms[conIndex - moltype.ilist[InteractionFunction::Constraints].size()];
             }
             if (isFirstConstraint)
             {
@@ -732,7 +742,7 @@ static real computeMaxUpdateGroupRadius(const gmx_moltype_t&           moltype,
         maxRadius = std::max(maxRadius, radius);
     }
 
-    for (int i = 0; i < settles.size(); i += 1 + NRAL(F_SETTLE))
+    for (int i = 0; i < settles.size(); i += 1 + NRAL(InteractionFunction::SETTLE))
     {
         const real dOH = iparams[settles.iatoms[i]].settle.doh;
         const real dHH = iparams[settles.iatoms[i]].settle.dhh;
@@ -746,9 +756,9 @@ static real computeMaxUpdateGroupRadius(const gmx_moltype_t&           moltype,
     return maxRadius;
 }
 
-real computeMaxUpdateGroupRadius(const gmx_mtop_t&                      mtop,
+real computeMaxUpdateGroupRadius(const gmx_mtop_t& mtop,
                                  gmx::ArrayRef<const RangePartitioning> updateGroupingsPerMoleculeType,
-                                 real                                   temperature)
+                                 real temperature)
 {
     if (updateGroupingsPerMoleculeType.empty())
     {
@@ -778,12 +788,18 @@ UpdateGroups::UpdateGroups(std::vector<RangePartitioning>&& updateGroupingPerMol
 {
 }
 
+ArrayRef<const RangePartitioning> UpdateGroups::updateGroupingPerMoleculeType() const
+{
+    return updateGroupingPerMoleculeType_;
+}
+
 bool systemHasConstraintsOrVsites(const gmx_mtop_t& mtop)
 {
     IListRange ilistRange(mtop);
-    return std::any_of(ilistRange.begin(), ilistRange.end(), [](const auto& ilists) {
-        return !extractILists(ilists.list(), IF_CONSTRAINT | IF_VSITE).empty();
-    });
+    return std::any_of(ilistRange.begin(),
+                       ilistRange.end(),
+                       [](const auto& ilists)
+                       { return !extractILists(ilists.list(), IF_CONSTRAINT | IF_VSITE).empty(); });
 }
 
 UpdateGroups makeUpdateGroups(const gmx::MDLogger&             mdlog,
@@ -810,7 +826,7 @@ UpdateGroups makeUpdateGroups(const gmx::MDLogger&             mdlog,
                       "groups");
 
     messages.appendIf(
-            getenv("GMX_NO_UPDATEGROUPS") != nullptr,
+            std::getenv("GMX_NO_UPDATEGROUPS") != nullptr,
             "Environment variable GMX_NO_UPDATEGROUPS prohibited the use of update groups");
 
     // To use update groups, the large domain-to-domain cutoff

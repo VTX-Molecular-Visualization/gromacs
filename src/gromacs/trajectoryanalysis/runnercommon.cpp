@@ -45,14 +45,19 @@
 #include <cstring>
 
 #include <algorithm>
+#include <filesystem>
+#include <string>
+#include <vector>
 
+#include "gromacs/analysisdata/modules/plot.h"
 #include "gromacs/fileio/oenv.h"
 #include "gromacs/fileio/timecontrol.h"
 #include "gromacs/fileio/trxio.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/options/basicoptions.h"
 #include "gromacs/options/filenameoption.h"
 #include "gromacs/options/ioptionscontainer.h"
+#include "gromacs/options/optionfiletype.h"
+#include "gromacs/options/timeunitmanager.h"
 #include "gromacs/pbcutil/rmpbc.h"
 #include "gromacs/selection/selection.h"
 #include "gromacs/selection/selectioncollection.h"
@@ -62,14 +67,19 @@
 #include "gromacs/trajectory/trajectoryframe.h"
 #include "gromacs/trajectoryanalysis/analysissettings.h"
 #include "gromacs/trajectoryanalysis/topologyinformation.h"
+#include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/programcontext.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/vec.h"
 
 #include "analysissettings_impl.h"
+
+struct gmx_output_env_t;
 
 namespace gmx
 {
@@ -243,7 +253,7 @@ void TrajectoryAnalysisRunnerCommon::Impl::initFirstFrame()
         fr->natoms = topInfo_.mtop()->natoms;
         fr->bX     = TRUE;
         snew(fr->x, fr->natoms);
-        memcpy(fr->x, topInfo_.xtop_.data(), sizeof(*fr->x) * fr->natoms);
+        std::memcpy(fr->x, topInfo_.xtop_.data(), sizeof(*fr->x) * fr->natoms);
         if (frflags & (TRX_NEED_V))
         {
             if (topInfo_.vtop_.empty())
@@ -253,7 +263,7 @@ void TrajectoryAnalysisRunnerCommon::Impl::initFirstFrame()
             }
             fr->bV = TRUE;
             snew(fr->v, fr->natoms);
-            memcpy(fr->v, topInfo_.vtop_.data(), sizeof(*fr->v) * fr->natoms);
+            std::memcpy(fr->v, topInfo_.vtop_.data(), sizeof(*fr->v) * fr->natoms);
         }
         fr->bBox = TRUE;
         copy_mat(topInfo_.boxtop_, fr->box);

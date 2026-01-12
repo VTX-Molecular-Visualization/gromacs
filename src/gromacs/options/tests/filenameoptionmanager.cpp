@@ -42,10 +42,14 @@
 
 #include "gromacs/options/filenameoptionmanager.h"
 
+#include <filesystem>
+#include <string>
+
 #include <gtest/gtest.h>
 
 #include "gromacs/fileio/filetypes.h"
 #include "gromacs/options/filenameoption.h"
+#include "gromacs/options/optionfiletype.h"
 #include "gromacs/options/options.h"
 #include "gromacs/options/optionsassigner.h"
 #include "gromacs/utility/exceptions.h"
@@ -53,6 +57,10 @@
 #include "testutils/testasserts.h"
 #include "testutils/testfileredirector.h"
 
+namespace gmx
+{
+namespace test
+{
 namespace
 {
 
@@ -369,4 +377,25 @@ TEST_F(FileNameOptionManagerTest, DefaultNameOptionWorksWithoutInputChecking)
     EXPECT_EQ("missing.ndx", value);
 }
 
+TEST_F(FileNameOptionManagerTest, AcceptsCompressedInputFile)
+{
+    addExistingFile("testfile.trr.gz");
+
+    std::string value;
+    ASSERT_NO_THROW_GMX(options_.addOption(
+            FileNameOption("f").store(&value).filetype(gmx::OptionFileType::Trajectory).inputFile()));
+
+    gmx::OptionsAssigner assigner(&options_);
+    EXPECT_NO_THROW_GMX(assigner.start());
+    EXPECT_NO_THROW_GMX(assigner.startOption("f"));
+    EXPECT_NO_THROW_GMX(assigner.appendValue("testfile.trr.gz"));
+    EXPECT_NO_THROW_GMX(assigner.finishOption());
+    EXPECT_NO_THROW_GMX(assigner.finish());
+    EXPECT_NO_THROW_GMX(options_.finish());
+
+    EXPECT_EQ("testfile.trr", value);
+}
+
 } // namespace
+} // namespace test
+} // namespace gmx

@@ -43,17 +43,27 @@
 #include "gromacs/mdtypes/enerdata.h"
 
 #include <array>
+#include <string>
+#include <tuple>
+#include <vector>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 #include "gromacs/mdtypes/inputrec.h"
+#include "gromacs/mdtypes/md_enums.h"
+#include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/basedefinitions.h"
+#include "gromacs/utility/enumerationhelpers.h"
+#include "gromacs/utility/mpicomm.h"
+#include "gromacs/utility/real.h"
 
 #include "testutils/testasserts.h"
 
 namespace gmx
 {
-
+namespace test
+{
 namespace
 {
 
@@ -92,8 +102,8 @@ t_lambda makeFepvals(const std::vector<double>& lambdaVdw, const std::vector<dou
 // Check that the rate check catches a setup with different rates
 TEST(ForeingLambdaTermsDhdl, RateCheckWorks)
 {
-    const std::vector<double> lamVdw({ 0.0, 0.5 });
-    const std::vector<double> lamCoul({ 0.0, 0.25 });
+    const std::vector<double> lamVdw{ 0.0, 0.5 };
+    const std::vector<double> lamCoul{ 0.0, 0.25 };
 
     const t_lambda fepvals = makeFepvals(lamVdw, lamCoul);
 
@@ -102,7 +112,7 @@ TEST(ForeingLambdaTermsDhdl, RateCheckWorks)
 
 TEST(ForeingLambdaTermsDhdl, AllLinear)
 {
-    const std::vector<double> lamSet({ 0.0, 0.25, 0.5, 0.75, 1.0 });
+    const std::vector<double> lamSet{ 0.0, 0.25, 0.5, 0.75, 1.0 };
 
     const t_lambda fepvals = makeFepvals(lamSet, lamSet);
 
@@ -120,7 +130,7 @@ TEST(ForeingLambdaTermsDhdl, AllLinear)
 
     std::vector<double> dummy;
     std::vector<double> dhdl;
-    std::tie(dummy, dhdl) = foreignLambdaTerms.getTerms(nullptr);
+    std::tie(dummy, dhdl) = foreignLambdaTerms.getTerms(MpiComm(MpiComm::SingleRank{}));
 
     for (int i = 0; i < c_numLambdas; i++)
     {
@@ -130,7 +140,7 @@ TEST(ForeingLambdaTermsDhdl, AllLinear)
 
 TEST(ForeingLambdaTermsDhdl, AllLinearNegative)
 {
-    const std::vector<double> lamSet({ 1.0, 0.75, 0.5, 0.25, 0.0 });
+    const std::vector<double> lamSet{ 1.0, 0.75, 0.5, 0.25, 0.0 };
 
     const t_lambda fepvals = makeFepvals(lamSet, lamSet);
 
@@ -148,7 +158,7 @@ TEST(ForeingLambdaTermsDhdl, AllLinearNegative)
 
     std::vector<double> dummy;
     std::vector<double> dhdl;
-    std::tie(dummy, dhdl) = foreignLambdaTerms.getTerms(nullptr);
+    std::tie(dummy, dhdl) = foreignLambdaTerms.getTerms(MpiComm(MpiComm::SingleRank{}));
 
     for (int i = 0; i < c_numLambdas; i++)
     {
@@ -158,8 +168,8 @@ TEST(ForeingLambdaTermsDhdl, AllLinearNegative)
 
 TEST(ForeingLambdaTermsDhdl, SeparateVdwCoul)
 {
-    const std::vector<double> lamVdw({ 0.0, 0.5, 1.0, 1.0, 1.0 });
-    const std::vector<double> lamCoul({ 0.0, 0.0, 0.0, 0.5, 1.0 });
+    const std::vector<double> lamVdw{ 0.0, 0.5, 1.0, 1.0, 1.0 };
+    const std::vector<double> lamCoul{ 0.0, 0.0, 0.0, 0.5, 1.0 };
 
     const t_lambda fepvals = makeFepvals(lamVdw, lamCoul);
 
@@ -177,7 +187,7 @@ TEST(ForeingLambdaTermsDhdl, SeparateVdwCoul)
 
     std::vector<double> dummy;
     std::vector<double> dhdl;
-    std::tie(dummy, dhdl) = foreignLambdaTerms.getTerms(nullptr);
+    std::tie(dummy, dhdl) = foreignLambdaTerms.getTerms(MpiComm(MpiComm::SingleRank{}));
 
     for (int i = 0; i < 2; i++)
     {
@@ -190,4 +200,5 @@ TEST(ForeingLambdaTermsDhdl, SeparateVdwCoul)
     }
 }
 
+} // namespace test
 } // namespace gmx

@@ -41,20 +41,36 @@
  */
 #include "gmxpre.h"
 
+#include "config.h"
+
+#include <cstdlib>
+
 #include <algorithm>
+#include <array>
+#include <filesystem>
+#include <functional>
+#include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
+#include <tuple>
 #include <unordered_map>
+#include <vector>
 
 #include <gtest/gtest.h>
 
+#include "gromacs/gpu_utils/capabilities.h"
+#include "gromacs/hardware/device_management.h"
 #include "gromacs/hardware/hw_info.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/enumerationhelpers.h"
+#include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/message_string_collector.h"
 #include "gromacs/utility/stringutil.h"
 
 #include "testutils/cmdlinetest.h"
 #include "testutils/mpitest.h"
+#include "testutils/naming.h"
 #include "testutils/testasserts.h"
 #include "testutils/testfilemanager.h"
 
@@ -156,15 +172,17 @@ std::optional<std::string> reasonsTestIsInvalid(MdpFlavor       mdpFlavor,
 #if GMX_GPU
     errorReasons.appendIf(haveAnyGpuWork && !haveCompatibleDevices,
                           "Cannot use GPU offload without a compatible GPU");
-    errorReasons.appendIf(GMX_GPU_OPENCL && updateFlavor == UpdateFlavor::Gpu,
-                          "GPU Update not supported with OpenCL");
+    errorReasons.appendIf(!gmx::GpuConfigurationCapabilities::Update && updateFlavor == UpdateFlavor::Gpu,
+                          "GPU Update not supported");
+    errorReasons.appendIf(!gmx::GpuConfigurationCapabilities::Pme && pmeFlavor == PmeFlavor::Gpu,
+                          "GPU PME not supported");
     errorReasons.appendIf(updateFlavor == UpdateFlavor::Gpu && pmeFlavor == PmeFlavor::Cpu
                                   && separatePmeRankFlavor != SeparatePmeRankFlavor::None,
                           "Can not use GPU update and CPU PME on a separate rank");
 #endif
     errorReasons.appendIf(haveAnyGpuWork && nonbondedFlavor == NonbondedFlavor::Cpu,
                           "Cannot offload PME or Update to GPU without offloading Nonbondeds");
-    if ((getenv("GMX_GPU_PME_DECOMPOSITION")) == nullptr)
+    if ((std::getenv("GMX_GPU_PME_DECOMPOSITION")) == nullptr)
     {
         errorReasons.appendIf(
                 pmeFlavor == PmeFlavor::Gpu && separatePmeRankFlavor == SeparatePmeRankFlavor::Two,
@@ -176,8 +194,9 @@ std::optional<std::string> reasonsTestIsInvalid(MdpFlavor       mdpFlavor,
     errorReasons.appendIf(numRanks > 1 && separatePmeRankFlavor == SeparatePmeRankFlavor::None
                                   && pmeFlavor == PmeFlavor::Gpu,
                           "Cannot use GPU PME offload with multiple PME+PP ranks");
-    errorReasons.appendIf(numRanks == 2 && separatePmeRankFlavor == SeparatePmeRankFlavor::Two,
-                          "Cannot use two separate PME ranks when there are only two ranks total");
+    errorReasons.appendIf(
+            numRanks < 4 && separatePmeRankFlavor == SeparatePmeRankFlavor::Two,
+            "Cannot use two separate PME ranks when there are less than four ranks total");
     errorReasons.finishContext();
     if (errorReasons.isEmpty())
     {
@@ -189,31 +208,27 @@ std::optional<std::string> reasonsTestIsInvalid(MdpFlavor       mdpFlavor,
     }
 }
 
-//! \brief Help GoogleTest name our tests
-std::string nameOfTest(const testing::TestParamInfo<DomDecSpecialCasesTestParameters>& info)
+std::string nameOfMdpFlavor(const MdpFlavor mdpFlavor)
 {
-    const auto [mdpFlavor, runtimeFlavor]                                        = info.param;
-    const auto [electrostaticsFlavor, couplingFlavor]                            = mdpFlavor;
-    const auto [nonbondedFlavor, pmeFlavor, updateFlavor, separatePmeRankFlavor] = runtimeFlavor;
-
-    std::string testName = gmx::formatString("%s_%s_coupling_nb%s_pme%s_update%s_npme%d",
-                                             enumValueToString(electrostaticsFlavor),
-                                             enumValueToString(couplingFlavor),
-                                             enumValueToString(nonbondedFlavor),
-                                             enumValueToString(pmeFlavor),
-                                             enumValueToString(updateFlavor),
-                                             static_cast<int>(separatePmeRankFlavor));
-
-    // Note that the returned names must be unique and may use only
-    // alphanumeric ASCII characters. It's not supposed to contain
-    // underscores (see the GoogleTest FAQ
-    // why-should-test-suite-names-and-test-names-not-contain-underscore),
-    // but doing so works for now, is likely to remain so, and makes
-    // such test names much more readable.
-    testName = gmx::replaceAll(testName, "-", "");
-    testName = gmx::replaceAll(testName, " ", "_");
-    return testName;
+    const auto [electrostaticsFlavor, couplingFlavor] = mdpFlavor;
+    return gmx::formatString(
+            "%s_%s_coupling", enumValueToString(electrostaticsFlavor), enumValueToString(couplingFlavor));
 }
+
+std::string nameOfRuntimeFlavor(const RuntimeFlavor runtimeFlavor)
+{
+    const auto [nonbondedFlavor, pmeFlavor, updateFlavor, separatePmeRankFlavor] = runtimeFlavor;
+    return gmx::formatString("nb%s_pme%s_update%s_npme%d",
+                             enumValueToString(nonbondedFlavor),
+                             enumValueToString(pmeFlavor),
+                             enumValueToString(updateFlavor),
+                             static_cast<int>(separatePmeRankFlavor));
+}
+
+//! Tuple of formatters to name the parameterized test cases
+const gmx::test::NameOfTestFromTuple<DomDecSpecialCasesTestParameters> sc_testNamer{
+    std::make_tuple(nameOfMdpFlavor, nameOfRuntimeFlavor)
+};
 
 //! \brief Generate the contents of the MDP file
 std::string buildMdpInputFileContent(MdpFlavor mdpFlavor)
@@ -340,7 +355,7 @@ void DomDecSpecialCasesTest::SetUpTestSuite()
                                                           enumValueToString(std::get<0>(mdpFlavor)),
                                                           enumValueToString(std::get<1>(mdpFlavor)));
         std::replace(tprFileNameSuffix.begin(), tprFileNameSuffix.end(), ' ', '_');
-        runner.tprFileName_ = s_testFileManager->getTemporaryFilePath(tprFileNameSuffix).u8string();
+        runner.tprFileName_ = s_testFileManager->getTemporaryFilePath(tprFileNameSuffix).string();
         // Note that only one rank actually generates a tpr file
         ASSERT_EQ(0, runner.callGrompp());
         s_tprFileNames[mdpFlavor] = runner.tprFileName_;
@@ -396,6 +411,6 @@ INSTANTIATE_TEST_SUITE_P(
                                                                 SeparatePmeRankFlavor::Two))
 
                                    ),
-        nameOfTest);
+        sc_testNamer);
 
 } // namespace

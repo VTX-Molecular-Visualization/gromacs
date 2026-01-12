@@ -38,12 +38,14 @@
 
 #include <cstring>
 
+#include <iterator>
+
 #include "gromacs/gmxpreprocess/notset.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/topology/atoms.h"
 #include "gromacs/topology/symtab.h"
 #include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/exceptions.h"
@@ -51,6 +53,7 @@
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/stringcompare.h"
+#include "gromacs/utility/vec.h"
 
 const char* enumValueToString(BondedTypes enumValue)
 {
@@ -226,6 +229,11 @@ bool mergeBondedInteractionList(gmx::ArrayRef<const BondedInteractionList> s,
     return bBondsRemoved;
 }
 
+int PreprocessResidue::natom() const
+{
+    return atom.size();
+}
+
 void copyPreprocessResidues(const PreprocessResidue& s, PreprocessResidue* d, t_symtab* symtab)
 {
     *d = s;
@@ -238,11 +246,6 @@ void copyPreprocessResidues(const PreprocessResidue& s, PreprocessResidue* d, t_
     for (const auto& a : s.atomname)
     {
         d->atomname.push_back(put_symtab(symtab, *a));
-    }
-    d->cgnr.clear();
-    for (const auto& c : s.cgnr)
-    {
-        d->cgnr.push_back(c);
     }
     for (auto i : gmx::EnumerationWrapper<BondedTypes>{})
     {

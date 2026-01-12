@@ -153,8 +153,7 @@ public:
          * \returns The offset.
          */
         template<class... Indices>
-        inline constexpr index_type
-        offset(const size_t r, ptrdiff_t sum, const index_type i, Indices... indices) const noexcept
+        constexpr index_type offset(const size_t r, ptrdiff_t sum, const index_type i, Indices... indices) const noexcept
         {
             return offset(r + 1, sum * m_extents.extent(r) + i, indices...);
         }
@@ -176,7 +175,7 @@ public:
         }
 
         /*! \brief Map the multidimensional indices to 1D.
-         * Requires number of indicies have the same dimensionality as the mapping.
+         * Requires number of indices have the same dimensionality as the mapping.
          * \tparam Indices type of the indices to be mapped
          * \param[in] indices the indices to be mapped
          * \returns One-dimensional integer index.

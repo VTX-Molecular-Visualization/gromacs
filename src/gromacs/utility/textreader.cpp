@@ -42,6 +42,12 @@
 
 #include "gromacs/utility/textreader.h"
 
+#include <cstddef>
+
+#include <filesystem>
+#include <memory>
+#include <string>
+
 #include "gromacs/utility/filestream.h"
 #include "gromacs/utility/nodelete.h"
 #include "gromacs/utility/textstream.h"
@@ -50,18 +56,18 @@ namespace gmx
 {
 
 // static
-std::string TextReader::readFileToString(const char* filename)
+std::string TextReader::readFileToString(const std::string& filename)
+{
+    return readFileToString(std::filesystem::path{ filename });
+}
+
+// static
+std::string TextReader::readFileToString(const std::filesystem::path& filename)
 {
     TextReader  reader(filename);
     std::string result(reader.readAll());
     reader.close();
     return result;
-}
-
-// static
-std::string TextReader::readFileToString(const std::string& filename)
-{
-    return readFileToString(filename.c_str());
 }
 
 //! Implementation class
@@ -93,7 +99,7 @@ public:
     char commentChar_;
 };
 
-TextReader::TextReader(const std::string& filename) :
+TextReader::TextReader(const std::filesystem::path& filename) :
     impl_(new Impl(TextInputStreamPointer(new TextInputFile(filename))))
 {
 }

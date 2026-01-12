@@ -45,15 +45,25 @@
 
 #include "gromacs/domdec/makebondedlinks.h"
 
+#include <cstdio>
+
 #include <algorithm>
+#include <memory>
+#include <vector>
 
 #include "gromacs/domdec/domdec_internal.h"
+#include "gromacs/domdec/domdec_struct.h"
 #include "gromacs/domdec/options.h"
 #include "gromacs/domdec/reversetopology.h"
 #include "gromacs/mdtypes/atominfo.h"
+#include "gromacs/topology/atoms.h"
+#include "gromacs/topology/ifunc.h"
 #include "gromacs/topology/mtop_util.h"
 #include "gromacs/topology/topology.h"
+#include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/listoflists.h"
 
 using gmx::ArrayRef;
@@ -70,7 +80,7 @@ static void check_link(std::vector<int>* links, const int atom)
 }
 
 /*! \brief Creates and return a list of bonded links for all atoms in the system */
-static gmx::ListOfLists<int> genBondedLinks(const gmx_mtop_t&                               mtop,
+static gmx::ListOfLists<int> genBondedLinks(const gmx_mtop_t& mtop,
                                             gmx::ArrayRef<gmx::AtomInfoWithinMoleculeBlock> atomInfoForEachMoleculeBlock)
 {
     gmx::ListOfLists<int> link;
@@ -127,8 +137,8 @@ static gmx::ListOfLists<int> genBondedLinks(const gmx_mtop_t&                   
                 int i = ril.index[a];
                 while (i < ril.index[a + 1])
                 {
-                    int ftype = ril.il[i++];
-                    int nral  = NRAL(ftype);
+                    InteractionFunction ftype = static_cast<InteractionFunction>(ril.il[i++]);
+                    int                 nral  = NRAL(ftype);
                     /* Skip the ifunc index */
                     i++;
                     for (int j = 0; j < nral; j++)
@@ -144,22 +154,23 @@ static gmx::ListOfLists<int> genBondedLinks(const gmx_mtop_t&                   
 
                 if (mtop.bIntermolecularInteractions)
                 {
-                    int i = ril_intermol.index[atomIndex];
-                    while (i < ril_intermol.index[atomIndex + 1])
+                    int j = ril_intermol.index[atomIndex];
+                    while (j < ril_intermol.index[atomIndex + 1])
                     {
-                        int ftype = ril_intermol.il[i++];
-                        int nral  = NRAL(ftype);
+                        InteractionFunction ftype =
+                                static_cast<InteractionFunction>(ril_intermol.il[j++]);
+                        int nral = NRAL(ftype);
                         /* Skip the ifunc index */
-                        i++;
-                        for (int j = 0; j < nral; j++)
+                        j++;
+                        for (int k = 0; k < nral; k++)
                         {
                             /* Here we assume we have no charge groups;
                              * this has been checked above.
                              */
-                            int aj = ril_intermol.il[i + j];
+                            int aj = ril_intermol.il[j + k];
                             check_link(&linksForOneAtom, aj);
                         }
-                        i += nral_rt(ftype);
+                        j += nral_rt(ftype);
                     }
                 }
                 if (!linksForOneAtom.empty())
@@ -203,7 +214,7 @@ static gmx::ListOfLists<int> genBondedLinks(const gmx_mtop_t&                   
                     std::transform(linksForAtomInPreviousMolecule.begin(),
                                    linksForAtomInPreviousMolecule.end(),
                                    linksForAtom.begin(),
-                                   [&molt](const auto a) { return a + molt.atoms.nr; });
+                                   [&molt](const auto atom) { return atom + molt.atoms.nr; });
                     if (!linksForAtom.empty()
                         && atomIndex - atomInfoOfMoleculeBlock->indexOfFirstAtomInMoleculeBlock
                                    < gmx::ssize(atomInfoOfMoleculeBlock->atomInfo))

@@ -37,12 +37,10 @@
  *
  * These tests covers all compiled flavors of the NBNxM kernels, not only
  * those used by default by mdrun.
- * The forces and energies are compared to reference data for the force+energy
- * kernel. The reference data is only stored once for kernels that are expected
- * to produce the same output (i.e. only different kernel layout or analytical
- * vs tabulated Ewald LR correction).
- * For the force only kernel, the forces are compared to those produced
- * by the force+energy flavor.
+ * The forces and energies are compared to common reference data for
+ * kernels that are expected to produce the same output (i.e. only
+ * different kernel layout or analytical vs tabulated Ewald LR
+ * correction).
  *
  * The only thing currently not covered is LJ-PME with the Lorentz-Berthelot
  * combination rule, as this is only implemented in the plain-C reference kernel
@@ -54,36 +52,67 @@
 
 #include "gmxpre.h"
 
+#include "config.h"
+
+#include <cmath>
+#include <cstdint>
+
+#include <algorithm>
+#include <array>
+#include <filesystem>
+#include <memory>
 #include <numeric>
+#include <optional>
+#include <string>
+#include <tuple>
+#include <utility>
 #include <vector>
+
+#include <gtest/gtest.h>
 
 #include "gromacs/ewald/ewald_utils.h"
 #include "gromacs/gpu_utils/hostallocator.h"
-#include "gromacs/math/vec.h"
+#include "gromacs/math/functions.h"
 #include "gromacs/mdlib/forcerec.h"
 #include "gromacs/mdlib/gmx_omp_nthreads.h"
 #include "gromacs/mdtypes/atominfo.h"
+#include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/interaction_const.h"
+#include "gromacs/mdtypes/locality.h"
+#include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/mdtypes/simulation_workload.h"
+#include "gromacs/nbnxm/atomdata.h"
 #include "gromacs/nbnxm/gridset.h"
 #include "gromacs/nbnxm/kernel_common.h"
 #include "gromacs/nbnxm/nbnxm.h"
+#include "gromacs/nbnxm/nbnxm_geometry.h"
 #include "gromacs/nbnxm/nbnxm_simd.h"
+#include "gromacs/nbnxm/pairlistparams.h"
 #include "gromacs/nbnxm/pairlistset.h"
 #include "gromacs/nbnxm/pairlistsets.h"
 #include "gromacs/nbnxm/pairsearch.h"
 #include "gromacs/pbcutil/ishift.h"
 #include "gromacs/pbcutil/pbc.h"
+#include "gromacs/topology/forcefieldparameters.h"
+#include "gromacs/topology/ifunc.h"
 #include "gromacs/topology/topology.h"
+#include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/listoflists.h"
 #include "gromacs/utility/logger.h"
+#include "gromacs/utility/range.h"
+#include "gromacs/utility/real.h"
+#include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "testutils/refdata.h"
 #include "testutils/testasserts.h"
 #include "testutils/testinit.h"
 
-#include "spc27_coords.h"
+#include "testsystem.h"
 
 namespace gmx
 {
@@ -94,12 +123,26 @@ namespace test
 namespace
 {
 
-// Set this macro to 1 when generating reference data
-#define GENERATE_REFERENCE_DATA 0
+/*! \brief How the kernel should compute energies
+ *
+ * Note that the construction of the test system is currently
+ * not general enough to handle more than one case with multiple
+ * energy groups. */
+enum class EnergyHandling : int
+{
+    NoEnergies,
+    Energies,
+    ThreeEnergyGroups,
+    Count
+};
 
-#if GENERATE_REFERENCE_DATA && !GMX_DOUBLE
-#    error "We should only generate reference data with double precision"
-#endif
+//! Lookup table for the number of energy groups in use
+const EnumerationArray<EnergyHandling, int> sc_numEnergyGroups = { 0, 1, 3 };
+
+//! Names for the kinds of energy handling
+const EnumerationArray<EnergyHandling, const char*> sc_energyGroupNames = { "NoEnergies",
+                                                                            "Energies",
+                                                                            "ThreeEnergyGroups" };
 
 //! The options for the kernel
 struct KernelOptions
@@ -109,7 +152,7 @@ struct KernelOptions
     //! The number of OpenMP threads to use
     int numThreads = 1;
     //! The kernel setup
-    Nbnxm::KernelSetup kernelSetup;
+    NbnxmKernelSetup kernelSetup;
     //! The modifier for the VdW interactions
     InteractionModifiers vdwModifier = InteractionModifiers::PotShift;
     //! The LJ combination rule
@@ -126,176 +169,25 @@ struct KernelOptions
     real ewaldRTol = 1e-6;
     //! The Coulomb interaction function
     CoulombKernelType coulombType = CoulombKernelType::Ewald;
+    //! How to handle energy computations
+    EnergyHandling energyHandling = EnergyHandling::NoEnergies;
 };
 
-//! Description of the system used for benchmarking.
-struct TestSystem
-{
-    /*! \brief Constructor
-     *
-     * Generates test system of a cubic box partially filled with 27 water molecules.
-     * It has parts with uncharged molecules, normal SPC/E and part with full LJ.
-     */
-    TestSystem(LJCombinationRule ljCombinationRule);
-
-    //! Number of different atom types in test system.
-    int numAtomTypes;
-    //! Storage for parameters for short range interactions.
-    std::vector<real> nonbondedParameters;
-    //! Storage for atom type parameters.
-    std::vector<int> atomTypes;
-    //! Storage for atom partial charges.
-    std::vector<real> charges;
-    //! Atom info
-    std::vector<int64_t> atomInfo;
-    //! Information about exclusions.
-    ListOfLists<int> excls;
-    //! Storage for atom positions.
-    std::vector<gmx::RVec> coordinates;
-    //! System simulation box.
-    matrix box;
-};
-
-// A 3-site water model
-//! The number of atoms in a molecule
-constexpr int numAtomsInMolecule = 3;
-//! The atom type of the oxygen atom
-constexpr int typeO = 0;
-//! The atom type of a hydrogen atom with LJ
-constexpr int typeHWithLJ = 1;
-//! The atom type of a hydrogen atom without LJ
-constexpr int typeHWithoutLJ = 2;
-//! The charge of the oxygen atom
-constexpr real chargeO = -0.8476;
-//! The charge of the hydrogen atom
-constexpr real chargeH = 0.4238;
-//! The LJ sigma parameter of the Oxygen atom
-constexpr real sigmaO = 0.316557;
-//! The LJ epsilon parameter of the Oxygen atom
-constexpr real epsilonO = 0.650194;
-//! The LJ sigma parameter of Hydrogen atoms with LJ
-constexpr real sigmaH = 0.04;
-//! The LJ epsilon parameter Hydrogen atoms with LJ
-constexpr real epsilonH = 0.192464;
-
-//! Generate a C6, C12 pair using the combination rule
-std::pair<real, real> combineLJParams(const real              sigma0,
-                                      const real              epsilon0,
-                                      const real              sigma1,
-                                      const real              epsilon1,
-                                      const LJCombinationRule ljCombinationRule)
-{
-    real sigma6;
-    if (ljCombinationRule == LJCombinationRule::Geometric)
-    {
-        sigma6 = std::pow(sigma0 * sigma1, 3);
-    }
-    else
-    {
-        sigma6 = std::pow(0.5 * (sigma0 + sigma1), 6);
-    }
-    real c6  = 4 * sqrt(epsilon0 * epsilon1) * sigma6;
-    real c12 = c6 * sigma6;
-
-    return { c6, c12 };
-}
-
-const int c_numEnergyGroups = 3;
-
-TestSystem::TestSystem(const LJCombinationRule ljCombinationRule)
-{
-    numAtomTypes = 3;
-    nonbondedParameters.resize(numAtomTypes * numAtomTypes * 2, 0);
-    std::tie(nonbondedParameters[0], nonbondedParameters[1]) =
-            combineLJParams(sigmaO, epsilonO, sigmaO, epsilonO, ljCombinationRule);
-    std::tie(nonbondedParameters[8], nonbondedParameters[9]) =
-            combineLJParams(sigmaH, epsilonH, sigmaH, epsilonH, ljCombinationRule);
-    std::tie(nonbondedParameters[2], nonbondedParameters[3]) =
-            combineLJParams(sigmaO, epsilonO, sigmaH, epsilonH, ljCombinationRule);
-    nonbondedParameters[6] = nonbondedParameters[2];
-    nonbondedParameters[7] = nonbondedParameters[3];
-
-    coordinates = spc27Coordinates;
-    copy_mat(spc27Box, box);
-    put_atoms_in_box(PbcType::Xyz, box, coordinates);
-
-    const int numAtoms = coordinates.size();
-    GMX_RELEASE_ASSERT(numAtoms % (3 * numAtomsInMolecule) == 0,
-                       "Coordinates should be a multiple of 3 x whole water molecules");
-
-    atomTypes.resize(numAtoms);
-    charges.resize(numAtoms);
-    atomInfo.resize(numAtoms);
-
-    for (int a = 0; a < numAtoms; a++)
-    {
-        // The first third of the atoms has no charge to cover all code paths
-        const bool hasCharge = (a >= numAtoms / 3);
-
-        if (a % numAtomsInMolecule == 0)
-        {
-            // Oxgygen
-            atomTypes[a] = typeO;
-            charges[a]   = hasCharge ? chargeO : 0;
-            atomInfo[a] |= gmx::sc_atomInfo_HasVdw;
-        }
-        else
-        {
-            // Hydrogen
-            // Make the last third of molecules have LJ on all atoms
-            if (a >= numAtoms * 2 / 3)
-            {
-                atomTypes[a] = typeHWithLJ;
-                atomInfo[a] |= gmx::sc_atomInfo_HasVdw;
-            }
-            else
-            {
-                atomTypes[a] = typeHWithoutLJ;
-            }
-            charges[a] = hasCharge ? chargeH : 0;
-        }
-        if (hasCharge)
-        {
-            atomInfo[a] |= gmx::sc_atomInfo_HasCharge;
-        }
-
-        // Set the energy group, 0, 1 or 2
-        atomInfo[a] |= (a / (numAtoms / c_numEnergyGroups));
-
-        // Generate the exclusions like for water molecules
-        excls.pushBackListOfSize(numAtomsInMolecule);
-        gmx::ArrayRef<int> exclusionsForAtom   = excls.back();
-        const int          firstAtomInMolecule = a - (a % numAtomsInMolecule);
-        std::iota(exclusionsForAtom.begin(), exclusionsForAtom.end(), firstAtomInMolecule);
-    }
-}
-
-//! Returns the enum value for initializing the combination rule for nbxnm_atomdata_t
-int combRuleInitFromOptions(const KernelOptions& options)
+//! Returns the enum value for initializing the LJ PME-grid combination rule for nbxnm_atomdata_t
+LJCombinationRule chooseLJPmeCombinationRule(const KernelOptions& options)
 {
     if (options.useLJPme)
     {
         // We need to generate LJ combination parameters using the rule for LJ-PME
         switch (options.ljPmeCombinationRule)
         {
-            case LongRangeVdW::Geom: return enbnxninitcombruleGEOM;
-            case LongRangeVdW::LB: return enbnxninitcombruleLB;
-            default: GMX_RELEASE_ASSERT(false, "Unhandled combination rule");
-        }
-    }
-    else
-    {
-        // We generate parameters according to the combination rule set
-        switch (options.ljCombinationRule)
-        {
-            case LJCombinationRule::Geometric: return enbnxninitcombruleGEOM;
-            case LJCombinationRule::LorentzBerthelot: return enbnxninitcombruleLB;
-            case LJCombinationRule::None: return enbnxninitcombruleNONE;
+            case LongRangeVdW::Geom: return LJCombinationRule::Geometric;
+            case LongRangeVdW::LB: return LJCombinationRule::LorentzBerthelot;
             default: GMX_RELEASE_ASSERT(false, "Unhandled combination rule");
         }
     }
 
-    return enbnxninitcombruleDETECT;
+    return LJCombinationRule::None;
 }
 
 //! Sets up and returns a Nbnxm object for the given benchmark options and system
@@ -320,24 +212,31 @@ std::unique_ptr<nonbonded_verlet_t> setupNbnxmForBenchInstance(const KernelOptio
             (options.useGpu ? PinningPolicy::PinnedIfSupported : PinningPolicy::CannotBePinned);
     const int numThreads = options.numThreads;
 
-    PairlistParams pairlistParams(options.kernelSetup.kernelType, false, options.pairlistCutoff, false);
+    PairlistParams pairlistParams(options.kernelSetup.kernelType, {}, false, options.pairlistCutoff, false);
 
-    Nbnxm::GridSet gridSet(
-            PbcType::Xyz, false, nullptr, nullptr, pairlistParams.pairlistType, false, numThreads, pinPolicy);
+    auto pairlistSets = std::make_unique<PairlistSets>(pairlistParams, false, 0, pinPolicy);
 
-    auto pairlistSets = std::make_unique<PairlistSets>(pairlistParams, false, 0);
+    const bool localAtomOrderMatchesNbnxmOrder = false;
+    auto       pairSearch                      = std::make_unique<PairSearch>(PbcType::Xyz,
+                                                   false,
+                                                   nullptr,
+                                                   nullptr,
+                                                   pairlistParams.pairlistType,
+                                                   false,
+                                                   localAtomOrderMatchesNbnxmOrder,
+                                                   numThreads,
+                                                   pinPolicy);
 
-    auto pairSearch = std::make_unique<PairSearch>(
-            PbcType::Xyz, false, nullptr, nullptr, pairlistParams.pairlistType, false, numThreads, pinPolicy);
-
-    auto atomData = std::make_unique<nbnxn_atomdata_t>(pinPolicy,
-                                                       MDLogger(),
-                                                       options.kernelSetup.kernelType,
-                                                       combRuleInitFromOptions(options),
-                                                       system.numAtomTypes,
-                                                       system.nonbondedParameters,
-                                                       c_numEnergyGroups,
-                                                       numThreads);
+    auto atomData = std::make_unique<nbnxn_atomdata_t>(
+            pinPolicy,
+            MDLogger(),
+            options.kernelSetup.kernelType,
+            options.useLJPme ? LJCombinationRule::None : options.ljCombinationRule,
+            chooseLJPmeCombinationRule(options),
+            system.nonbondedParameters,
+            true,
+            sc_numEnergyGroups[options.energyHandling],
+            numThreads);
 
     // Put everything together
     auto nbv = std::make_unique<nonbonded_verlet_t>(
@@ -347,21 +246,19 @@ std::unique_ptr<nonbonded_verlet_t> setupNbnxmForBenchInstance(const KernelOptio
     const rvec lowerCorner = { 0, 0, 0 };
     const rvec upperCorner = { system.box[XX][XX], system.box[YY][YY], system.box[ZZ][ZZ] };
 
-    const real atomDensity = system.coordinates.size() / det(system.box);
-
     nbv->putAtomsOnGrid(system.box,
                         0,
                         lowerCorner,
                         upperCorner,
                         nullptr,
                         { 0, int(system.coordinates.size()) },
-                        atomDensity,
+                        system.coordinates.size(),
+                        system.coordinates.size() / det(system.box),
                         system.atomInfo,
                         system.coordinates,
-                        0,
                         nullptr);
 
-    nbv->constructPairlist(gmx::InteractionLocality::Local, system.excls, 0, nullptr);
+    nbv->constructPairlist(gmx::InteractionLocality::Local, system.excls, false, 0, nullptr);
 
     nbv->setAtomProperties(system.atomTypes, system.charges, system.atomInfo);
 
@@ -371,15 +268,21 @@ std::unique_ptr<nonbonded_verlet_t> setupNbnxmForBenchInstance(const KernelOptio
 //! Convenience typedef of the test input parameters
 struct KernelInputParameters
 {
-    using TupleT = std::tuple<Nbnxm::KernelType, CoulombKernelType, int>;
+    //! This type must match the layout of \c KernelInputParameters
+    using TupleT = std::tuple<NbnxmKernelType, CoulombKernelType, int, EnergyHandling>;
     //! The kernel type and cluster pair layout
-    Nbnxm::KernelType kernelType;
+    NbnxmKernelType kernelType;
     //! The Coulomb kernel type
     CoulombKernelType coulombKernelType;
     //! The VdW interaction type
     int vdwKernelType;
+    //! How to handle energy computations
+    EnergyHandling energyHandling = EnergyHandling::NoEnergies;
     KernelInputParameters(TupleT t) :
-        kernelType(std::get<0>(t)), coulombKernelType(std::get<1>(t)), vdwKernelType(std::get<2>(t))
+        kernelType(std::get<0>(t)),
+        coulombKernelType(std::get<1>(t)),
+        vdwKernelType(std::get<2>(t)),
+        energyHandling(std::get<3>(t))
     {
     }
 };
@@ -387,12 +290,6 @@ struct KernelInputParameters
 //! Class that sets up and holds a set of N atoms and a full NxM pairlist
 class NbnxmKernelTest : public ::testing::TestWithParam<KernelInputParameters>
 {
-public:
-    NbnxmKernelTest(LJCombinationRule ljCombinationRule) : system_(ljCombinationRule) {}
-
-    KernelOptions                       options_;
-    TestSystem                          system_;
-    std::unique_ptr<nonbonded_verlet_t> nbv_;
 };
 
 //! Returns the coulomb interaction type given the Coulomb kernel type
@@ -405,6 +302,8 @@ CoulombInteractionType coulombInteractionType(CoulombKernelType coulombKernelTyp
         case CoulombKernelType::EwaldTwin:
         case CoulombKernelType::TableTwin: return CoulombInteractionType::Pme;
         case CoulombKernelType::ReactionField: return CoulombInteractionType::RF;
+        case CoulombKernelType::None:
+        case CoulombKernelType::Fmm: return CoulombInteractionType::Fmm;
         default:
             GMX_RELEASE_ASSERT(false, "Unsupported CoulombKernelType");
             return CoulombInteractionType::Count;
@@ -450,19 +349,23 @@ interaction_const_t setupInteractionConst(const KernelOptions& options)
     // Only reppow and functype[0] are used from mtop in init_interaction_const()
     mtop.ffparams.reppow = 12;
     mtop.ffparams.functype.resize(1);
-    mtop.ffparams.functype[0] = F_LJ;
+    mtop.ffparams.functype[0] = InteractionFunction::LennardJonesShortRange;
 
-    interaction_const_t ic = init_interaction_const(nullptr, ir, mtop, false);
+    interaction_const_t ic = init_interaction_const(nullptr, ir, mtop, false, std::nullopt);
+
+    if (ir.coulombtype == CoulombInteractionType::Fmm && options.coulombType == CoulombKernelType::None)
+    {
+        ic.nbnxmIsDirectCoulombProvider = false;
+    }
+
     init_interaction_const_tables(nullptr, &ic, options.pairlistCutoff, 0);
 
     return ic;
 }
 
-const EnumerationArray<CoulombKernelType, const char*> coulombKernelTypeName = { "ReactionField",
-                                                                                 "Table",
-                                                                                 "TableTwin",
-                                                                                 "Ewald",
-                                                                                 "EwaldTwin" };
+const EnumerationArray<CoulombKernelType, const char*> coulombKernelTypeName = {
+    "ReactionField", "Table", "TableTwin", "Ewald", "EwaldTwin", "None", "Fmm"
+};
 
 const std::array<const char*, vdwktNR> vdwKernelTypeName = { "CutCombGeom", "CutCombLB",
                                                              "CutCombNone", "ForceSwitch",
@@ -470,12 +373,8 @@ const std::array<const char*, vdwktNR> vdwKernelTypeName = { "CutCombGeom", "Cut
 
 /*! \brief Help GoogleTest name our test cases
  *
- * This is intended to work like a custom test-naming function that
- * would be passed as the fourth argument to INSTANTIATE_TEST_SUITE_P,
- * except that we are not using that macro for these tests. Only the
- * components of KernelInputParameters that affect the reference data
- * values affect this name.
- * name. */
+ * If changes are needed here, consider making matching changes in
+ * makeRefDataFileName(). */
 std::string nameOfTest(const testing::TestParamInfo<KernelInputParameters>& info)
 {
     // We give tabulated Ewald the same name as Ewald to use the same reference data
@@ -486,9 +385,16 @@ std::string nameOfTest(const testing::TestParamInfo<KernelInputParameters>& info
         case CoulombKernelType::TableTwin: coulombKernelType = CoulombKernelType::EwaldTwin; break;
         default: break;
     }
-    std::string testName = formatString("Coulomb%s_Vdw%s",
-                                        coulombKernelTypeName[coulombKernelType],
-                                        vdwKernelTypeName[info.param.vdwKernelType]);
+    std::string testName =
+            formatString("type_%s_Tab%s_%s_Coulomb%s_Vdw%s",
+                         nbnxmKernelTypeToName(info.param.kernelType),
+                         info.param.coulombKernelType == CoulombKernelType::Table
+                                         || info.param.coulombKernelType == CoulombKernelType::TableTwin
+                                 ? "Yes"
+                                 : "No",
+                         sc_energyGroupNames[info.param.energyHandling],
+                         coulombKernelTypeName[coulombKernelType],
+                         vdwKernelTypeName[info.param.vdwKernelType]);
 
     // Note that the returned names must be unique and may use only
     // alphanumeric ASCII characters. It's not supposed to contain
@@ -507,51 +413,38 @@ bool isTabulated(const CoulombKernelType coulombKernelType)
     return coulombKernelType == CoulombKernelType::Table || coulombKernelType == CoulombKernelType::TableTwin;
 }
 
-/*! \brief Help GoogleTest name our test cases
+/*! \brief Construct a refdata filename for this test
  *
- * This is intended to work like a custom test-naming function that
- * would be passed as the fourth argument to INSTANTIATE_TEST_SUITE_P,
- * except that we are not using that macro for these tests. All
- * components of GatherInputParameters affect this name. */
-std::string fullNameOfTest(const testing::TestParamInfo<KernelInputParameters>& info,
-                           const std::string&                                   testName)
-{
-    return formatString(
-            "type_%s_Tab%s_"
-            "%s",
-            lookup_kernel_name(info.param.kernelType),
-            info.param.coulombKernelType == CoulombKernelType::Table
-                            || info.param.coulombKernelType == CoulombKernelType::TableTwin
-                    ? "Yes"
-                    : "No",
-            testName.c_str());
-}
-
+ * We want the same reference data to apply to every kernel type
+ * that we test. That means we need to store it in a file whose
+ * name relates to the name of the test excluding the part related to
+ * the kernel type. By default, the reference data filename is
+ * set via a call to gmx::TestFileManager::getTestSpecificFileName()
+ * that queries GoogleTest and gets a string that includes the return
+ * value for nameOfTest(). This code works similarly, but removes the
+ * part that relates to kernel type. This logic must match the
+ * implementation of nameOfTest() so that it works as intended.
+ *
+ * In particular, the name must include a "Coulomb" substring that
+ * follows the name of the kernel type, so that this can be
+ * removed. */
 std::string makeRefDataFileName()
 {
-    // By default, the reference data filename is set via a call to
-    // gmx::TestFileManager::getTestSpecificFileName() that queries
-    // GoogleTest and gets a string that includes the return value for
-    // nameOfTest(). The logic here must match that of the call to
-    // ::testing::RegisterTest, so that it works as intended. In
-    // particular, the name must include a "Coulomb" substring that
-    // follows the name of the kernel type, so that this can be
-    // removed.
-    //
     // Get the info about the test
     const ::testing::TestInfo* testInfo = ::testing::UnitTest::GetInstance()->current_test_info();
 
-    // Get the test name and prepare to remove the kernel type
+    // Get the test name and edit it to remove the kernel-type
+    // part.
     std::string testName(testInfo->name());
-    auto        CoulombPos = testName.find("Coulomb");
-    GMX_RELEASE_ASSERT(CoulombPos != testName.size(),
-                       "Test name must include the 'Coulomb' fragment");
+    auto        separatorPos = testName.find("Coulomb");
+    testName                 = testName.substr(separatorPos);
 
-    // Build the complete refdata filename like
-    // getTestSpecificFilename() would do it for a non-dynamical
-    // parameterized test.
-    std::string refDataFileName = formatString(
-            "%s_%s.xml", testInfo->test_suite_name(), testName.substr(CoulombPos).c_str());
+    // Build the complete filename like getTestSpecificFilename() does
+    // it.
+    std::string testSuiteName(testInfo->test_suite_name());
+    std::string refDataFileName = testSuiteName + "_" + testName + ".xml";
+    std::replace(refDataFileName.begin(), refDataFileName.end(), '/', '_');
+
     // Use the check that the name isn't too long
     checkTestNameLength(refDataFileName);
     return refDataFileName;
@@ -559,268 +452,269 @@ std::string makeRefDataFileName()
 
 } // namespace
 
-/*! \brief Test case whose body checks that the NBNxM kernel produces correct output
- *
- * Normally the declaration of this class would be produced by a call
- * to a macro like TEST_P(KernelTest, WorksWith). That macro places
- * the body of the test case in the TestBody() method, which here is
- * done explicitly.
- *
- * Note that it is important to use parameters_ to access the values
- * that describe the particular test case, rather than the usual
- * GoogleTest function GetParam(), because the latter no longer
- * works. */
-class NbnxmKernelTestBody : public NbnxmKernelTest
+//! Test case that checks that the NBNxM kernel produces correct output.
+TEST_P(NbnxmKernelTest, WorksWith)
 {
-public:
-    //! Constructor
-    explicit NbnxmKernelTestBody(const KernelInputParameters& parameters) :
-        NbnxmKernelTest(parameters.vdwKernelType == vdwktLJCUT_COMBGEOM
-                                ? LJCombinationRule::Geometric
-                                : LJCombinationRule::LorentzBerthelot),
-        parameters_(parameters)
+    // The test parameters with which the test case was instantiated
+    // TODO rename these in a follow-up change to conform to style
+    KernelInputParameters               parameters_ = GetParam();
+    KernelOptions                       options_;
+    std::unique_ptr<nonbonded_verlet_t> nbv_;
+
+    options_.kernelSetup.kernelType = parameters_.kernelType;
+
+    // Coulomb settings
+    options_.kernelSetup.ewaldExclusionType = isTabulated(parameters_.coulombKernelType)
+                                                      ? EwaldExclusionType::Table
+                                                      : EwaldExclusionType::Analytical;
+    options_.coulombType                    = parameters_.coulombKernelType;
+    options_.energyHandling                 = parameters_.energyHandling;
+
+    // Van der Waals settings
+    switch (parameters_.vdwKernelType)
     {
+        case vdwktLJCUT_COMBGEOM: options_.ljCombinationRule = LJCombinationRule::Geometric; break;
+        case vdwktLJCUT_COMBLB:
+            options_.ljCombinationRule = LJCombinationRule::LorentzBerthelot;
+            break;
+        default: options_.ljCombinationRule = LJCombinationRule::None; break;
+    }
+    switch (parameters_.vdwKernelType)
+    {
+        case vdwktLJFORCESWITCH: options_.vdwModifier = InteractionModifiers::ForceSwitch; break;
+        case vdwktLJPOTSWITCH: options_.vdwModifier = InteractionModifiers::PotSwitch; break;
+        default: options_.vdwModifier = InteractionModifiers::PotShift; break;
+    }
+    options_.useLJPme = (parameters_.vdwKernelType == vdwktLJEWALDCOMBGEOM);
+
+    const bool kernelIsPlainC = kernelTypeIsPlainC(options_.kernelSetup.kernelType);
+
+    if (referenceDataMode() != ReferenceDataMode::Compare)
+    {
+        // Note that (for simplicity) runs in modes
+        // ReferenceDataMode::CreateMissing or
+        // ReferenceDataMode::UpdateChanged also skips
+        // testing unchanged values that could have been compared.
+        if (!GMX_DOUBLE)
+        {
+            ADD_FAILURE() << "Reference data can only be created or updated from a "
+                             "double-precision build of GROMACS";
+        }
+
+        if (kernelIsPlainC)
+        {
+            GTEST_SKIP() << "Plain-C kernels are never used to generate reference data";
+        }
+
+        if (options_.coulombType == CoulombKernelType::Table
+            || options_.coulombType == CoulombKernelType::TableTwin)
+        {
+            GTEST_SKIP() << "Tabulated kernels are never used to generate reference data";
+        }
     }
 
-    //! The test parameters with which the test case was instantiated
-    KernelInputParameters parameters_;
-
-    //! The test
-    void TestBody() override
+    if (!sc_haveNbnxmSimd4xmKernels && parameters_.kernelType == NbnxmKernelType::Cpu4xN_Simd_4xN)
     {
-        options_.kernelSetup.kernelType = parameters_.kernelType;
+        GTEST_SKIP()
+                << "Cannot test or generate data for 4xN kernels without suitable SIMD support";
+    }
 
-        // Coulomb settings
-        options_.kernelSetup.ewaldExclusionType = isTabulated(parameters_.coulombKernelType)
-                                                          ? Nbnxm::EwaldExclusionType::Table
-                                                          : Nbnxm::EwaldExclusionType::Analytical;
-        options_.coulombType                    = parameters_.coulombKernelType;
+    if (!sc_haveNbnxmSimd2xmmKernels && parameters_.kernelType == NbnxmKernelType::Cpu4xN_Simd_2xNN)
+    {
+        GTEST_SKIP() << "Cannot test or generate data for 2xNN kernels without suitable SIMD "
+                        "support";
+    }
 
-        // Van der Waals settings
-        switch (parameters_.vdwKernelType)
+    if (kernelIsPlainC
+        && (options_.coulombType == CoulombKernelType::Ewald
+            || options_.coulombType == CoulombKernelType::EwaldTwin))
+    {
+        GTEST_SKIP()
+                << "Analytical Ewald is not implemented for the plain-C kernel, skip this test";
+    }
+
+    if (kernelIsPlainC
+        && (parameters_.vdwKernelType == vdwktLJCUT_COMBGEOM || parameters_.vdwKernelType == vdwktLJCUT_COMBLB))
+    {
+        GTEST_SKIP() << "There are no combination rule versions of the plain-C kernel";
+    }
+
+    if (options_.coulombType == CoulombKernelType::Fmm)
+    {
+        GTEST_SKIP() << "Cannot test or generate data for FMM kernels because FMM is not yet "
+                        "supported in GROMACS for short-range coulomb interactions";
+    }
+
+    if (!GMX_USE_EXT_FMM && options_.coulombType == CoulombKernelType::None)
+    {
+
+        GTEST_SKIP() << "Reference kernels that do not compute Coulomb interactions are available "
+                        "only with an FMM build configuration";
+    }
+
+    GMX_ASSERT(*std::max_element(sc_numEnergyGroups.begin(), sc_numEnergyGroups.end())
+                       == TestSystem::sc_numEnergyGroups,
+               "The test system should have a sufficient number of energy groups");
+
+    // TODO rename this in a follow-up change to conform to style
+    TestSystem system_(parameters_.vdwKernelType == vdwktLJCUT_COMBGEOM ? LJCombinationRule::Geometric
+                                                                        : LJCombinationRule::LorentzBerthelot,
+                       true);
+
+    const interaction_const_t ic = setupInteractionConst(options_);
+
+    // Set up test checkers with suitable tolerances
+    //
+    // The reference data for double is generated with 44 accuracy bits,
+    // so we should not compare with more than that accuracy
+    const int  simdAccuracyBits = (GMX_DOUBLE ? std::min(GMX_SIMD_ACCURACY_BITS_DOUBLE, 44)
+                                              : std::min(GMX_SIMD_ACCURACY_BITS_SINGLE, 22));
+    const real simdRealEps      = std::pow(0.5_real, simdAccuracyBits);
+
+    TestReferenceData    refData(makeRefDataFileName());
+    TestReferenceChecker forceChecker(refData.rootChecker());
+    const real           forceMagnitude = 1000;
+    const real           ulpTolerance   = 50;
+    real                 tolerance      = forceMagnitude * simdRealEps * ulpTolerance;
+    if (usingPmeOrEwald(ic.coulomb.type))
+    {
+        real ewaldRelError;
+        if (isTabulated(options_.coulombType))
         {
-            case vdwktLJCUT_COMBGEOM:
-                options_.ljCombinationRule = LJCombinationRule::Geometric;
-                break;
-            case vdwktLJCUT_COMBLB:
-                options_.ljCombinationRule = LJCombinationRule::LorentzBerthelot;
-                break;
-            default: options_.ljCombinationRule = LJCombinationRule::None; break;
+            // The relative energy error for tables is 0.1 times the value at the cut-off.
+            // We assume that for the force this factor is 1.
+            ewaldRelError = options_.ewaldRTol;
         }
-        switch (parameters_.vdwKernelType)
+        else
         {
-            case vdwktLJFORCESWITCH:
-                options_.vdwModifier = InteractionModifiers::ForceSwitch;
-                break;
-            case vdwktLJPOTSWITCH: options_.vdwModifier = InteractionModifiers::PotSwitch; break;
-            default: options_.vdwModifier = InteractionModifiers::PotShift; break;
+            ewaldRelError = GMX_DOUBLE ? 1e-11 : 1e-6;
         }
-        options_.useLJPme = (parameters_.vdwKernelType == vdwktLJEWALDCOMBGEOM);
+        const real maxEwaldPairForceError = ic.coulomb.epsfac * ewaldRelError
+                                            * gmx::square(system_.maxCharge() / ic.coulomb.cutoff);
+        // We assume that the total force error is at max 20 times that of one pair
+        tolerance = std::max(tolerance, 20 * maxEwaldPairForceError);
+    }
+    if (ic.vdw.type == VanDerWaalsType::Pme)
+    {
+        const real ulpToleranceExp = 400;
+        tolerance = std::max(tolerance, forceMagnitude * simdRealEps * ulpToleranceExp);
+    }
+    forceChecker.setDefaultTolerance(absoluteTolerance(tolerance));
 
-        if (options_.kernelSetup.kernelType == Nbnxm::KernelType::Cpu4x4_PlainC
-            && (options_.coulombType == CoulombKernelType::Ewald
-                || options_.coulombType == CoulombKernelType::EwaldTwin))
+    TestReferenceChecker ljEnergyChecker(refData.rootChecker());
+    // Energies per atom are more accurate than forces, but there is loss
+    // of precision due to summation over all atoms. The tolerance on
+    // the energy turns out to be the same as on the forces.
+    ljEnergyChecker.setDefaultTolerance(absoluteTolerance(tolerance));
+    TestReferenceChecker coulombEnergyChecker(refData.rootChecker());
+    // Coulomb energy errors are higher
+    coulombEnergyChecker.setDefaultTolerance(absoluteTolerance(10 * tolerance));
+
+    // Finish setting up data structures
+    nbv_ = setupNbnxmForBenchInstance(options_, system_);
+    nbv_->constructPairlist(InteractionLocality::Local, system_.excls, false, 0, nullptr);
+
+    std::vector<RVec> shiftVecs(c_numShiftVectors);
+    calc_shifts(system_.box, shiftVecs);
+
+    StepWorkload stepWork;
+    stepWork.computeForces = true;
+    stepWork.computeEnergy = options_.energyHandling != EnergyHandling::NoEnergies;
+
+    std::vector<real> vVdw(square(sc_numEnergyGroups[options_.energyHandling]));
+    std::vector<real> vCoulomb(square(sc_numEnergyGroups[options_.energyHandling]));
+
+    // Call the kernel to test
+    nbv_->dispatchNonbondedKernel(
+            InteractionLocality::Local, ic, stepWork, enbvClearFYes, shiftVecs, vVdw, vCoulomb, nullptr);
+
+    const bool atomOrderMatches = nbv_->localAtomOrderMatchesNbnxmOrder();
+
+    // Get and check the forces
+    ArrayRef<const int> atomIndices = nbv_->getLocalAtomOrder();
+    std::vector<RVec> nbnxmForces(atomOrderMatches ? atomIndices.size() : system_.coordinates.size(),
+                                  { 0.0_real, 0.0_real, 0.0_real });
+    nbv_->atomdata_add_nbat_f_to_f(AtomLocality::All, nbnxmForces);
+
+    std::vector<RVec>    forceBuffer;
+    ArrayRef<const RVec> forces;
+    if (atomOrderMatches)
+    {
+        // Copy atoms to a buffer with local atom order
+        forceBuffer.resize(system_.coordinates.size());
+        for (gmx::Index i = 0; i < atomIndices.ssize(); i++)
         {
-            // Analytical Ewald is not implemented for the plain-C kernel, skip this test
-            return;
-        }
-
-        if (options_.kernelSetup.kernelType == Nbnxm::KernelType::Cpu4x4_PlainC
-            && (parameters_.vdwKernelType == vdwktLJCUT_COMBGEOM
-                || parameters_.vdwKernelType == vdwktLJCUT_COMBLB))
-        {
-            // There are no combination rule versions of the plain-C kernel
-            return;
-        }
-
-        nbv_ = setupNbnxmForBenchInstance(options_, system_);
-
-        nbv_->constructPairlist(InteractionLocality::Local, system_.excls, 0, nullptr);
-
-        const interaction_const_t ic = setupInteractionConst(options_);
-
-        std::vector<RVec> shiftVecs(c_numShiftVectors);
-        calc_shifts(system_.box, shiftVecs);
-
-        StepWorkload stepWork;
-        stepWork.computeForces = true;
-        stepWork.computeEnergy = true;
-
-        // Resize the energy output buffers to 1 to trigger the non-energy-group kernel
-        nbv_->nbat().paramsDeprecated().nenergrp = 1;
-        nbv_->nbat().out[0].Vvdw.resize(1);
-        nbv_->nbat().out[0].Vc.resize(1);
-
-        // The reduction still acts on all groups pairs
-        std::vector<real> vVdw(square(c_numEnergyGroups));
-        std::vector<real> vCoulomb(square(c_numEnergyGroups));
-        nbv_->dispatchNonbondedKernel(
-                InteractionLocality::Local, ic, stepWork, enbvClearFYes, shiftVecs, vVdw, vCoulomb, nullptr);
-
-        std::vector<RVec> forces(system_.coordinates.size(), { 0.0_real, 0.0_real, 0.0_real });
-        nbv_->atomdata_add_nbat_f_to_f(AtomLocality::All, forces);
-
-        // The reference data for double is generated with 44 accuracy bits,
-        // so we should not compare with more than that accuracy
-        const int  simdAccuracyBits = (GMX_DOUBLE ? std::min(GMX_SIMD_ACCURACY_BITS_DOUBLE, 44)
-                                                  : std::min(GMX_SIMD_ACCURACY_BITS_SINGLE, 22));
-        const real simdRealEps      = std::pow(0.5_real, simdAccuracyBits);
-
-        TestReferenceData    refData(makeRefDataFileName());
-        TestReferenceChecker forceChecker(refData.rootChecker());
-        const real           forceMagnitude = 1000;
-        const real           ulpTolerance   = 50;
-        real                 tolerance      = forceMagnitude * simdRealEps * ulpTolerance;
-        if (usingPmeOrEwald(ic.eeltype))
-        {
-            real ewaldRelError;
-            if (isTabulated(options_.coulombType))
+            const int a = atomIndices[i];
+            if (nonbonded_verlet_t::isValidLocalAtom(a))
             {
-                // The relative energy error for tables is 0.1 times the value at the cut-off.
-                // We assume that for the force this factor is 1.
-                ewaldRelError = options_.ewaldRTol;
+                forceBuffer[a] = nbnxmForces[i];
             }
-            else
-            {
-                ewaldRelError = GMX_DOUBLE ? 1e-11 : 1e-6;
-            }
-            const real maxEwaldPairForceError =
-                    ic.epsfac * ewaldRelError * gmx::square(chargeO / ic.rcoulomb);
-            // We assume that the total force error is at max 20 times that of one pair
-            tolerance = std::max(tolerance, 20 * maxEwaldPairForceError);
         }
-        if (ic.vdwtype == VanDerWaalsType::Pme)
-        {
-            const real ulpToleranceExp = 400;
-            tolerance = std::max(tolerance, forceMagnitude * simdRealEps * ulpToleranceExp);
-        }
-        forceChecker.setDefaultTolerance(absoluteTolerance(tolerance));
-        forceChecker.checkSequence(forces.begin(), forces.end(), "Forces");
 
-        TestReferenceChecker ljEnergyChecker(refData.rootChecker());
-        // Energies per atom are more accurate than forces, but there is loss
-        // of precision due to summation over all atoms. The tolerance on
-        // the energy turns out to be the same as on the forces.
-        ljEnergyChecker.setDefaultTolerance(absoluteTolerance(tolerance));
+        forces = forceBuffer;
+    }
+    else
+    {
+        forces = nbnxmForces;
+    }
+
+    forceChecker.checkSequence(forces.begin(), forces.end(), "Forces");
+
+    // Check the energies, as applicable
+    if (options_.energyHandling == EnergyHandling::NoEnergies)
+    {
+        // The force-only kernels can't compare with the reference
+        // data for energies.
+        ljEnergyChecker.disableUnusedEntriesCheck();
+        coulombEnergyChecker.disableUnusedEntriesCheck();
+    }
+    else if (options_.energyHandling == EnergyHandling::Energies)
+    {
         ljEnergyChecker.checkReal(vVdw[0], "VdW energy");
-        TestReferenceChecker coulombEnergyChecker(refData.rootChecker());
-        // Coulomb energy errors are higher
-        coulombEnergyChecker.setDefaultTolerance(absoluteTolerance(10 * tolerance));
         coulombEnergyChecker.checkReal(vCoulomb[0], "Coulomb energy");
-
-        // Now call the force only kernel
-        stepWork.computeEnergy = false;
-
-        nbv_->dispatchNonbondedKernel(
-                InteractionLocality::Local, ic, stepWork, enbvClearFYes, shiftVecs, vVdw, vCoulomb, nullptr);
-
-        std::vector<RVec> forces2(system_.coordinates.size(), { 0.0_real, 0.0_real, 0.0_real });
-        nbv_->atomdata_add_nbat_f_to_f(AtomLocality::All, forces2);
-
-        // Compare the forces to the forces computed with energies
-        FloatingPointTolerance forcesOnlyTolerance(relativeToleranceAsUlp(1000.0, 10));
-
-        for (int i = 0; i < ssize(forces); i++)
-        {
-            for (int d = 0; d < DIM; d++)
-            {
-                EXPECT_REAL_EQ_TOL(forces2[i][d], forces[i][d], forcesOnlyTolerance);
-            }
-        }
-
-        // Now call the energy group pair kernel
-        nbv_->nbat().paramsDeprecated().nenergrp = c_numEnergyGroups;
-        nbv_->nbat().out[0].Vvdw.resize(square(c_numEnergyGroups));
-        nbv_->nbat().out[0].Vc.resize(square(c_numEnergyGroups));
-        stepWork.computeEnergy = true;
-
-        std::vector<real> vVdwGrps(gmx::square(c_numEnergyGroups));
-        std::vector<real> vCoulombGrps(gmx::square(c_numEnergyGroups));
-        nbv_->dispatchNonbondedKernel(
-                InteractionLocality::Local, ic, stepWork, enbvClearFYes, shiftVecs, vVdwGrps, vCoulombGrps, nullptr);
-
-        std::vector<RVec> forces3(system_.coordinates.size(), { 0.0_real, 0.0_real, 0.0_real });
-        nbv_->atomdata_add_nbat_f_to_f(AtomLocality::All, forces3);
-
-        for (int i = 0; i < ssize(forces); i++)
-        {
-            for (int d = 0; d < DIM; d++)
-            {
-                EXPECT_REAL_EQ_TOL(forces3[i][d], forces[i][d], forcesOnlyTolerance);
-            }
-        }
-
-        ljEnergyChecker.checkSequence(vVdwGrps.begin(), vVdwGrps.end(), "VdW group pair energy");
-        coulombEnergyChecker.checkSequence(
-                vCoulombGrps.begin(), vCoulombGrps.end(), "Coulomb group pair energy");
-
+        // The energy kernels can't compare with the reference data
+        // for energy groups.
+        ljEnergyChecker.disableUnusedEntriesCheck();
+        coulombEnergyChecker.disableUnusedEntriesCheck();
+    }
+    else if (options_.energyHandling == EnergyHandling::ThreeEnergyGroups)
+    {
         // Cross check the sum of group energies with the total energies
-        real vVdwGrpsSum     = 0;
-        real vCoulombGrpsSum = 0;
-        for (int gg = 0; gg < ssize(vVdwGrps); gg++)
-        {
-            vVdwGrpsSum += vVdwGrps[gg];
-            vCoulombGrpsSum += vCoulombGrps[gg];
-        }
-        EXPECT_REAL_EQ_TOL(vVdwGrpsSum, vVdw[0], absoluteTolerance(tolerance));
-        EXPECT_REAL_EQ_TOL(vCoulombGrpsSum, vCoulomb[0], absoluteTolerance(10 * tolerance));
+        real vVdwGroupsSum     = std::accumulate(vVdw.begin(), vVdw.end(), 0.0_real);
+        real vCoulombGroupsSum = std::accumulate(vCoulomb.begin(), vCoulomb.end(), 0.0_real);
+        ljEnergyChecker.checkReal(vVdwGroupsSum, "VdW energy");
+        coulombEnergyChecker.checkReal(vCoulombGroupsSum, "Coulomb energy");
+
+        ljEnergyChecker.checkSequence(vVdw.begin(), vVdw.end(), "VdW group pair energy");
+        coulombEnergyChecker.checkSequence(
+                vCoulomb.begin(), vCoulomb.end(), "Coulomb group pair energy");
     }
 };
 
-#if GENERATE_REFERENCE_DATA
-// The plain-C kernels only support tabulated Ewald.
-// To get high accuracy in the reference data, we use SIMD kernels.
-#    if GMX_HAVE_NBNXM_SIMD_4XM
-const auto testKernelTypes = ::testing::Values(Nbnxm::KernelType::Cpu4xN_Simd_4xN);
-#    else
-#        if !GMX_HAVE_NBNXM_SIMD_2XMM
-#            error "We need SIMD kernels for generating reference data"
-#        else
-const auto testKernelTypes = ::testing::Values(Nbnxm::KernelType::Cpu4xN_Simd_2xNN);
-#        endif
-#    endif
-#else // GENERATE_REFERENCE_DATA
-const auto testKernelTypes = ::testing::Values(Nbnxm::KernelType::Cpu4x4_PlainC
-#    if GMX_HAVE_NBNXM_SIMD_4XM
-                                               ,
-                                               Nbnxm::KernelType::Cpu4xN_Simd_4xN
-#    endif
-#    if GMX_HAVE_NBNXM_SIMD_2XMM
-                                               ,
-                                               Nbnxm::KernelType::Cpu4xN_Simd_2xNN
-#    endif
-);
-#endif // GENERATE_REFERENCE_DATA
-
-/* Note that which tests are registered is determined at compile time, not dynamically.
- * The dynamic registration mechanism is only used to be able to call registerTests()
- * so we can supply different names for the test and the string used for the reference
- * data. This enables tests to share reference data.
- */
-void registerTestsDynamically()
-{
-    // Form the Cartesian product of all test values we might check
-    const auto testCombinations = testing::ConvertGenerator<KernelInputParameters::TupleT>(
-            ::testing::Combine(testKernelTypes,
-                               ::testing::Values(CoulombKernelType::ReactionField,
-                                                 CoulombKernelType::Ewald,
-                                                 CoulombKernelType::EwaldTwin
-#if !GENERATE_REFERENCE_DATA
-                                                 ,
-                                                 CoulombKernelType::Table,
-                                                 CoulombKernelType::TableTwin
-#endif
-                                                 ),
-                               ::testing::Values(static_cast<int>(vdwktLJCUT_COMBGEOM),
-                                                 static_cast<int>(vdwktLJCUT_COMBLB),
-                                                 static_cast<int>(vdwktLJCUT_COMBNONE),
-                                                 static_cast<int>(vdwktLJFORCESWITCH),
-                                                 static_cast<int>(vdwktLJPOTSWITCH),
-                                                 static_cast<int>(vdwktLJEWALDCOMBGEOM))));
-
-    registerTests<NbnxmKernelTest, NbnxmKernelTestBody, decltype(testCombinations)>(
-            "NbnxmKernelTest", nameOfTest, fullNameOfTest, testCombinations);
-}
+INSTANTIATE_TEST_SUITE_P(Combinations,
+                         NbnxmKernelTest,
+                         ::testing::ConvertGenerator<KernelInputParameters::TupleT>(::testing::Combine(
+                                 ::testing::Values(NbnxmKernelType::Cpu1x1_PlainC,
+                                                   NbnxmKernelType::Cpu4x4_PlainC,
+                                                   NbnxmKernelType::Cpu4xN_Simd_4xN,
+                                                   NbnxmKernelType::Cpu4xN_Simd_2xNN),
+                                 ::testing::Values(CoulombKernelType::ReactionField,
+                                                   CoulombKernelType::Ewald,
+                                                   CoulombKernelType::EwaldTwin,
+                                                   CoulombKernelType::Table,
+                                                   CoulombKernelType::TableTwin,
+                                                   CoulombKernelType::None,
+                                                   CoulombKernelType::Fmm),
+                                 ::testing::Values(int(vdwktLJCUT_COMBGEOM),
+                                                   int(vdwktLJCUT_COMBLB),
+                                                   int(vdwktLJCUT_COMBNONE),
+                                                   int(vdwktLJFORCESWITCH),
+                                                   int(vdwktLJPOTSWITCH),
+                                                   int(vdwktLJEWALDCOMBGEOM)),
+                                 ::testing::Values(EnergyHandling::NoEnergies,
+                                                   EnergyHandling::Energies,
+                                                   EnergyHandling::ThreeEnergyGroups))),
+                         nameOfTest);
 
 } // namespace test
 

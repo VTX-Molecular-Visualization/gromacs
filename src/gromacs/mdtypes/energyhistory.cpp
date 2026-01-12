@@ -36,13 +36,17 @@
 
 #include "energyhistory.h"
 
+#include <cstddef>
+
+#include <string>
+
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/stringutil.h"
 
 #include "checkpointdata.h"
 
 //! \cond INTERNAL
-// mirroring the \cond from energyhistory.h to avoid Doxygen errors
+// mirroring the cond from energyhistory.h to avoid Doxygen errors
 
 namespace
 {

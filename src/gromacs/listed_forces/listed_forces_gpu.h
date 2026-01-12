@@ -50,12 +50,11 @@
 #include <memory>
 
 #include "gromacs/gpu_utils/devicebuffer_datatype.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/topology/idef.h"
+#include "gromacs/utility/vectypes.h"
 
 class DeviceContext;
-struct DeviceInformation;
 class DeviceStream;
 
 struct gmx_enerdata_t;
@@ -63,12 +62,11 @@ struct gmx_ffparams_t;
 struct gmx_mtop_t;
 struct t_inputrec;
 struct gmx_wallcycle;
-struct NBAtomDataGpu;
-
 
 namespace gmx
 {
 
+struct NBAtomDataGpu;
 template<typename>
 class ArrayRef;
 class StepWorkload;
@@ -83,9 +81,16 @@ static constexpr int numFTypesOnGpu = 8;
  * \note The function types in the list are ordered on increasing value.
  * \note Currently bonded are only supported with CUDA and SYCL, not with OpenCL.
  */
-constexpr std::array<int, numFTypesOnGpu> fTypesOnGpu = { F_BONDS,  F_ANGLES, F_UREY_BRADLEY,
-                                                          F_PDIHS,  F_RBDIHS, F_IDIHS,
-                                                          F_PIDIHS, F_LJ14 };
+constexpr std::array<InteractionFunction, numFTypesOnGpu> fTypesOnGpu = {
+    InteractionFunction::Bonds,
+    InteractionFunction::Angles,
+    InteractionFunction::UreyBradleyPotential,
+    InteractionFunction::ProperDihedrals,
+    InteractionFunction::RyckaertBellemansDihedrals,
+    InteractionFunction::ImproperDihedrals,
+    InteractionFunction::PeriodicImproperDihedrals,
+    InteractionFunction::LennardJones14
+};
 
 /*! \brief Checks whether the GROMACS build allows to compute bonded interactions on a GPU.
  *
@@ -116,21 +121,19 @@ public:
      * \param[in] electrostaticsScaleFactor  Scaling factor for the electrostatic potential
      * \param[in] numEnergyGroupsForListedForces  The number of energy groups used for listed forces
      *                                       (Coulomb constant, multiplied by the Fudge factor).
-     * \param[in] deviceInfo                 GPU device handle.
-     * \param[in] deviceContext              GPU device context (not used in CUDA).
+     * \param[in] deviceContext              GPU device context.
      * \param[in] deviceStream               GPU device stream.
      * \param[in] wcycle                     The wallclock counter.
      *
      * \note Only assigning all energies to energy group pair 0,0 is supported.
      *       Passing numEnergyGroupsForListedForces>1 will lead to an assertion failure.
      */
-    ListedForcesGpu(const gmx_ffparams_t&    ffparams,
-                    float                    electrostaticsScaleFactor,
-                    int                      numEnergyGroupsForListedForces,
-                    const DeviceInformation& deviceInfo,
-                    const DeviceContext&     deviceContext,
-                    const DeviceStream&      deviceStream,
-                    gmx_wallcycle*           wcycle);
+    ListedForcesGpu(const gmx_ffparams_t& ffparams,
+                    float                 electrostaticsScaleFactor,
+                    int                   numEnergyGroupsForListedForces,
+                    const DeviceContext&  deviceContext,
+                    const DeviceStream&   deviceStream,
+                    gmx_wallcycle*        wcycle);
     //! Destructor
     ~ListedForcesGpu();
 

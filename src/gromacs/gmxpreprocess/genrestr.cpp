@@ -36,21 +36,33 @@
 #include "genrestr.h"
 
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 #include <algorithm>
+#include <filesystem>
+#include <string>
 
+#include "gromacs/commandline/filenm.h"
 #include "gromacs/commandline/pargs.h"
 #include "gromacs/fileio/confio.h"
-#include "gromacs/math/vec.h"
+#include "gromacs/fileio/filetypes.h"
+#include "gromacs/fileio/oenv.h"
+#include "gromacs/topology/atoms.h"
 #include "gromacs/topology/index.h"
 #include "gromacs/topology/mtop_util.h"
 #include "gromacs/topology/topology.h"
 #include "gromacs/utility/arraysize.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/futil.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
+
+struct gmx_output_env_t;
 
 int gmx_genrestr(int argc, char* argv[])
 {
@@ -139,7 +151,6 @@ int gmx_genrestr(int argc, char* argv[])
     FILE*             out;
     int               igrp;
     real              d, dd, lo, hi;
-    const char *      xfn, *nfn;
     matrix            box;
     gmx_bool          bFreeze;
     rvec              dx, *x = nullptr, *v = nullptr;
@@ -158,10 +169,10 @@ int gmx_genrestr(int argc, char* argv[])
 
     bFreeze = opt2bSet("-of", NFILE, fnm) || opt2parg_bSet("-freeze", asize(pa), pa);
     bDisre  = bDisre || opt2parg_bSet("-disre_dist", npargs, pa);
-    xfn     = opt2fn_null("-f", NFILE, fnm);
-    nfn     = opt2fn_null("-n", NFILE, fnm);
+    std::optional<std::filesystem::path> xfn = opt2path_optional("-f", NFILE, fnm);
+    std::optional<std::filesystem::path> nfn = opt2path_optional("-n", NFILE, fnm);
 
-    if ((nfn == nullptr) && (xfn == nullptr))
+    if (!nfn && !xfn)
     {
         gmx_fatal(FARGS, "no index file and no structure file supplied");
     }
@@ -181,10 +192,10 @@ int gmx_genrestr(int argc, char* argv[])
     int*        indexGroups     = nullptr;
     char*       indexGroupNames = nullptr;
 
-    if (xfn != nullptr)
+    if (xfn)
     {
         fprintf(stderr, "\nReading structure file\n");
-        readConfAndTopology(xfn, &haveTopology, &mtop, nullptr, &x, &v, box);
+        readConfAndTopology(xfn.value(), &haveTopology, &mtop, nullptr, &x, &v, box);
         title = *mtop.name;
         atoms = gmx_mtop_global_atoms(mtop);
         if (atoms.pdbinfo == nullptr)
@@ -198,7 +209,10 @@ int gmx_genrestr(int argc, char* argv[])
     {
         if (!haveTopology || !atoms.pdbinfo)
         {
-            gmx_fatal(FARGS, "No B-factors in input file %s, use a pdb file next time.", xfn);
+            GMX_RELEASE_ASSERT(xfn.has_value(), "Input file must be valid");
+            gmx_fatal(FARGS,
+                      "No B-factors in input file %s, use a pdb file next time.",
+                      xfn.value().string().c_str());
         }
 
         out = opt2FILE("-of", NFILE, fnm, "w");

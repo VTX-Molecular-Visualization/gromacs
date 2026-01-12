@@ -50,26 +50,33 @@
 #include <cmath>
 #include <cstdio>
 
+#include <filesystem>
 #include <numeric>
+#include <string>
+#include <vector>
 
 #include "gromacs/domdec/domdec.h"
 #include "gromacs/domdec/domdec_struct.h"
 #include "gromacs/domdec/options.h"
 #include "gromacs/ewald/pme.h"
 #include "gromacs/gmxlib/network.h"
+#include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
 #include "gromacs/math/utilities.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/mdlib/perf_est.h"
 #include "gromacs/mdrunutility/mdmodulesnotifiers.h"
-#include "gromacs/mdtypes/commrec.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/topology/topology.h"
+#include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/logger.h"
+#include "gromacs/utility/mpicomm.h"
 #include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/vec.h"
 
 #include "atomdistribution.h"
 #include "box.h"
@@ -254,12 +261,6 @@ static int guess_npme(const gmx::MDLogger& mdlog,
     return npme;
 }
 
-/*! \brief Return \p n divided by \p f rounded up to the next integer. */
-static int div_up(int n, int f)
-{
-    return (n + f - 1) / f;
-}
-
 real comm_box_frac(const gmx::IVec& dd_nc, real cutoff, const gmx_ddbox_t& ddbox)
 {
     rvec nw;
@@ -315,8 +316,8 @@ static float comm_pme_cost_vol(int npme, int a, int b, int c)
     /* We use a float here, since an integer might overflow */
     float comm_vol = npme - 1;
     comm_vol *= npme;
-    comm_vol *= div_up(a, npme);
-    comm_vol *= div_up(b, npme);
+    comm_vol *= gmx::divideRoundUp(a, npme);
+    comm_vol *= gmx::divideRoundUp(b, npme);
     comm_vol *= c;
 
     return comm_vol;
@@ -958,7 +959,7 @@ static int set_dd_dim(const gmx::IVec& numDDCells, const DDSettings& ddSettings,
 
 DDGridSetup getDDGridSetup(const gmx::MDLogger&                  mdlog,
                            DDRole                                ddRole,
-                           MPI_Comm                              communicator,
+                           const gmx::MpiComm&                   mpiComm,
                            const int                             numRanksRequested,
                            const DomdecOptions&                  options,
                            const DDSettings&                     ddSettings,
@@ -977,13 +978,12 @@ DDGridSetup getDDGridSetup(const gmx::MDLogger&                  mdlog,
     gmx::IVec numDomains;
     if (options.numCells[XX] > 0)
     {
-        numDomains                      = gmx::IVec(options.numCells);
-        const ivec numDomainsLegacyIvec = { numDomains[XX], numDomains[YY], numDomains[ZZ] };
-        set_ddbox_cr(ddRole, communicator, &numDomainsLegacyIvec, ir, box, xGlobal, ddbox);
+        numDomains = gmx::IVec(options.numCells);
+        set_ddbox_MpiComm(ddRole, mpiComm, &numDomains, ir, box, xGlobal, ddbox);
     }
     else
     {
-        set_ddbox_cr(ddRole, communicator, nullptr, ir, box, xGlobal, ddbox);
+        set_ddbox_MpiComm(ddRole, mpiComm, nullptr, ir, box, xGlobal, ddbox);
 
         if (ddRole == DDRole::Main)
         {
@@ -993,10 +993,10 @@ DDGridSetup getDDGridSetup(const gmx::MDLogger&                  mdlog,
     }
 
     /* Communicate the information set by the coordinator to all ranks */
-    gmx_bcast(sizeof(numDomains), numDomains, communicator);
+    gmx_bcast(sizeof(numDomains), numDomains, mpiComm.comm());
     if (usingPme(ir.coulombtype))
     {
-        gmx_bcast(sizeof(numPmeOnlyRanks), &numPmeOnlyRanks, communicator);
+        gmx_bcast(sizeof(numPmeOnlyRanks), &numPmeOnlyRanks, mpiComm.comm());
     }
 
     DDGridSetup ddGridSetup;

@@ -62,7 +62,7 @@ namespace nblib
 /*! \brief GROMACS non-bonded force calculation backend
  *
  * This class encapsulates the various GROMACS data structures and their interplay
- * from the NBLIB user. The class is a private member of the ForceCalculator and
+ * from the NB-LIB user. The class is a private member of the ForceCalculator and
  * is not intended for the public interface.
  *
  * Handles the task of storing the simulation problem description using the internal
@@ -102,7 +102,7 @@ public:
     gmx::ListOfLists<int> exclusions_;
 
     //! Non-Bonded Verlet object for force calculation
-    std::unique_ptr<nonbonded_verlet_t> nbv_;
+    std::unique_ptr<gmx::nonbonded_verlet_t> nbv_;
 
     //! Only shift_vec is used
     t_forcerec forcerec_;
