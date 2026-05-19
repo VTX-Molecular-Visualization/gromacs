@@ -591,17 +591,7 @@ private:
 
 public:
     //! \brief Smallest value that can be returned from random engine.
-#if !defined(_MSC_VER)
-    static constexpr
-#else
-    // Avoid constexpr bug in MSVC 2015, note that max() below does work
-    static
-#endif
-            result_type
-            min()
-    {
-        return std::numeric_limits<result_type>::min();
-    }
+    static constexpr result_type min() { return std::numeric_limits<result_type>::min(); }
 
     //! \brief Largest value that can be returned from random engine.
     static constexpr result_type max() { return std::numeric_limits<result_type>::max(); }

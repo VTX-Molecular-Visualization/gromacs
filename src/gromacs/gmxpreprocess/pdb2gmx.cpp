@@ -41,8 +41,10 @@
 #include <ctime>
 
 #include <algorithm>
+#include <map>
 #include <memory>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "gromacs/commandline/cmdlineoptionsmodule.h"
@@ -82,6 +84,7 @@
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/strdb.h"
 #include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/textreader.h"
 
 #include "hackblock.h"
 #include "resall.h"
@@ -281,6 +284,97 @@ const char* get_argtp(int resnr, gmx::ArrayRef<const RtpRename> rr)
 const char* get_histp(int resnr, gmx::ArrayRef<const RtpRename> rr)
 {
     return select_res<HistidineStates>(resnr, "HISTIDINE", rr);
+}
+
+// Batch-mode support: map (chain_id, pdb_residue_name, pdb_resnr) -> selection index
+using BatchMap = std::map<std::tuple<char, std::string, int>, int>;
+
+// Returns the rtp building-block name for the given residue type and selection index,
+// or nullptr if the type is not a supported titratable residue.
+static const char* resolveRtpNameFromBatch(const std::string& typeName, int idx)
+{
+    if (typeName == "HIS") return enumValueToString(static_cast<HistidineStates>(idx));
+    if (typeName == "LYS") return enumValueToString(static_cast<LysineStates>(idx));
+    if (typeName == "ARG") return enumValueToString(static_cast<ArginineStates>(idx));
+    if (typeName == "ASP") return enumValueToString(static_cast<AspartateStates>(idx));
+    if (typeName == "GLU") return enumValueToString(static_cast<GlutamateStates>(idx));
+    if (typeName == "GLN") return enumValueToString(static_cast<GlutamineStates>(idx));
+    return nullptr;
+}
+
+// Parse a -batch file.  Each non-empty, non-comment line has the form:
+//   CHAIN TYPE+RESNR INDEX
+// e.g.  A HIS47 0   (chain A, histidine 47, select option 0 = HISD)
+static BatchMap parseBatchFile(const std::string& filename)
+{
+    BatchMap         result;
+    gmx::TextReader  reader(filename);
+    std::string line;
+    while (reader.readLine(&line))
+    {
+        line = gmx::stripString(line);
+        if (line.empty() || line[0] == '#' || line[0] == ';')
+        {
+            continue;
+        }
+
+        char chain;
+        char typeAndNum[64];
+        int  idx;
+        if (std::sscanf(line.c_str(), " %c %63s %d", &chain, typeAndNum, &idx) != 3)
+        {
+            gmx_fatal(FARGS, "Cannot parse batch file line: '%s'", line.c_str());
+        }
+
+        // Split e.g. "HIS47" into type="HIS" and resnr=47
+        std::string  token(typeAndNum);
+        std::size_t  numStart = token.find_first_of("0123456789");
+        if (numStart == std::string::npos || numStart == 0)
+        {
+            gmx_fatal(FARGS,
+                      "Cannot parse residue in batch file: '%s'. "
+                      "Expected TYPE followed by residue number (e.g. HIS47).",
+                      typeAndNum);
+        }
+        std::string typeName = token.substr(0, numStart);
+        int         resnr    = std::stoi(token.substr(numStart));
+
+        if (resolveRtpNameFromBatch(typeName, 0) == nullptr)
+        {
+            gmx_fatal(FARGS,
+                      "Unknown residue type '%s' in batch file. "
+                      "Supported: HIS, LYS, ARG, ASP, GLU, GLN.",
+                      typeName.c_str());
+        }
+
+        result[{ chain, typeName, resnr }] = idx;
+    }
+    return result;
+}
+
+// After process_chain has run (automatic/default protonation), override residues
+// listed in the batch map.  At this point pdba->resinfo[i].name still holds the
+// original PDB residue name for all residues processed without interactive flags.
+static void applyBatchSelections(const BatchMap& batch, t_atoms* pdba, t_symtab* symtab)
+{
+    for (int i = 0; i < pdba->nres; i++)
+    {
+        char        chainId  = pdba->resinfo[i].chainid;
+        int         resNr    = pdba->resinfo[i].nr;
+        std::string typeName(*pdba->resinfo[i].name);
+
+        auto it = batch.find({ chainId, typeName, resNr });
+        if (it != batch.end())
+        {
+            const char* rtpName = resolveRtpNameFromBatch(typeName, it->second);
+            if (rtpName != nullptr)
+            {
+                char** sym             = put_symtab(symtab, rtpName);
+                pdba->resinfo[i].rtp   = sym;
+                pdba->resinfo[i].name  = sym;
+            }
+        }
+    }
 }
 
 void read_rtprename(const char* fname, FILE* fp, std::vector<RtpRename>* rtprename)
@@ -1647,6 +1741,7 @@ private:
     std::string inputConfFile_;
     std::string outFile_;
     std::string ff_;
+    std::string batchFile_;
 
     ChainSeparationType chainSeparation_;
     VSitesType          vsitesType_;
@@ -1806,6 +1901,15 @@ void pdb2gmx::initOptions(IOptionsContainer* options, ICommandLineOptionsModuleS
                                .description("Merge multiple chains into a single [moleculetype]"));
     options->addOption(StringOption("ff").store(&ff_).defaultValue("select").description(
             "Force field, interactive by default. Use [TT]-h[tt] for information."));
+    options->addOption(
+            StringOption("batch")
+                    .store(&batchFile_)
+                    .defaultValue("")
+                    .description(
+                            "Read protonation-state selections from a file instead of "
+                            "prompting interactively. One entry per non-comment line: "
+                            "[TT]CHAIN TYPE+RESNUM INDEX[tt] (e.g. [TT]A HIS47 0[tt]). "
+                            "Residues not listed keep their default protonation state."));
     options->addOption(
             EnumOption<WaterType>("water").store(&waterType_).enumValue(c_waterTypeNames).description("Water model to use"));
     options->addOption(BooleanOption("inter").store(&bInter_).defaultValue(false).description(
@@ -1986,6 +2090,12 @@ int pdb2gmx::run()
     int         prev_chainstart;
 
     const gmx::MDLogger& logger = loggerOwner_->logger();
+
+    BatchMap batchSelections;
+    if (!batchFile_.empty())
+    {
+        batchSelections = parseBatchFile(batchFile_);
+    }
 
     GMX_LOG(logger.info)
             .asParagraph()
@@ -2428,6 +2538,11 @@ int pdb2gmx::run()
                       distance_,
                       &symtab,
                       rtprename);
+
+        if (!batchSelections.empty())
+        {
+            applyBatchSelections(batchSelections, pdba, &symtab);
+        }
 
         cc->chainstart[cc->nterpairs] = pdba->nres;
         j                             = 0;

@@ -48,6 +48,7 @@
 #include "gromacs/utility/futil.h"
 #include "gromacs/utility/stringutil.h"
 #include "gromacs/utility/textreader.h"
+#include "gromacs/utility/textwriter.h"
 
 #include "testutils/cmdlinetest.h"
 #include "testutils/conftest.h"
@@ -299,6 +300,57 @@ INSTANTIATE_TEST_SUITE_P(Cyclic,
                                             ::testing::Values(false)),
                          namesOfTests);
 #endif
+
+// Batch-mode tests are gated on CHARMM because they use charmm27+tip3p,
+// which is available in all pdb2gmx3-test builds.
+#if CHARMM
+
+// chainTer.pdb has chain A (ALA2 ASP4 GLU5 PHE6 GLY7), chain B (HIS8 ILE9
+// LYS10 LEU11 MET12 ASN13 PRO14), chain C (GLN15 ARG16 SER17).
+class Pdb2gmxBatchTest : public test::CommandLineTestBase
+{
+public:
+    Pdb2gmxBatchTest()
+    {
+        setOutputFile("-o", "conf.gro", ConfMatch());
+        setOutputFile("-p", "topol.top", TextFileMatch(c_textMatcher));
+    }
+
+    void runTest(const std::string& batchContent)
+    {
+        const std::string batchPath =
+                fileManager().getTemporaryFilePath("batch.txt").u8string();
+        TextWriter::writeFileFromString(batchPath, batchContent);
+
+        setInputFile("-f", "chainTer.pdb");
+
+        const char* const baseArgs[] = { "pdb2gmx",    "-ff",        "charmm27",
+                                         "-water",      "tip3p",      "-ignh",
+                                         "-chainsep",   "id_or_ter" };
+        CommandLine&      cmdline    = commandLine();
+        cmdline.merge(CommandLine(baseArgs));
+        cmdline.addOption("-batch", batchPath);
+
+        ASSERT_EQ(0, CommandLineTestHelper::runModuleFactory(&pdb2gmxInfo::create, &cmdline));
+        checkOutputFiles();
+    }
+};
+
+// Select HISE (index 1) for HIS8 in chain B and LYSN (index 0) for LYS10 in
+// chain B.  All other titratable residues get their default protonation state.
+TEST_F(Pdb2gmxBatchTest, BatchSelectsProtonationStates)
+{
+    runTest("B HIS8 1\nB LYS10 0\n");
+}
+
+// An empty batch file must be accepted; the result must be identical to running
+// without -batch (same force field, same defaults).
+TEST_F(Pdb2gmxBatchTest, EmptyBatchFileUsesDefaults)
+{
+    runTest("");
+}
+
+#endif // CHARMM (batch tests)
 
 } // namespace
 } // namespace test
