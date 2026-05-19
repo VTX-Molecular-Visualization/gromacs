@@ -8,9 +8,9 @@ from pathlib import Path
 
 class VtxGromacsRecipe(ConanFile):
     name = "gromacs"
-    version = "2024.0"
+    version = "2026.1"
     package_type = "library"
-    revision_mode = "scm"
+    revision_mode = "hash"
 
     settings = "os", "compiler", "build_type", "arch"
     options = {
