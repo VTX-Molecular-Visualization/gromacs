@@ -116,6 +116,24 @@ TEST_F(GenionTest, NoIonPlacement)
     runTest(CommandLine(cmdline), "Water");
 }
 
+// -group flag: same result as the interactive tests above but without stdin.
+// An empty stdin redirect is harmless since -group bypasses all stdin reads.
+TEST_F(GenionTest, HighConcentrationIonPlacementWithGroupFlag)
+{
+    const char* const cmdline[] = {
+        "genion", "-seed", "1997", "-conc", "1.0", "-rmin", "0.6", "-group", "Water"
+    };
+    runTest(CommandLine(cmdline), "");
+}
+
+TEST_F(GenionTest, NoIonPlacementWithGroupFlag)
+{
+    const char* const cmdline[] = {
+        "genion", "-seed", "1997", "-conc", "0.0", "-rmin", "0.6", "-group", "Water"
+    };
+    runTest(CommandLine(cmdline), "");
+}
+
 } // namespace
 } // namespace test
 } // namespace gmx

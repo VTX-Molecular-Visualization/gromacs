@@ -495,11 +495,13 @@ int gmx_trjconv(int argc, char* argv[])
     const char* fit[efNR + 1] = { nullptr,       "none",    "rot+trans",   "rotxy+transxy",
                                   "translation", "transxy", "progressive", nullptr };
 
-    gmx_bool bSeparate = FALSE, bVels = TRUE, bForce = FALSE, bCONECT = FALSE;
-    gmx_bool bCenter = FALSE;
-    int      skip_nr = 1, ndec = 3, nzero = 0;
-    real     tzero = 0, delta_t = 0, timestep = 0, ttrunc = -1, tdump = -1, split_t = 0;
-    rvec     newbox = { 0, 0, 0 }, shift = { 0, 0, 0 }, trans = { 0, 0, 0 };
+    gmx_bool    bSeparate = FALSE, bVels = TRUE, bForce = FALSE, bCONECT = FALSE;
+    gmx_bool    bCenter = FALSE;
+    int         skip_nr = 1, ndec = 3, nzero = 0;
+    real        tzero = 0, delta_t = 0, timestep = 0, ttrunc = -1, tdump = -1, split_t = 0;
+    rvec        newbox = { 0, 0, 0 }, shift = { 0, 0, 0 }, trans = { 0, 0, 0 };
+    const char* centerGroupName = "";
+    const char* outputGroupName = "";
     char*    exec_command = nullptr;
     real     dropunder = 0, dropover = 0;
     gmx_bool bRound = FALSE;
@@ -514,6 +516,18 @@ int gmx_trjconv(int argc, char* argv[])
         { "-pbc", FALSE, etENUM, { pbc_opt }, "PBC treatment (see help text for full description)" },
         { "-ur", FALSE, etENUM, { unitcell_opt }, "Unit-cell representation" },
         { "-center", FALSE, etBOOL, { &bCenter }, "Center atoms in box" },
+        { "-center-group",
+          FALSE,
+          etSTR,
+          { &centerGroupName },
+          "Name of the group to use for centering (e.g. Protein). "
+          "If set, skips interactive group selection for centering." },
+        { "-output-group",
+          FALSE,
+          etSTR,
+          { &outputGroupName },
+          "Name of the group to write to output (e.g. System). "
+          "If set, skips interactive group selection for output." },
         { "-boxcenter", FALSE, etENUM, { center_opt }, "Center for -pbc and -center" },
         { "-box", FALSE, etRVEC, { newbox }, "Size for new cubic box (default: read from input)" },
         { "-trans",
@@ -861,13 +875,46 @@ int gmx_trjconv(int argc, char* argv[])
 
         if (bIndex)
         {
-            if (bCenter)
+            if (centerGroupName[0] != '\0' || outputGroupName[0] != '\0')
             {
-                printf("Select group for centering\n");
-                get_index(atoms, ftp2fn_null(efNDX, NFILE, fnm), 1, &ncent, &cindex, &grpnm);
+                const char*              ndxFile = ftp2fn_null(efNDX, NFILE, fnm);
+                std::vector<IndexGroup>  groups  = (ndxFile != nullptr)
+                                                      ? init_index(ndxFile)
+                                                      : analyse(atoms, FALSE, FALSE);
+                if (bCenter)
+                {
+                    const char* cgName = centerGroupName[0] != '\0' ? centerGroupName : "Protein";
+                    int         cgIdx  = find_group(cgName, groups);
+                    if (cgIdx < 0)
+                        gmx_fatal(FARGS, "Center group '%s' not found.", cgName);
+                    ncent = static_cast<int>(groups[cgIdx].particleIndices.size());
+                    snew(cindex, ncent);
+                    for (int gi = 0; gi < ncent; ++gi)
+                        cindex[gi] = groups[cgIdx].particleIndices[gi];
+                    grpnm = gmx_strdup(groups[cgIdx].name.c_str());
+                }
+                {
+                    const char* ogName = outputGroupName[0] != '\0' ? outputGroupName : "System";
+                    int         ogIdx  = find_group(ogName, groups);
+                    if (ogIdx < 0)
+                        gmx_fatal(FARGS, "Output group '%s' not found.", ogName);
+                    nout = static_cast<int>(groups[ogIdx].particleIndices.size());
+                    snew(index, nout);
+                    for (int gi = 0; gi < nout; ++gi)
+                        index[gi] = groups[ogIdx].particleIndices[gi];
+                    grpnm = gmx_strdup(groups[ogIdx].name.c_str());
+                }
             }
-            printf("Select group for output\n");
-            get_index(atoms, ftp2fn_null(efNDX, NFILE, fnm), 1, &nout, &index, &grpnm);
+            else
+            {
+                if (bCenter)
+                {
+                    printf("Select group for centering\n");
+                    get_index(atoms, ftp2fn_null(efNDX, NFILE, fnm), 1, &ncent, &cindex, &grpnm);
+                }
+                printf("Select group for output\n");
+                get_index(atoms, ftp2fn_null(efNDX, NFILE, fnm), 1, &nout, &index, &grpnm);
+            }
         }
         else
         {

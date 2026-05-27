@@ -457,6 +457,7 @@ int gmx_genion(int argc, char* argv[])
     real        rmin = 0.6, conc = 0;
     int         seed     = 0;
     gmx_bool    bNeutral = FALSE;
+    const char* solventGroupName = "";
     t_pargs     pa[]     = {
         { "-np", FALSE, etINT, { &p_num }, "Number of positive ions" },
         { "-pname", FALSE, etSTR, { &p_name }, "Name of the positive ion" },
@@ -478,7 +479,13 @@ int gmx_genion(int argc, char* argv[])
           etBOOL,
           { &bNeutral },
           "This option will add enough ions to neutralize the system. These ions are added on top "
-          "of those specified with [TT]-np[tt]/[TT]-nn[tt] or [TT]-conc[tt]. " }
+          "of those specified with [TT]-np[tt]/[TT]-nn[tt] or [TT]-conc[tt]. " },
+        { "-group",
+          FALSE,
+          etSTR,
+          { &solventGroupName },
+          "Name of the group to replace with ions (e.g. SOL or Water). "
+          "If set, skips interactive group selection." }
     };
     t_topology        top;
     rvec*             x;
@@ -583,10 +590,26 @@ int gmx_genion(int argc, char* argv[])
         char* grpname = nullptr;
 
         printf("Will try to add %d %s ions and %d %s ions.\n", p_num, p_name, n_num, n_name);
-        printf("Select a continuous group of solvent molecules\n");
 
         std::vector<int> solventGroup;
+        if (solventGroupName[0] != '\0')
         {
+            // Non-interactive: locate the named group without reading stdin.
+            const char*              ndxFile = ftp2fn_null(efNDX, NFILE, fnm);
+            std::vector<IndexGroup>  groups  = (ndxFile != nullptr)
+                                                       ? init_index(ndxFile)
+                                                       : analyse(&atoms, FALSE, FALSE);
+            int grpIdx = find_group(solventGroupName, groups);
+            if (grpIdx < 0)
+            {
+                gmx_fatal(FARGS, "Group '%s' not found in index. Use one of the available group names.", solventGroupName);
+            }
+            solventGroup = groups[grpIdx].particleIndices;
+            grpname      = gmx_strdup(groups[grpIdx].name.c_str());
+        }
+        else
+        {
+            printf("Select a continuous group of solvent molecules\n");
             int* index = nullptr;
             int  nwa;
             get_index(&atoms, ftp2fn_null(efNDX, NFILE, fnm), 1, &nwa, &index, &grpname);
