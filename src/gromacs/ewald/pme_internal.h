@@ -80,6 +80,16 @@ namespace gmx
 class MpiComm;
 }
 
+//! PME unit-cell state after applying any Ewald wall scaling.
+struct PmeUnitCell
+{
+    matrix recipbox;
+    real   boxVolume;
+};
+
+//! Returns PME unit-cell state from a simulation box after applying Ewald wall scaling.
+PmeUnitCell makePmeUnitCell(const EwaldBoxZScaler& boxScaler, const matrix box);
+
 //! The number of grids for LJ-PME with LB combination rules
 static constexpr int sc_numGridsLJLB = 7;
 
@@ -354,9 +364,12 @@ struct pme_solve_work_t;
 
 /*! \brief Main PME data structure */
 struct gmx_pme_t
-{ //NOLINT(clang-analyzer-optin.performance.Padding)
+{ // NOLINT(clang-analyzer-optin.performance.Padding)
     //! Constructor, can be called with nullptr, in that case a single rank comm is used
     gmx_pme_t(const gmx::MpiComm* mpiComm);
+
+    //! Destructor
+    ~gmx_pme_t();
 
     int ndecompdim; /* The number of decomposition dimensions */
     int nodeid;     /* Our nodeid in mpi->mpi_comm */
@@ -401,17 +414,7 @@ struct gmx_pme_t
                               * scheduler, and ideally not be duplicated here.
                               */
 
-    PmeGpu* gpu; /* A pointer to the GPU data.
-                  * TODO: this should be unique or a shared pointer.
-                  * Currently in practice there is a single gmx_pme_t instance while a code
-                  * is partially set up for many of them. The PME tuning calls gmx_pme_reinit()
-                  * which fully reinitializes the one and only PME structure anew while maybe
-                  * keeping the old grid buffers if they were already large enough.
-                  * This small choice should be made clear in the later refactoring -
-                  * do we store many PME objects for different grid sizes,
-                  * or a single PME object that handles different grid sizes gracefully.
-                  */
-
+    std::unique_ptr<PmeGpu> gpu; /* A pointer to the GPU data. */
 
     std::unique_ptr<EwaldBoxZScaler> boxScaler; /**< The scaling data Ewald uses with walls (set at pme_init constant for the entire run) */
 
@@ -461,8 +464,7 @@ struct gmx_pme_t
     std::vector<real> fshz;
 
     std::vector<PmeAtomComm> atc; /* Indexed on decomposition index */
-    matrix                   recipbox;
-    real                     boxVolume;
+    PmeUnitCell              unitCell;
     // The B-spline moduli coefficients
     std::array<std::vector<real>, DIM> bsp_mod;
     /* Buffers to store data for local atoms for L-B combination rule

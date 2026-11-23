@@ -69,7 +69,7 @@
 #include "gromacs/mdtypes/group.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
-#include "gromacs/mdtypes/mdatom.h"
+#include "gromacs/mdtypes/mdatoms.h"
 #include "gromacs/mdtypes/observablesreducer.h"
 #include "gromacs/mdtypes/pull_params.h"
 #include "gromacs/mdtypes/state.h"
@@ -98,7 +98,7 @@ static void calc_ke_part_normal(const matrix                   deform,
                                 gmx::ArrayRef<const gmx::RVec> v,
                                 const matrix                   box,
                                 const t_grpopts*               opts,
-                                const t_mdatoms*               md,
+                                const gmx::MDAtoms&            mdAtoms,
                                 gmx_ekindata_t*                ekind,
                                 t_nrnb*                        nrnb,
                                 gmx_bool                       bEkinAveVel)
@@ -135,15 +135,15 @@ static void calc_ke_part_normal(const matrix                   deform,
     // Now accumulate the partial global and groups ekin.
     for (g = 0; (g < opts->ngtc); g++)
     {
-        copy_mat(tcstat[g].ekinh, tcstat[g].ekinh_old);
+        tcstat[g].ekinh_old = tcstat[g].ekinh;
         if (bEkinAveVel)
         {
-            clear_mat(tcstat[g].ekinf);
+            tcstat[g].ekinf.clear();
             tcstat[g].ekinscalef_nhc = 1.0; /* need to clear this -- logic is complicated! */
         }
         else
         {
-            clear_mat(tcstat[g].ekinh);
+            tcstat[g].ekinh.clear();
         }
     }
     ekind->dekindl_old = ekind->dekindl;
@@ -162,22 +162,20 @@ static void calc_ke_part_normal(const matrix                   deform,
         // This OpenMP only loops over arrays and does not call any functions
         // or memory allocation. It should not be able to throw, so for now
         // we do not need a try/catch wrapper.
-        int     start_t, end_t, n;
-        int     gt;
-        real    hm;
-        int     d, m;
-        matrix* ekin_sum;
-        real*   dekindl_sum;
+        int  start_t, end_t, n;
+        int  gt;
+        real hm;
+        int  d, m;
 
-        start_t = ((thread + 0) * md->homenr) / nthread;
-        end_t   = ((thread + 1) * md->homenr) / nthread;
+        start_t = ((thread + 0) * mdAtoms.numHomeAtoms) / nthread;
+        end_t   = ((thread + 1) * mdAtoms.numHomeAtoms) / nthread;
 
-        ekin_sum    = ekind->ekin_work[thread];
-        dekindl_sum = ekind->dekindl_work[thread];
+        gmx::ArrayRef<gmx::Matrix3x3> ekin_sum    = ekind->ekin_work[thread];
+        real*                         dekindl_sum = ekind->dekindl_work[thread];
 
         for (gt = 0; gt < opts->ngtc; gt++)
         {
-            clear_mat(ekin_sum[gt]);
+            ekin_sum[gt].clear();
         }
         *dekindl_sum = 0.0;
 
@@ -191,11 +189,11 @@ static void calc_ke_part_normal(const matrix                   deform,
         gt = 0;
         for (n = start_t; n < end_t; n++)
         {
-            if (!md->cTC.empty())
+            if (!mdAtoms.cTC.empty())
             {
-                gt = md->cTC[n];
+                gt = mdAtoms.cTC[n];
             }
-            hm = 0.5 * md->massT[n];
+            hm = 0.5 * mdAtoms.massT[n];
 
             gmx::RVec vn = v[n];
             if constexpr (haveBoxDeformation)
@@ -221,17 +219,17 @@ static void calc_ke_part_normal(const matrix                   deform,
 
                 if constexpr (haveBoxDeformation)
                 {
-                    systemMomentumWork->momentum[d] += md->massT[n] * vn[d];
+                    systemMomentumWork->momentum[d] += mdAtoms.massT[n] * vn[d];
                 }
             }
-            if (md->nMassPerturbed && md->bPerturbed[n])
+            if (mdAtoms.nMassPerturbed && mdAtoms.bPerturbed[n])
             {
-                *dekindl_sum += 0.5 * (md->massB[n] - md->massA[n]) * iprod(vn, vn);
+                *dekindl_sum += 0.5 * (mdAtoms.massB[n] - mdAtoms.massA[n]) * iprod(vn, vn);
             }
 
             if constexpr (haveBoxDeformation)
             {
-                systemMomentumWork->mass += md->massT[n];
+                systemMomentumWork->mass += mdAtoms.massT[n];
             }
         }
     }
@@ -243,7 +241,7 @@ static void calc_ke_part_normal(const matrix                   deform,
         {
             if (bEkinAveVel)
             {
-                m_add(tcstat[g].ekinf, ekind->ekin_work[thread][g], tcstat[g].ekinf);
+                tcstat[g].ekinf += ekind->ekin_work[thread][g];
 
                 if constexpr (haveBoxDeformation)
                 {
@@ -254,7 +252,7 @@ static void calc_ke_part_normal(const matrix                   deform,
             }
             else
             {
-                m_add(tcstat[g].ekinh, ekind->ekin_work[thread][g], tcstat[g].ekinh);
+                tcstat[g].ekinh += ekind->ekin_work[thread][g];
 
                 if constexpr (haveBoxDeformation)
                 {
@@ -268,7 +266,7 @@ static void calc_ke_part_normal(const matrix                   deform,
         ekind->dekindl += *ekind->dekindl_work[thread];
     }
 
-    inc_nrnb(nrnb, eNR_EKIN, md->homenr);
+    inc_nrnb(nrnb, eNR_EKIN, mdAtoms.numHomeAtoms);
 
     if constexpr (!haveBoxDeformation)
     {
@@ -280,12 +278,12 @@ static void calc_ke_part_visc(const matrix                   box,
                               gmx::ArrayRef<const gmx::RVec> x,
                               gmx::ArrayRef<const gmx::RVec> v,
                               const t_grpopts*               opts,
-                              const t_mdatoms*               md,
+                              const gmx::MDAtoms&            mdAtoms,
                               gmx_ekindata_t*                ekind,
                               t_nrnb*                        nrnb,
                               gmx_bool                       bEkinAveVel)
 {
-    int                         start = 0, homenr = md->homenr;
+    int                         start = 0, numHomeAtoms = mdAtoms.numHomeAtoms;
     int                         g, d, n, m, gt = 0;
     rvec                        v_corrt;
     real                        hm;
@@ -297,27 +295,27 @@ static void calc_ke_part_visc(const matrix                   box,
 
     for (g = 0; g < opts->ngtc; g++)
     {
-        copy_mat(ekind->tcstat[g].ekinh, ekind->tcstat[g].ekinh_old);
-        clear_mat(ekind->tcstat[g].ekinh);
+        ekind->tcstat[g].ekinh_old = ekind->tcstat[g].ekinh;
+        ekind->tcstat[g].ekinh.clear();
     }
     ekind->dekindl_old = ekind->dekindl;
 
     fac     = 2 * M_PI / box[ZZ][ZZ];
     mvcos   = 0;
     dekindl = 0;
-    for (n = start; n < start + homenr; n++)
+    for (n = start; n < start + numHomeAtoms; n++)
     {
-        if (!md->cTC.empty())
+        if (!mdAtoms.cTC.empty())
         {
-            gt = md->cTC[n];
+            gt = mdAtoms.cTC[n];
         }
-        hm = 0.5 * md->massT[n];
+        hm = 0.5 * mdAtoms.massT[n];
 
         /* Note that the times of x and v differ by half a step */
         /* MRS -- would have to be changed for VV */
         cosz = std::cos(fac * x[n][ZZ]);
         /* Calculate the amplitude of the new velocity profile */
-        mvcos += 2 * cosz * md->massT[n] * v[n][XX];
+        mvcos += 2 * cosz * mdAtoms.massT[n] * v[n][XX];
 
         copy_rvec(v[n], v_corrt);
         /* Subtract the profile for the kinetic energy */
@@ -337,20 +335,20 @@ static void calc_ke_part_visc(const matrix                   box,
                 }
             }
         }
-        if (md->nPerturbed && md->bPerturbed[n])
+        if (mdAtoms.nPerturbed && mdAtoms.bPerturbed[n])
         {
             /* The minus sign here might be confusing.
              * The kinetic contribution from dH/dl doesn't come from
              * d m(l)/2 v^2 / dl, but rather from d p^2/2m(l) / dl,
              * where p are the momenta. The difference is only a minus sign.
              */
-            dekindl -= 0.5 * (md->massB[n] - md->massA[n]) * iprod(v_corrt, v_corrt);
+            dekindl -= 0.5 * (mdAtoms.massB[n] - mdAtoms.massA[n]) * iprod(v_corrt, v_corrt);
         }
     }
     ekind->dekindl = dekindl;
     cosacc->mvcos  = mvcos;
 
-    inc_nrnb(nrnb, eNR_EKIN, homenr);
+    inc_nrnb(nrnb, eNR_EKIN, numHomeAtoms);
 }
 
 static void calc_ke_part(const bool                     haveBoxDeformation,
@@ -359,7 +357,7 @@ static void calc_ke_part(const bool                     haveBoxDeformation,
                          gmx::ArrayRef<const gmx::RVec> v,
                          const matrix                   box,
                          const t_grpopts*               opts,
-                         const t_mdatoms*               md,
+                         const gmx::MDAtoms&            mdAtoms,
                          gmx_ekindata_t*                ekind,
                          t_nrnb*                        nrnb,
                          gmx_bool                       bEkinAveVel)
@@ -368,20 +366,20 @@ static void calc_ke_part(const bool                     haveBoxDeformation,
     {
         if (haveBoxDeformation)
         {
-            calc_ke_part_normal<true>(deform, x, v, box, opts, md, ekind, nrnb, bEkinAveVel);
+            calc_ke_part_normal<true>(deform, x, v, box, opts, mdAtoms, ekind, nrnb, bEkinAveVel);
         }
         else
         {
-            calc_ke_part_normal<false>(deform, x, v, box, opts, md, ekind, nrnb, bEkinAveVel);
+            calc_ke_part_normal<false>(deform, x, v, box, opts, mdAtoms, ekind, nrnb, bEkinAveVel);
         }
     }
     else
     {
-        calc_ke_part_visc(box, x, v, opts, md, ekind, nrnb, bEkinAveVel);
+        calc_ke_part_visc(box, x, v, opts, mdAtoms, ekind, nrnb, bEkinAveVel);
     }
 }
 
-static void correctEkin(matrix ekin, const SystemMomentum& systemMomentum)
+static void correctEkin(gmx::Matrix3x3* ekin, const SystemMomentum& systemMomentum)
 {
     GMX_ASSERT(systemMomentum.mass > 0, "Expect a postive system mass");
     const double halfInvMass = 0.5 / systemMomentum.mass;
@@ -390,7 +388,7 @@ static void correctEkin(matrix ekin, const SystemMomentum& systemMomentum)
     {
         for (int d2 = 0; d2 < DIM; d2++)
         {
-            ekin[d1][d2] -= systemMomentum.momentum[d1] * systemMomentum.momentum[d2] * halfInvMass;
+            (*ekin)[d1][d2] -= systemMomentum.momentum[d1] * systemMomentum.momentum[d2] * halfInvMass;
         }
     }
 }
@@ -403,7 +401,7 @@ static void correctEkinForBoxDeformation(gmx_ekindata_t* ekind,
     {
         for (auto& tcstat : ekind->tcstat)
         {
-            correctEkin(tcstat.ekinf, ekind->systemMomenta->momentumFullStep);
+            correctEkin(&tcstat.ekinf, ekind->systemMomenta->momentumFullStep);
         }
     }
     else
@@ -412,12 +410,12 @@ static void correctEkinForBoxDeformation(gmx_ekindata_t* ekind,
         {
             for (auto& tcstat : ekind->tcstat)
             {
-                correctEkin(tcstat.ekinh_old, ekind->systemMomenta->momentumOldHalfStep);
+                correctEkin(&tcstat.ekinh_old, ekind->systemMomenta->momentumOldHalfStep);
             }
         }
         for (auto& tcstat : ekind->tcstat)
         {
-            correctEkin(tcstat.ekinh, ekind->systemMomenta->momentumHalfStep);
+            correctEkin(&tcstat.ekinh, ekind->systemMomenta->momentumHalfStep);
         }
     }
 }
@@ -432,7 +430,7 @@ void compute_globals(gmx_global_stat*               gstat,
                      gmx::ArrayRef<const gmx::RVec> x,
                      gmx::ArrayRef<const gmx::RVec> v,
                      const matrix                   box,
-                     const t_mdatoms*               mdatoms,
+                     const gmx::MDAtoms&            mdAtoms,
                      t_nrnb*                        nrnb,
                      t_vcm*                         vcm,
                      gmx_wallcycle*                 wcycle,
@@ -443,7 +441,6 @@ void compute_globals(gmx_global_stat*               gstat,
                      tensor                         pres,
                      gmx::SimulationSignaller*      signalCoordinator,
                      const matrix                   lastbox,
-                     gmx_bool*                      bSumEkinhOld,
                      const int                      flags,
                      int64_t                        step,
                      gmx::ObservablesReducer*       observablesReducer)
@@ -483,7 +480,7 @@ void compute_globals(gmx_global_stat*               gstat,
         if (!bReadEkin)
         {
             wallcycle_start(wcycle, WallCycleCounter::ComputeEKin);
-            calc_ke_part(fr->haveBoxDeformation, ir->deform, x, v, box, &(ir->opts), mdatoms, ekind, nrnb, bEkinAveVel);
+            calc_ke_part(fr->haveBoxDeformation, ir->deform, x, v, box, &(ir->opts), mdAtoms, ekind, nrnb, bEkinAveVel);
             wallcycle_stop(wcycle, WallCycleCounter::ComputeEKin);
         }
     }
@@ -491,7 +488,7 @@ void compute_globals(gmx_global_stat*               gstat,
     /* Calculate center of mass velocity if necessary, also parallellized */
     if (bStopCM)
     {
-        calc_vcm_grp(*mdatoms, x, v, vcm);
+        calc_vcm_grp(mdAtoms, x, v, vcm);
     }
 
     if (computeEkin || bTemp || bStopCM || bPres || bEner || bConstrain
@@ -502,7 +499,7 @@ void compute_globals(gmx_global_stat*               gstat,
             /* We will not sum ekinh_old,
              * so signal that we still have to do it.
              */
-            *bSumEkinhOld = TRUE;
+            ekind->needToReduceEkinhOld = true;
         }
         else
         {
@@ -519,7 +516,7 @@ void compute_globals(gmx_global_stat*               gstat,
                             ekind,
                             bStopCM ? vcm : nullptr,
                             signalBuffer,
-                            *bSumEkinhOld && haveEkinhOld,
+                            ekind->needToReduceEkinhOld && haveEkinhOld,
                             flags,
                             step,
                             observablesReducer);
@@ -537,16 +534,16 @@ void compute_globals(gmx_global_stat*               gstat,
 
             if (fr->haveBoxDeformation && bTemp && !bReadEkin)
             {
-                correctEkinForBoxDeformation(ekind, bEkinAveVel, *bSumEkinhOld);
+                correctEkinForBoxDeformation(ekind, bEkinAveVel, ekind->needToReduceEkinhOld);
             }
-            *bSumEkinhOld = FALSE;
+            ekind->needToReduceEkinhOld = false;
         }
     }
 
     if (bEner)
     {
         /* Calculate the amplitude of the cosine velocity profile */
-        ekind->cosacc.vcos = ekind->cosacc.mvcos / mdatoms->tmass;
+        ekind->cosacc.vcos = ekind->cosacc.mvcos / mdAtoms.tmass;
     }
 
     if (bTemp)
@@ -567,12 +564,12 @@ void compute_globals(gmx_global_stat*               gstat,
              * In this way we obtain the current half step kinetic energy
              * instead of the average of the previous and the current.
              */
-            GMX_ASSERT(step % ir->nstcalcenergy != 0,
+            GMX_ASSERT(step % ir->outputControl.nstcalcenergy != 0,
                        "We should only ignore ekinh_old when terminating mdrun at a "
                        "non-nstcalcenergy step");
             for (auto& tcstat : ekind->tcstat)
             {
-                copy_mat(tcstat.ekinh, tcstat.ekinh_old);
+                tcstat.ekinh_old = tcstat.ekinh;
             }
         }
         enerd->term[InteractionFunction::Temperature] =
@@ -585,7 +582,6 @@ void compute_globals(gmx_global_stat*               gstat,
     }
 
     /* ########## Now pressure ############## */
-    // TODO: For the VV integrator bConstrain is needed in the conditional. This is confusing, so get rid of this.
     if (bPres || bConstrain)
     {
         m_add(force_vir, shake_vir, total_vir);
@@ -594,8 +590,11 @@ void compute_globals(gmx_global_stat*               gstat,
          * Use the box from last timestep since we already called update().
          */
 
+        const gmx::Matrix3x3 totalVirial = gmx::createMatrix3x3FromLegacyMatrix(total_vir);
+        gmx::Matrix3x3       pressure    = gmx::createMatrix3x3FromLegacyMatrix(pres);
         enerd->term[InteractionFunction::Pressure] =
-                calc_pres(fr->pbcType, ir->nwall, lastbox, ekind->ekin, total_vir, pres);
+                calc_pres(fr->pbcType, ir->nwall, lastbox, ekind->ekin, totalVirial, &pressure);
+        fillLegacyMatrix(pressure, pres);
     }
 }
 
@@ -633,9 +632,11 @@ int computeGlobalCommunicationPeriod(const t_inputrec* ir)
     // Maximum period for intra/inter simulation signalling
     const int c_maximumCommunicationPeriod = 200;
 
+    const gmx::OutputControl& outputControl = ir->outputControl;
+
     int nstglobalcomm;
 
-    if (ir->nstcalcenergy == 0 && ir->etc == TemperatureCoupling::No
+    if (outputControl.nstcalcenergy == 0 && ir->etc == TemperatureCoupling::No
         && ir->pressureCouplingOptions.epc != PressureCoupling::No)
     {
         nstglobalcomm = c_maximumCommunicationPeriod;
@@ -647,7 +648,7 @@ int computeGlobalCommunicationPeriod(const t_inputrec* ir)
          * We plan to remove nstglobalcomm. To achieve that, we need
          * to figure out the needs of these algorithms.
          */
-        nstglobalcomm = lcd3(ir->nstcalcenergy,
+        nstglobalcomm = lcd3(outputControl.nstcalcenergy,
                              ir->etc != TemperatureCoupling::No ? ir->nsttcouple : 0,
                              ir->pressureCouplingOptions.epc != PressureCoupling::No
                                      ? ir->pressureCouplingOptions.nstpcouple
@@ -760,7 +761,7 @@ void set_state_entries(t_state* state, const t_inputrec* ir, bool useModularSimu
     }
 
     init_gtc_state(state, state->ngtc, state->nnhpres, ir->opts.nhchainlength); /* allocate the space for nose-hoover chains */
-    init_ekinstate(&state->ekinstate, ir);
+    gmx::init_ekinstate(&state->ekinstate, ir);
 
     if (ir->bExpanded && !useModularSimulator)
     {

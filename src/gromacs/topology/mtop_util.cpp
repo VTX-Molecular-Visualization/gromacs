@@ -119,7 +119,7 @@ int gmx_mtop_ftype_count(const gmx_mtop_t& mtop, InteractionFunction ftype)
     return n;
 }
 
-int gmx_mtop_interaction_count(const gmx_mtop_t& mtop, const int unsigned if_flags)
+int gmx_mtop_interaction_count(const gmx_mtop_t& mtop, InteractionFunctionCategoryFlags if_categories)
 {
     int n = 0;
 
@@ -127,7 +127,7 @@ int gmx_mtop_interaction_count(const gmx_mtop_t& mtop, const int unsigned if_fla
     {
         for (const auto ftype : gmx::EnumerationWrapper<InteractionFunction>{})
         {
-            if ((interaction_function[ftype].flags & if_flags) == if_flags)
+            if ((interaction_function[ftype].categories & if_categories) == if_categories)
             {
                 n += il.nmol() * il.list()[ftype].size() / (1 + NRAL(ftype));
             }
@@ -492,7 +492,7 @@ static void copyFFParametersFromMtop(const gmx_mtop_t& mtop, t_idef* idef)
     idef->ilsort           = ilsortUNKNOWN;
 }
 
-/*! \brief Copy idef structure from mtop.
+/*! \brief Copy idef structure from \p mtop.
  *
  * Makes a deep copy of an idef data structure from a gmx_mtop_t.
  * Used to initialize legacy topology types.
@@ -768,11 +768,7 @@ std::vector<gmx::Range<int>> atomRangeOfEachResidue(const gmx_moltype_t& moltype
     return atomRanges;
 }
 
-/*! \brief Creates and returns a deprecated t_block struct with molecule indices
- *
- * \param[in] mtop  The global topology
- */
-static t_block gmx_mtop_molecules_t_block(const gmx_mtop_t& mtop)
+t_block gmx_mtop_molecules_t_block(const gmx_mtop_t& mtop)
 {
     t_block mols;
 
@@ -783,6 +779,13 @@ static t_block gmx_mtop_molecules_t_block(const gmx_mtop_t& mtop)
     fillMoleculeIndices(mtop, gmx::arrayRefFromArray(mols.index, mols.nr + 1));
 
     return mols;
+}
+
+InteractionDefinitions gmx_mtop_to_InteractionDefinitions(const gmx_mtop_t& mtop)
+{
+    InteractionDefinitions interactionDefinitions(mtop.ffparams);
+    copyIListsFromMtop(mtop, &interactionDefinitions, false);
+    return interactionDefinitions;
 }
 
 static void gen_t_topology(const gmx_mtop_t& mtop, bool bMergeConstr, t_topology* top)
@@ -895,11 +898,14 @@ bool haveFepPerturbedMassesInSettles(const gmx_mtop_t& mtop)
 {
     for (const gmx_moltype_t& molt : mtop.moltype)
     {
-        if (!molt.ilist[InteractionFunction::SETTLE].empty())
+        // Only the masses of atoms that are in settles matter here
+        const InteractionList& settles      = molt.ilist[InteractionFunction::SETTLE];
+        const int              settleStride = 1 + NRAL(InteractionFunction::SETTLE);
+        for (int i = 0; i < settles.size(); i += settleStride)
         {
-            for (int a = 0; a < molt.atoms.nr; a++)
+            for (int j = 1; j < settleStride; j++)
             {
-                const t_atom& atom = molt.atoms.atom[a];
+                const t_atom& atom = molt.atoms.atom[settles.iatoms[i + j]];
                 if (atom.m != atom.mB)
                 {
                     return true;

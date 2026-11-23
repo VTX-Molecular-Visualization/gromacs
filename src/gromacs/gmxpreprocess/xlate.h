@@ -40,26 +40,28 @@
 #include "gromacs/topology/residuetypes.h"
 
 struct t_atoms;
-struct PreprocessResidue;
 struct t_symtab;
 
 namespace gmx
 {
 template<typename>
 class ArrayRef;
-}
+class ExtendableForceField;
+struct PreprocessResidue;
 
 /* If bResname is true renames atoms based on residue names,
  * otherwise renames atoms based on rtp entry names.
  */
-void rename_atoms(const std::filesystem::path&           xlfile,
-                  const std::filesystem::path&           ffdir,
-                  t_atoms*                               atoms,
-                  t_symtab*                              symtab,
-                  gmx::ArrayRef<const PreprocessResidue> restp,
-                  bool                                   bResname,
-                  const ResidueTypeMap&                  rt,
-                  bool                                   bReorderNum,
-                  bool                                   bVerbose);
+void rename_atoms(const std::filesystem::path&      xlfile,
+                  const ExtendableForceField&       forceField,
+                  t_atoms*                          atoms,
+                  t_symtab*                         symtab,
+                  ArrayRef<const PreprocessResidue> restp,
+                  bool                              bResname,
+                  const ResidueTypeMap&             rt,
+                  bool                              bReorderNum,
+                  bool                              bVerbose);
+
+} // namespace gmx
 
 #endif

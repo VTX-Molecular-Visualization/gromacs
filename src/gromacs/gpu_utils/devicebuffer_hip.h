@@ -44,6 +44,8 @@
  *  \inlibraryapi
  */
 
+#include <type_traits>
+
 #include "gromacs/gpu_utils/device_context.h"
 #include "gromacs/gpu_utils/device_stream.h"
 #include "gromacs/gpu_utils/devicebuffer_datatype.h"
@@ -63,6 +65,10 @@
 template<typename ValueType>
 void allocateDeviceBuffer(DeviceBuffer<ValueType>* buffer, size_t numValues, const DeviceContext& /* deviceContext */)
 {
+    // This assertion relies on the fact that we don't ever use
+    // arrays of device pointers.
+    static_assert(!std::is_pointer_v<ValueType>, "ValueType of DeviceBuffer cannot be a pointer");
+
     GMX_ASSERT(buffer, "needs a buffer pointer");
     hipError_t stat = hipMalloc(buffer, numValues * sizeof(ValueType));
     gmx::checkDeviceError(stat, "Allocation of the device buffer failed.");
@@ -79,6 +85,10 @@ void allocateDeviceBuffer(DeviceBuffer<ValueType>* buffer, size_t numValues, con
 template<typename ValueType>
 void freeDeviceBuffer(DeviceBuffer<ValueType>* buffer)
 {
+    // This assertion relies on the fact that we don't ever use
+    // arrays of device pointers.
+    static_assert(!std::is_pointer_v<ValueType>, "ValueType of DeviceBuffer cannot be a pointer");
+
     GMX_ASSERT(buffer, "needs a buffer pointer");
     if (*buffer)
     {
@@ -95,7 +105,7 @@ void freeDeviceBuffer(DeviceBuffer<ValueType>* buffer)
  * \param[in]     hostBuffer           Pointer to the raw host-side memory, also typed \p ValueType
  * \param[in]     startingOffset       Offset (in values) at the device-side buffer to copy into.
  * \param[in]     numValues            Number of values to copy.
- * \param[in]     deviceStream         GPU stream to perform asynchronous copy in.
+ * \param[in]     deviceStream         GPU stream to perform the copy in.
  * \param[in]     transferKind         Copy type: synchronous or asynchronous.
  */
 template<typename ValueType>
@@ -107,6 +117,11 @@ void copyToDeviceBuffer(DeviceBuffer<ValueType>* buffer,
                         GpuApiCallBehavior       transferKind,
                         CommandEvent* /*timingEvent*/)
 {
+    // This assertion relies on the fact that we don't ever use
+    // arrays of device pointers.
+    static_assert(!std::is_pointer_v<ValueType>,
+                  "ValueType cannot be a pointer, should be the type of the data transfer");
+
     if (numValues == 0)
     {
         return;
@@ -128,11 +143,13 @@ void copyToDeviceBuffer(DeviceBuffer<ValueType>* buffer,
             break;
 
         case GpuApiCallBehavior::Sync:
-            stat = hipMemcpy(*reinterpret_cast<ValueType**>(buffer) + startingOffset,
-                             hostBuffer,
-                             bytes,
-                             hipMemcpyHostToDevice);
+            stat = hipMemcpyAsync(*reinterpret_cast<ValueType**>(buffer) + startingOffset,
+                                  hostBuffer,
+                                  bytes,
+                                  hipMemcpyHostToDevice,
+                                  deviceStream.stream());
             gmx::checkDeviceError(stat, "Synchronous H2D copy failed.");
+            deviceStream.synchronize();
             break;
 
         default: throw;
@@ -147,7 +164,7 @@ void copyToDeviceBuffer(DeviceBuffer<ValueType>* buffer,
  * \param[in]     buffer               Pointer to the device-side buffer
  * \param[in]     startingOffset       Offset (in values) at the device-side buffer to copy from.
  * \param[in]     numValues            Number of values to copy.
- * \param[in]     deviceStream         GPU stream to perform asynchronous copy in.
+ * \param[in]     deviceStream         GPU stream to perform the copy in.
  * \param[in]     transferKind         Copy type: synchronous or asynchronous.
  */
 template<typename ValueType>
@@ -159,6 +176,11 @@ void copyFromDeviceBuffer(ValueType*               hostBuffer,
                           GpuApiCallBehavior       transferKind,
                           CommandEvent* /*timingEvent*/)
 {
+    // This assertion relies on the fact that we don't ever use
+    // arrays of device pointers.
+    static_assert(!std::is_pointer_v<ValueType>,
+                  "ValueType cannot be a pointer, should be the type of the data transfer");
+
     if (numValues == 0)
     {
         return;
@@ -182,11 +204,13 @@ void copyFromDeviceBuffer(ValueType*               hostBuffer,
             break;
 
         case GpuApiCallBehavior::Sync:
-            stat = hipMemcpy(hostBuffer,
-                             *reinterpret_cast<ValueType**>(buffer) + startingOffset,
-                             bytes,
-                             hipMemcpyDeviceToHost);
+            stat = hipMemcpyAsync(hostBuffer,
+                                  *reinterpret_cast<ValueType**>(buffer) + startingOffset,
+                                  bytes,
+                                  hipMemcpyDeviceToHost,
+                                  deviceStream.stream());
             gmx::checkDeviceError(stat, "Synchronous D2H copy failed.");
+            deviceStream.synchronize();
             break;
 
         default: throw;
@@ -197,20 +221,31 @@ void copyFromDeviceBuffer(ValueType*               hostBuffer,
  * Performs the device-to-device data copy, synchronous or asynchronously on request.
  *
  * \tparam        ValueType                Raw value type of the \p buffer.
- * \param[in,out] destinationDeviceBuffer  Device-side buffer to copy to
- * \param[in]     sourceDeviceBuffer       Device-side buffer to copy from
+ *
+ * \param[inout]  destinationDeviceBuffer  Destination device-side buffer
+ * \param[in]     sourceDeviceBuffer       Source device-side-buffer
+ * \param[in]     startingOffset           Offset (in values) at the source buffer (only) to
+ *                                         copy from.
  * \param[in]     numValues                Number of values to copy.
- * \param[in]     deviceStream             GPU stream to perform asynchronous copy in.
+ * \param[in]     deviceStream             GPU stream to perform the copy in.
  * \param[in]     transferKind             Copy type: synchronous or asynchronous.
+ * \param[out]    timingEvent              A pointer to the H2D copy timing event to be
+ *                                         filled in. Ignored in HIP.
  */
 template<typename ValueType>
-void copyBetweenDeviceBuffers(DeviceBuffer<ValueType>* destinationDeviceBuffer,
-                              DeviceBuffer<ValueType>* sourceDeviceBuffer,
-                              size_t                   numValues,
+void copyBetweenDeviceBuffers(ValueType*               destinationDeviceBuffer,
+                              const ValueType*         sourceDeviceBuffer,
+                              const size_t             startingOffset,
+                              const size_t             numValues,
                               const DeviceStream&      deviceStream,
                               GpuApiCallBehavior       transferKind,
-                              CommandEvent* /*timingEvent*/)
+                              CommandEvent* gmx_unused timingEvent)
 {
+    // This assertion relies on the fact that we don't ever use
+    // arrays of device pointers.
+    static_assert(!std::is_pointer_v<ValueType>,
+                  "ValueType cannot be a pointer, should be the type of the data transfer");
+
     if (numValues == 0)
     {
         return;
@@ -223,8 +258,8 @@ void copyBetweenDeviceBuffers(DeviceBuffer<ValueType>* destinationDeviceBuffer,
     switch (transferKind)
     {
         case GpuApiCallBehavior::Async:
-            stat = hipMemcpyAsync(*destinationDeviceBuffer,
-                                  *sourceDeviceBuffer,
+            stat = hipMemcpyAsync(destinationDeviceBuffer,
+                                  sourceDeviceBuffer + startingOffset,
                                   bytes,
                                   hipMemcpyDeviceToDevice,
                                   deviceStream.stream());
@@ -232,8 +267,13 @@ void copyBetweenDeviceBuffers(DeviceBuffer<ValueType>* destinationDeviceBuffer,
             break;
 
         case GpuApiCallBehavior::Sync:
-            stat = hipMemcpy(*destinationDeviceBuffer, *sourceDeviceBuffer, bytes, hipMemcpyDeviceToDevice);
+            stat = hipMemcpyAsync(destinationDeviceBuffer,
+                                  sourceDeviceBuffer + startingOffset,
+                                  bytes,
+                                  hipMemcpyDeviceToDevice,
+                                  deviceStream.stream());
             gmx::checkDeviceError(stat, "Synchronous D2D copy failed.");
+            deviceStream.synchronize();
             break;
 
         default: throw;
@@ -255,6 +295,10 @@ void clearDeviceBufferAsync(DeviceBuffer<ValueType>* buffer,
                             size_t                   numValues,
                             const DeviceStream&      deviceStream)
 {
+    // This assertion relies on the fact that we don't ever use
+    // arrays of device pointers.
+    static_assert(!std::is_pointer_v<ValueType>, "ValueType of DeviceBuffer cannot be a pointer");
+
     if (numValues == 0)
     {
         return;
@@ -283,6 +327,10 @@ void clearDeviceBufferAsync(DeviceBuffer<ValueType>* buffer,
 template<typename T>
 gmx_unused static bool checkDeviceBuffer(DeviceBuffer<T> buffer, gmx_unused int requiredSize)
 {
+    // This assertion relies on the fact that we don't ever use
+    // arrays of device pointers.
+    static_assert(!std::is_pointer_v<T>, "ValueType of DeviceBuffer cannot be a pointer");
+
     return buffer != nullptr;
 }
 
@@ -336,7 +384,7 @@ void destroyParamLookupTable(DeviceBuffer<ValueType>* deviceBuffer, const Device
 }
 
 template<typename ValueType>
-ValueType* asMpiPointer(DeviceBuffer<ValueType>& buffer)
+ValueType* asRawDevicePointer(DeviceBuffer<ValueType>& buffer)
 {
     return buffer;
 }

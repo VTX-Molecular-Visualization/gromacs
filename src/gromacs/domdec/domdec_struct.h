@@ -64,7 +64,6 @@ struct gmx_domdec_comm_t;
 struct gmx_domdec_constraints_t;
 struct gmx_domdec_specat_comm_t;
 class gmx_ga2la_t;
-struct gmx_pme_comm_n_box_t;
 struct t_inputrec;
 class gmx_reverse_top_t;
 struct gmx_mtop_t;
@@ -113,7 +112,7 @@ struct UnitCellInfo
 };
 
 struct gmx_domdec_t
-{ //NOLINT(clang-analyzer-optin.performance.Padding)
+{ // NOLINT(clang-analyzer-optin.performance.Padding)
     //! Constructor, only partial for now
     gmx_domdec_t(const gmx::MpiComm& mpiComm, const t_inputrec& ir, gmx::ArrayRef<const int> ddDims);
     ~gmx_domdec_t();
@@ -142,12 +141,7 @@ struct gmx_domdec_t
     /* The cell index of the main rank */
     gmx::IVec main_ci = { 0, 0, 0 };
     /* Communication with the PME only nodes */
-    int                   numPmeOnlyRanks      = 0;
-    int                   pme_nodeid           = 0;
-    gmx_bool              pme_receive_vir_ener = false;
-    gmx_pme_comm_n_box_t* cnb                  = nullptr;
-    int                   nreq_pme             = 0;
-    MPI_Request           req_pme[8];
+    int numPmeOnlyRanks = 0;
 
     /* Properties of the unit cell */
     UnitCellInfo unitCellInfo;
@@ -208,9 +202,6 @@ struct gmx_domdec_t
     //! The handler for checking whether the local topology is missing interactions
     std::unique_ptr<gmx::LocalTopologyChecker> localTopologyChecker;
 
-    /* gmx_pme_recv_f buffer */
-    gmx::HostVector<gmx::RVec> pmeForceReceiveBuffer;
-
     //! GPU halo exchange aspects specific to NVSHMEM.
     std::unique_ptr<gmx::GpuHaloExchangeNvshmemHelper> gpuHaloExchangeNvshmemHelper;
 
@@ -219,6 +210,9 @@ struct gmx_domdec_t
 
     //! Enables NVSHMEM-based GPU halo exchange
     bool useGpuHaloExchangeNvshmem = false;
+
+    //! Host allocation policy for GPU halo exchange with NVSHMEM
+    gmx::HostAllocationPolicy hostAllocationPolicy;
 };
 
 /*! \brief Returns whether this rank computes particle-particle interactions

@@ -51,7 +51,6 @@
 #include "gromacs/gmxpreprocess/grompp_impl.h"
 #include "gromacs/gmxpreprocess/notset.h"
 #include "gromacs/gmxpreprocess/toputil.h"
-#include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
 #include "gromacs/math/utilities.h"
 #include "gromacs/mdtypes/md_enums.h"
@@ -64,6 +63,7 @@
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/logger.h"
 #include "gromacs/utility/real.h"
@@ -75,6 +75,9 @@
 #include "hackblock.h"
 #include "resall.h"
 
+namespace gmx
+{
+
 /*! \internal \brief
  * Data type to store information about bonded interactions for virtual sites.
  */
@@ -82,7 +85,7 @@ class VsiteBondedInteraction
 {
 public:
     //! Constructor initializes datastructure.
-    VsiteBondedInteraction(gmx::ArrayRef<const int> atomIndex, real parameterValue) :
+    VsiteBondedInteraction(ArrayRef<const int> atomIndex, real parameterValue) :
         parameterValue_(parameterValue)
     {
         GMX_RELEASE_ASSERT(atomIndex.size() <= atomIndex_.size(),
@@ -148,7 +151,7 @@ static int vsite_bond_nrcheck(InteractionFunction ftype)
 {
     int nrcheck;
 
-    if ((interaction_function[ftype].flags & (IF_BTYPE | IF_CONSTRAINT | IF_ATYPE))
+    if ((interaction_function[ftype].categories & (sc_ifcBType | sc_ifcConstraint | sc_ifcAngle))
         || (static_cast<InteractionFunction>(ftype) == InteractionFunction::ImproperDihedrals))
     {
         nrcheck = NRAL(ftype);
@@ -180,9 +183,9 @@ struct AllVsiteBondedInteractions
     std::vector<VsiteBondedInteraction> dihedrals;
 };
 
-static AllVsiteBondedInteractions createVsiteBondedInformation(int                      nrat,
-                                                               gmx::ArrayRef<const int> atoms,
-                                                               gmx::ArrayRef<const Atom2VsiteBond> at2vb)
+static AllVsiteBondedInteractions createVsiteBondedInformation(int                            nrat,
+                                                               ArrayRef<const int>            atoms,
+                                                               ArrayRef<const Atom2VsiteBond> at2vb)
 {
     AllVsiteBondedInteractions allVsiteBondeds;
     for (int k = 0; k < nrat; k++)
@@ -205,20 +208,21 @@ static AllVsiteBondedInteractions createVsiteBondedInformation(int              
 }
 
 static std::vector<Atom2VsiteBond>
-make_at2vsitebond(int natoms, gmx::EnumerationArray<InteractionFunction, InteractionsOfType>& plist)
+make_at2vsitebond(int natoms, EnumerationArray<InteractionFunction, InteractionsOfType>& plist)
 {
     bool* bVSI;
 
     std::vector<Atom2VsiteBond> at2vb(natoms);
 
     snew(bVSI, natoms);
-    for (const auto ftype : gmx::EnumerationWrapper<InteractionFunction>{})
+    for (const auto ftype : EnumerationWrapper<InteractionFunction>{})
     {
-        if ((interaction_function[ftype].flags & IF_VSITE) && ftype != InteractionFunction::VirtualSiteN)
+        if ((interaction_function[ftype].categories & sc_ifcVirtualSite)
+            && ftype != InteractionFunction::VirtualSiteN)
         {
             for (int i = 0; (i < gmx::ssize(plist[ftype])); i++)
             {
-                gmx::ArrayRef<const int> atoms = plist[ftype].interactionTypes[i].atoms();
+                ArrayRef<const int> atoms = plist[ftype].interactionTypes[i].atoms();
                 for (int j = 0; j < NRAL(ftype); j++)
                 {
                     bVSI[atoms[j]] = TRUE;
@@ -227,14 +231,14 @@ make_at2vsitebond(int natoms, gmx::EnumerationArray<InteractionFunction, Interac
         }
     }
 
-    for (const auto ftype : gmx::EnumerationWrapper<InteractionFunction>{})
+    for (const auto ftype : EnumerationWrapper<InteractionFunction>{})
     {
         int nrcheck = vsite_bond_nrcheck(ftype);
         if (nrcheck > 0)
         {
             for (int i = 0; (i < gmx::ssize(plist[ftype])); i++)
             {
-                gmx::ArrayRef<const int> aa = plist[ftype].interactionTypes[i].atoms();
+                ArrayRef<const int> aa = plist[ftype].interactionTypes[i].atoms();
                 for (int j = 0; j < nrcheck; j++)
                 {
                     if (bVSI[aa[j]])
@@ -252,18 +256,19 @@ make_at2vsitebond(int natoms, gmx::EnumerationArray<InteractionFunction, Interac
 }
 
 static std::vector<Atom2VsiteConnection>
-make_at2vsitecon(int natoms, gmx::EnumerationArray<InteractionFunction, InteractionsOfType>& plist)
+make_at2vsitecon(int natoms, EnumerationArray<InteractionFunction, InteractionsOfType>& plist)
 {
     std::vector<bool>                 bVSI(natoms);
     std::vector<Atom2VsiteConnection> at2vc(natoms);
 
-    for (const auto ftype : gmx::EnumerationWrapper<InteractionFunction>{})
+    for (const auto ftype : EnumerationWrapper<InteractionFunction>{})
     {
-        if ((interaction_function[ftype].flags & IF_VSITE) && ftype != InteractionFunction::VirtualSiteN)
+        if ((interaction_function[ftype].categories & sc_ifcVirtualSite)
+            && ftype != InteractionFunction::VirtualSiteN)
         {
             for (int i = 0; (i < gmx::ssize(plist[ftype])); i++)
             {
-                gmx::ArrayRef<const int> atoms = plist[ftype].interactionTypes[i].atoms();
+                ArrayRef<const int> atoms = plist[ftype].interactionTypes[i].atoms();
                 for (int j = 0; j < NRAL(ftype); j++)
                 {
                     bVSI[atoms[j]] = TRUE;
@@ -272,9 +277,9 @@ make_at2vsitecon(int natoms, gmx::EnumerationArray<InteractionFunction, Interact
         }
     }
 
-    for (const auto ftype : gmx::EnumerationWrapper<InteractionFunction>{})
+    for (const auto ftype : EnumerationWrapper<InteractionFunction>{})
     {
-        if (interaction_function[ftype].flags & IF_CONSTRAINT)
+        if (interaction_function[ftype].categories & sc_ifcConstraint)
         {
             for (int i = 0; (i < gmx::ssize(plist[ftype])); i++)
             {
@@ -294,10 +299,10 @@ make_at2vsitecon(int natoms, gmx::EnumerationArray<InteractionFunction, Interact
 }
 
 /* for debug */
-static void print_bad(FILE*                                       fp,
-                      gmx::ArrayRef<const VsiteBondedInteraction> bonds,
-                      gmx::ArrayRef<const VsiteBondedInteraction> angles,
-                      gmx::ArrayRef<const VsiteBondedInteraction> idihs)
+static void print_bad(FILE*                                  fp,
+                      ArrayRef<const VsiteBondedInteraction> bonds,
+                      ArrayRef<const VsiteBondedInteraction> angles,
+                      ArrayRef<const VsiteBondedInteraction> idihs)
 {
     if (!bonds.empty())
     {
@@ -350,7 +355,7 @@ static void printInteractionOfType(FILE* fp, InteractionFunction ftype, int i, c
         prev_i     = i;
     }
     fprintf(fp, "(%d) plist[%s].param[%d]", pass, interaction_function[ftype].name, i);
-    gmx::ArrayRef<const real> forceParam = type.forceParam();
+    ArrayRef<const real> forceParam = type.forceParam();
     for (int j = 0; j < NRFP(ftype); j++)
     {
         fprintf(fp, ".c[%d]=%g ", j, forceParam[j]);
@@ -359,7 +364,7 @@ static void printInteractionOfType(FILE* fp, InteractionFunction ftype, int i, c
     pass++;
 }
 
-static real get_bond_length(gmx::ArrayRef<const VsiteBondedInteraction> bonds, t_iatom ai, t_iatom aj)
+static real get_bond_length(ArrayRef<const VsiteBondedInteraction> bonds, t_iatom ai, t_iatom aj)
 {
     real bondlen;
 
@@ -376,7 +381,7 @@ static real get_bond_length(gmx::ArrayRef<const VsiteBondedInteraction> bonds, t
     return bondlen;
 }
 
-static real get_angle(gmx::ArrayRef<const VsiteBondedInteraction> angles, t_iatom ai, t_iatom aj, t_iatom ak)
+static real get_angle(ArrayRef<const VsiteBondedInteraction> angles, t_iatom ai, t_iatom aj, t_iatom ak)
 {
     real angle;
 
@@ -387,7 +392,7 @@ static real get_angle(gmx::ArrayRef<const VsiteBondedInteraction> angles, t_iato
         if (((ai == ang.ai()) && (aj == ang.aj()) && (ak == ang.ak()))
             || ((ai == ang.ak()) && (aj == ang.aj()) && (ak == ang.ai())))
         {
-            angle = gmx::c_deg2Rad * ang.parameterValue();
+            angle = c_deg2Rad * ang.parameterValue();
             break;
         }
     }
@@ -411,21 +416,20 @@ static bool cmp_atomtype_name_AB(t_atom*                 atom,
      */
     if (atypes->atomNameFromAtomType(atom->type)->find("decoupled") != std::string::npos)
     {
-        return gmx::equalCaseInsensitive(
+        return equalCaseInsensitive(
                 atypes->atomNameFromAtomType(atom->typeB).value(), compare, compareLength);
     }
     else
     {
-        return gmx::equalCaseInsensitive(
-                atypes->atomNameFromAtomType(atom->type).value(), compare, compareLength);
+        return equalCaseInsensitive(atypes->atomNameFromAtomType(atom->type).value(), compare, compareLength);
     }
 }
 
-static bool calc_vsite3_param(PreprocessingAtomTypes*                     atypes,
-                              InteractionOfType*                          vsite,
-                              t_atoms*                                    at,
-                              gmx::ArrayRef<const VsiteBondedInteraction> bonds,
-                              gmx::ArrayRef<const VsiteBondedInteraction> angles)
+static bool calc_vsite3_param(PreprocessingAtomTypes*                atypes,
+                              InteractionOfType*                     vsite,
+                              t_atoms*                               at,
+                              ArrayRef<const VsiteBondedInteraction> bonds,
+                              ArrayRef<const VsiteBondedInteraction> angles)
 {
     /* i = virtual site          |    ,k
      * j = 1st bonded heavy atom | i-j
@@ -465,7 +469,7 @@ static bool calc_vsite3_param(PreprocessingAtomTypes*                     atypes
 
         /* calculate common things */
         rM = 0.5 * bMM;
-        dM = std::sqrt(gmx::square(bCM) - gmx::square(rM));
+        dM = std::sqrt(square(bCM) - square(rM));
 
         /* are we dealing with the X atom? */
         if (vsite->ai() == aN)
@@ -501,9 +505,9 @@ static bool calc_vsite3_param(PreprocessingAtomTypes*                     atypes
     return bError;
 }
 
-static bool calc_vsite3fd_param(InteractionOfType*                          vsite,
-                                gmx::ArrayRef<const VsiteBondedInteraction> bonds,
-                                gmx::ArrayRef<const VsiteBondedInteraction> angles)
+static bool calc_vsite3fd_param(InteractionOfType*                     vsite,
+                                ArrayRef<const VsiteBondedInteraction> bonds,
+                                ArrayRef<const VsiteBondedInteraction> angles)
 {
     /* i = virtual site          |    ,k
      * j = 1st bonded heavy atom | i-j
@@ -528,9 +532,9 @@ static bool calc_vsite3fd_param(InteractionOfType*                          vsit
     return bError;
 }
 
-static bool calc_vsite3fad_param(InteractionOfType*                          vsite,
-                                 gmx::ArrayRef<const VsiteBondedInteraction> bonds,
-                                 gmx::ArrayRef<const VsiteBondedInteraction> angles)
+static bool calc_vsite3fad_param(InteractionOfType*                     vsite,
+                                 ArrayRef<const VsiteBondedInteraction> bonds,
+                                 ArrayRef<const VsiteBondedInteraction> angles)
 {
     /* i = virtual site          |
      * j = 1st bonded heavy atom | i-j
@@ -548,7 +552,7 @@ static bool calc_vsite3fad_param(InteractionOfType*                          vsi
     bError = (bij == NOTSET) || (aijk == NOTSET);
 
     vsite->setForceParameter(1, bij);
-    vsite->setForceParameter(0, gmx::c_rad2Deg * aijk);
+    vsite->setForceParameter(0, c_rad2Deg * aijk);
 
     if (bSwapParity)
     {
@@ -558,11 +562,11 @@ static bool calc_vsite3fad_param(InteractionOfType*                          vsi
     return bError;
 }
 
-static bool calc_vsite3out_param(PreprocessingAtomTypes*                     atypes,
-                                 InteractionOfType*                          vsite,
-                                 t_atoms*                                    at,
-                                 gmx::ArrayRef<const VsiteBondedInteraction> bonds,
-                                 gmx::ArrayRef<const VsiteBondedInteraction> angles)
+static bool calc_vsite3out_param(PreprocessingAtomTypes*                atypes,
+                                 InteractionOfType*                     vsite,
+                                 t_atoms*                               at,
+                                 ArrayRef<const VsiteBondedInteraction> bonds,
+                                 ArrayRef<const VsiteBondedInteraction> angles)
 {
     /* i = virtual site          |    ,k
      * j = 1st bonded heavy atom | i-j
@@ -611,10 +615,10 @@ static bool calc_vsite3out_param(PreprocessingAtomTypes*                     aty
         dH = bCN - bNH * std::cos(aCNH);
         rH = bNH * std::sin(aCNH);
         /* we assume the H's are symmetrically distributed */
-        rHx = rH * std::cos(gmx::c_deg2Rad * 30);
-        rHy = rH * std::sin(gmx::c_deg2Rad * 30);
+        rHx = rH * std::cos(c_deg2Rad * 30);
+        rHy = rH * std::sin(c_deg2Rad * 30);
         rM  = 0.5 * bMM;
-        dM  = std::sqrt(gmx::square(bCM) - gmx::square(rM));
+        dM  = std::sqrt(square(bCM) - square(rM));
         a   = 0.5 * ((dH / dM) - (rHy / rM));
         b   = 0.5 * ((dH / dM) + (rHy / rM));
         c   = rHx / (2 * dM * rM);
@@ -631,11 +635,11 @@ static bool calc_vsite3out_param(PreprocessingAtomTypes*                     aty
 
         pijk = std::cos(aijk) * bij;
         pijl = std::cos(aijl) * bij;
-        a = (pijk + (pijk * std::cos(akjl) - pijl) * std::cos(akjl) / gmx::square(std::sin(akjl))) / bjk;
-        b = (pijl + (pijl * std::cos(akjl) - pijk) * std::cos(akjl) / gmx::square(std::sin(akjl))) / bjl;
-        c = -std::sqrt(gmx::square(bij)
-                       - (gmx::square(pijk) - 2 * pijk * pijl * std::cos(akjl) + gmx::square(pijl))
-                                 / gmx::square(std::sin(akjl)))
+        a = (pijk + (pijk * std::cos(akjl) - pijl) * std::cos(akjl) / square(std::sin(akjl))) / bjk;
+        b = (pijl + (pijl * std::cos(akjl) - pijk) * std::cos(akjl) / square(std::sin(akjl))) / bjl;
+        c = -std::sqrt(square(bij)
+                       - (square(pijk) - 2 * pijk * pijl * std::cos(akjl) + square(pijl))
+                                 / square(std::sin(akjl)))
             / (bjk * bjl * std::sin(akjl));
     }
 
@@ -652,10 +656,10 @@ static bool calc_vsite3out_param(PreprocessingAtomTypes*                     aty
     return bError;
 }
 
-static bool calc_vsite4fd_param(InteractionOfType*                          vsite,
-                                gmx::ArrayRef<const VsiteBondedInteraction> bonds,
-                                gmx::ArrayRef<const VsiteBondedInteraction> angles,
-                                const gmx::MDLogger&                        logger)
+static bool calc_vsite4fd_param(InteractionOfType*                     vsite,
+                                ArrayRef<const VsiteBondedInteraction> bonds,
+                                ArrayRef<const VsiteBondedInteraction> angles,
+                                const MDLogger&                        logger)
 {
     /* i = virtual site          |    ,k
      * j = 1st bonded heavy atom | i-j-m
@@ -692,9 +696,9 @@ static bool calc_vsite4fd_param(InteractionOfType*                          vsit
                     .appendTextFormatted(
                             "virtual site %d: angle ijk = %f, angle ijl = %f, angle ijm = %f",
                             vsite->ai() + 1,
-                            gmx::c_rad2Deg * aijk,
-                            gmx::c_rad2Deg * aijl,
-                            gmx::c_rad2Deg * aijm);
+                            c_rad2Deg * aijk,
+                            c_rad2Deg * aijl,
+                            c_rad2Deg * aijm);
             gmx_fatal(FARGS,
                       "invalid construction in calc_vsite4fd for atom %d: "
                       "cosakl=%f, cosakm=%f\n",
@@ -702,8 +706,8 @@ static bool calc_vsite4fd_param(InteractionOfType*                          vsit
                       cosakl,
                       cosakm);
         }
-        sinakl = std::sqrt(1 - gmx::square(cosakl));
-        sinakm = std::sqrt(1 - gmx::square(cosakm));
+        sinakl = std::sqrt(1 - square(cosakl));
+        sinakm = std::sqrt(1 - square(cosakm));
 
         /* note: there is a '+' because of the way the sines are calculated */
         cl = -pk / (pl * cosakl - pk + pl * sinakl * (pm * cosakm - pk) / (pm * sinakm));
@@ -718,10 +722,10 @@ static bool calc_vsite4fd_param(InteractionOfType*                          vsit
 }
 
 
-static bool calc_vsite4fdn_param(InteractionOfType*                          vsite,
-                                 gmx::ArrayRef<const VsiteBondedInteraction> bonds,
-                                 gmx::ArrayRef<const VsiteBondedInteraction> angles,
-                                 const gmx::MDLogger&                        logger)
+static bool calc_vsite4fdn_param(InteractionOfType*                     vsite,
+                                 ArrayRef<const VsiteBondedInteraction> bonds,
+                                 ArrayRef<const VsiteBondedInteraction> angles,
+                                 const MDLogger&                        logger)
 {
     /* i = virtual site          |    ,k
      * j = 1st bonded heavy atom | i-j-m
@@ -762,9 +766,9 @@ static bool calc_vsite4fdn_param(InteractionOfType*                          vsi
                     .appendTextFormatted(
                             "virtual site %d: angle ijk = %f, angle ijl = %f, angle ijm = %f",
                             vsite->ai() + 1,
-                            gmx::c_rad2Deg * aijk,
-                            gmx::c_rad2Deg * aijl,
-                            gmx::c_rad2Deg * aijm);
+                            c_rad2Deg * aijk,
+                            c_rad2Deg * aijl,
+                            c_rad2Deg * aijm);
             gmx_fatal(FARGS,
                       "invalid construction in calc_vsite4fdn for atom %d: "
                       "pl=%f, pm=%f\n",
@@ -785,11 +789,11 @@ static bool calc_vsite4fdn_param(InteractionOfType*                          vsi
 }
 
 
-int set_vsites(bool                                                            bVerbose,
-               t_atoms*                                                        atoms,
-               PreprocessingAtomTypes*                                         atypes,
-               gmx::EnumerationArray<InteractionFunction, InteractionsOfType>& plist,
-               const gmx::MDLogger&                                            logger)
+int set_vsites(bool                                                       bVerbose,
+               t_atoms*                                                   atoms,
+               PreprocessingAtomTypes*                                    atypes,
+               EnumerationArray<InteractionFunction, InteractionsOfType>& plist,
+               const MDLogger&                                            logger)
 {
     int  nvsite;
     bool bFirst, bERROR;
@@ -800,9 +804,9 @@ int set_vsites(bool                                                            b
     /* Make a reverse list to avoid ninteractions^2 operations */
     std::vector<Atom2VsiteBond> at2vb = make_at2vsitebond(atoms->nr, plist);
 
-    for (const auto ftype : gmx::EnumerationWrapper<InteractionFunction>{})
+    for (const auto ftype : EnumerationWrapper<InteractionFunction>{})
     {
-        if (interaction_function[ftype].flags & IF_VSITE)
+        if (interaction_function[ftype].categories & sc_ifcVirtualSite)
         {
             nvsite += plist[ftype].size();
 
@@ -816,8 +820,8 @@ int set_vsites(bool                                                            b
             for (auto& param : plist[ftype].interactionTypes)
             {
                 /* check if all parameters are set */
-                bool                      bSet       = true;
-                gmx::ArrayRef<const real> forceParam = param.forceParam();
+                bool                 bSet       = true;
+                ArrayRef<const real> forceParam = param.forceParam();
                 for (int j = 0; (j < NRFP(ftype)) && bSet; j++)
                 {
                     bSet = forceParam[j] != NOTSET;
@@ -825,7 +829,7 @@ int set_vsites(bool                                                            b
 
                 if (debug)
                 {
-                    fprintf(debug, "bSet=%s ", gmx::boolToString(bSet));
+                    fprintf(debug, "bSet=%s ", boolToString(bSet));
                     printInteractionOfType(debug, ftype, i, plist[ftype].interactionTypes[i]);
                 }
                 if (!bSet)
@@ -862,11 +866,11 @@ int set_vsites(bool                                                            b
                             bERROR = calc_vsite3_param(
                                     atypes, &param, atoms, allVsiteBondeds.bonds, allVsiteBondeds.angles);
                             break;
-                        case InteractionFunction::VirtualSite3FlexibleDistance:
+                        case InteractionFunction::VirtualSite3FixedDistance:
                             bERROR = calc_vsite3fd_param(
                                     &param, allVsiteBondeds.bonds, allVsiteBondeds.angles);
                             break;
-                        case InteractionFunction::VirtualSite3FlexibleAngleDistance:
+                        case InteractionFunction::VirtualSite3FixedAngleDistance:
                             bERROR = calc_vsite3fad_param(
                                     &param, allVsiteBondeds.bonds, allVsiteBondeds.angles);
                             break;
@@ -874,11 +878,11 @@ int set_vsites(bool                                                            b
                             bERROR = calc_vsite3out_param(
                                     atypes, &param, atoms, allVsiteBondeds.bonds, allVsiteBondeds.angles);
                             break;
-                        case InteractionFunction::VirtualSite4FlexibleDistance:
+                        case InteractionFunction::VirtualSite4FixedDistance:
                             bERROR = calc_vsite4fd_param(
                                     &param, allVsiteBondeds.bonds, allVsiteBondeds.angles, logger);
                             break;
-                        case InteractionFunction::VirtualSite4FlexibleDistanceNormalization:
+                        case InteractionFunction::VirtualSite4FixedDistanceNormalization:
                             bERROR = calc_vsite4fdn_param(
                                     &param, allVsiteBondeds.bonds, allVsiteBondeds.angles, logger);
                             break;
@@ -901,12 +905,12 @@ int set_vsites(bool                                                            b
                 } /* if bSet */
                 i++;
             }
-        } /* if IF_VSITE */
+        } /* if sc_ifcVirtualSite */
     }
     return nvsite;
 }
 
-void set_vsites_ptype(bool bVerbose, gmx_moltype_t* molt, const gmx::MDLogger& logger)
+void set_vsites_ptype(bool bVerbose, gmx_moltype_t* molt, const MDLogger& logger)
 {
     int i;
 
@@ -916,14 +920,14 @@ void set_vsites_ptype(bool bVerbose, gmx_moltype_t* molt, const gmx::MDLogger& l
                 .asParagraph()
                 .appendTextFormatted("Setting particle type to V for virtual sites");
     }
-    for (const auto ftype : gmx::EnumerationWrapper<InteractionFunction>{})
+    for (const auto ftype : EnumerationWrapper<InteractionFunction>{})
     {
         InteractionList* il = &molt->ilist[ftype];
-        if (interaction_function[ftype].flags & IF_VSITE)
+        if (interaction_function[ftype].categories & sc_ifcVirtualSite)
         {
-            const int                nra = interaction_function[ftype].nratoms;
-            const int                nrd = il->size();
-            gmx::ArrayRef<const int> ia  = il->iatoms;
+            const int           nra = interaction_function[ftype].nratoms;
+            const int           nrd = il->size();
+            ArrayRef<const int> ia  = il->iatoms;
 
             if (debug && nrd)
             {
@@ -972,15 +976,15 @@ private:
     int interactionIndex_;
 };
 
-static void check_vsite_constraints(gmx::EnumerationArray<InteractionFunction, InteractionsOfType>& plist,
-                                    InteractionFunction cftype,
-                                    gmx::ArrayRef<const std::optional<InteractionFunction>> vsite_type,
-                                    const gmx::MDLogger& logger)
+static void check_vsite_constraints(EnumerationArray<InteractionFunction, InteractionsOfType>& plist,
+                                    InteractionFunction                                cftype,
+                                    ArrayRef<const std::optional<InteractionFunction>> vsite_type,
+                                    const MDLogger&                                    logger)
 {
     int n = 0;
     for (const auto& param : plist[cftype].interactionTypes)
     {
-        gmx::ArrayRef<const int> atoms = param.atoms();
+        ArrayRef<const int> atoms = param.atoms();
         for (int k = 0; k < 2; k++)
         {
             int atom = atoms[k];
@@ -1003,11 +1007,11 @@ static void check_vsite_constraints(gmx::EnumerationArray<InteractionFunction, I
     }
 }
 
-static void clean_vsite_bonds(gmx::EnumerationArray<InteractionFunction, InteractionsOfType>& plist,
-                              gmx::ArrayRef<const std::optional<VsiteAtomMapping>>    pindex,
-                              InteractionFunction                                     cftype,
-                              gmx::ArrayRef<const std::optional<InteractionFunction>> vsite_type,
-                              const gmx::MDLogger&                                    logger)
+static void clean_vsite_bonds(EnumerationArray<InteractionFunction, InteractionsOfType>& plist,
+                              ArrayRef<const std::optional<VsiteAtomMapping>>            pindex,
+                              InteractionFunction                                        cftype,
+                              ArrayRef<const std::optional<InteractionFunction>>         vsite_type,
+                              const MDLogger&                                            logger)
 {
     int                 nOut;
     int                 nconverted, nremoved;
@@ -1015,10 +1019,9 @@ static void clean_vsite_bonds(gmx::EnumerationArray<InteractionFunction, Interac
     bool                bKeep, bRemove, bAllFD;
     InteractionsOfType* ps;
 
-    if (static_cast<InteractionFunction>(cftype) == InteractionFunction::ConnectBonds)
-    {
-        return;
-    }
+    GMX_RELEASE_ASSERT(
+            cftype != InteractionFunction::ConnectBonds,
+            "Only regular sc_ifcBType bonds to virtual sites are considered for removal");
 
     ps         = &(plist[cftype]);
     nconverted = 0;
@@ -1033,8 +1036,8 @@ static void clean_vsite_bonds(gmx::EnumerationArray<InteractionFunction, Interac
         bRemove = false;
         bAllFD  = true;
         /* check if all virtual sites are constructed from the same atoms */
-        int                      nvsite = 0;
-        gmx::ArrayRef<const int> atoms  = bond->atoms();
+        int                 nvsite = 0;
+        ArrayRef<const int> atoms  = bond->atoms();
         for (int k = 0; (k < 2) && !bKeep && !bRemove; k++)
         {
             /* for all atoms in the bond */
@@ -1047,13 +1050,14 @@ static void clean_vsite_bonds(gmx::EnumerationArray<InteractionFunction, Interac
                 const InteractionFunction iftype = pindex[atom].value().functionType();
                 const int  interactionIndex      = pindex[atom].value().interactionIndex();
                 const bool bThisFD =
-                        ((iftype == InteractionFunction::VirtualSite3FlexibleDistance)
-                         || (iftype == InteractionFunction::VirtualSite3FlexibleAngleDistance)
-                         || (iftype == InteractionFunction::VirtualSite4FlexibleDistance)
-                         || (iftype == InteractionFunction::VirtualSite4FlexibleDistanceNormalization));
-                const bool bThisOUT = ((iftype == InteractionFunction::VirtualSite3Outside)
-                                       && ((interaction_function[cftype].flags & IF_CONSTRAINT) != 0U));
-                bAllFD              = bAllFD && bThisFD;
+                        ((iftype == InteractionFunction::VirtualSite3FixedDistance)
+                         || (iftype == InteractionFunction::VirtualSite3FixedAngleDistance)
+                         || (iftype == InteractionFunction::VirtualSite4FixedDistance)
+                         || (iftype == InteractionFunction::VirtualSite4FixedDistanceNormalization));
+                const bool bThisOUT =
+                        ((iftype == InteractionFunction::VirtualSite3Outside)
+                         && ((interaction_function[cftype].categories & sc_ifcConstraint) != 0U));
+                bAllFD = bAllFD && bThisFD;
                 if (bThisFD || bThisOUT)
                 {
                     oatom = atoms[1 - k]; /* the other atom */
@@ -1175,9 +1179,9 @@ static void clean_vsite_bonds(gmx::EnumerationArray<InteractionFunction, Interac
                     at1           = first_atoms[m];
                     at2           = first_atoms[(m + 1) % vsnral];
                     bool bPresent = false;
-                    for (const auto ftype : gmx::EnumerationWrapper<InteractionFunction>{})
+                    for (const auto ftype : EnumerationWrapper<InteractionFunction>{})
                     {
-                        if (interaction_function[ftype].flags & IF_CONSTRAINT)
+                        if (interaction_function[ftype].categories & sc_ifcConstraint)
                         {
                             for (auto entry = plist[ftype].interactionTypes.begin();
                                  (entry != plist[ftype].interactionTypes.end()) && !bPresent;
@@ -1249,12 +1253,12 @@ static void clean_vsite_bonds(gmx::EnumerationArray<InteractionFunction, Interac
     }
 }
 
-static void clean_vsite_angles(gmx::EnumerationArray<InteractionFunction, InteractionsOfType>& plist,
-                               gmx::ArrayRef<std::optional<VsiteAtomMapping>>          pindex,
-                               InteractionFunction                                     cftype,
-                               gmx::ArrayRef<const std::optional<InteractionFunction>> vsite_type,
-                               gmx::ArrayRef<const Atom2VsiteConnection>               at2vc,
-                               const gmx::MDLogger&                                    logger)
+static void clean_vsite_angles(EnumerationArray<InteractionFunction, InteractionsOfType>& plist,
+                               ArrayRef<std::optional<VsiteAtomMapping>>                  pindex,
+                               InteractionFunction                                        cftype,
+                               ArrayRef<const std::optional<InteractionFunction>> vsite_type,
+                               ArrayRef<const Atom2VsiteConnection>               at2vc,
+                               const MDLogger&                                    logger)
 {
     InteractionsOfType* ps;
 
@@ -1268,8 +1272,8 @@ static void clean_vsite_angles(gmx::EnumerationArray<InteractionFunction, Intera
         bool bKeep    = false;
         bool bAll3FAD = true;
         /* check if all virtual sites are constructed from the same atoms */
-        int                      nvsite = 0;
-        gmx::ArrayRef<const int> atoms  = angle->atoms();
+        int                 nvsite = 0;
+        ArrayRef<const int> atoms  = angle->atoms();
         for (int k = 0; (k < 3) && !bKeep; k++) /* for all atoms in the angle */
         {
             int atom = atoms[k];
@@ -1280,7 +1284,7 @@ static void clean_vsite_angles(gmx::EnumerationArray<InteractionFunction, Intera
                                    "Virtual-site atom mapping inconsistency in angles");
                 const InteractionFunction iftype = pindex[atom].value().functionType();
                 const int interactionIndex       = pindex[atom].value().interactionIndex();
-                bAll3FAD = bAll3FAD && (iftype == InteractionFunction::VirtualSite3FlexibleAngleDistance);
+                bAll3FAD = bAll3FAD && (iftype == InteractionFunction::VirtualSite3FixedAngleDistance);
                 if (nvsite == 1)
                 {
                     /* store construction atoms of first vsite */
@@ -1400,11 +1404,11 @@ static void clean_vsite_angles(gmx::EnumerationArray<InteractionFunction, Intera
     }
 }
 
-static void clean_vsite_dihs(gmx::EnumerationArray<InteractionFunction, InteractionsOfType>& plist,
-                             gmx::ArrayRef<std::optional<VsiteAtomMapping>>                  pindex,
-                             InteractionFunction                                             cftype,
-                             gmx::ArrayRef<const std::optional<InteractionFunction>> vsite_type,
-                             const gmx::MDLogger&                                    logger)
+static void clean_vsite_dihs(EnumerationArray<InteractionFunction, InteractionsOfType>& plist,
+                             ArrayRef<std::optional<VsiteAtomMapping>>                  pindex,
+                             InteractionFunction                                        cftype,
+                             ArrayRef<const std::optional<InteractionFunction>>         vsite_type,
+                             const MDLogger&                                            logger)
 {
     InteractionsOfType* ps;
 
@@ -1417,8 +1421,8 @@ static void clean_vsite_dihs(gmx::EnumerationArray<InteractionFunction, Interact
         const int* first_atoms = nullptr;
         int        atom;
 
-        gmx::ArrayRef<const int> atoms = dih->atoms();
-        bool                     bKeep = false;
+        ArrayRef<const int> atoms = dih->atoms();
+        bool                bKeep = false;
         /* check if all virtual sites are constructed from the same atoms */
         int nvsite = 0;
         for (int k = 0; (k < 4) && !bKeep; k++) /* for all atoms in the dihedral */
@@ -1525,10 +1529,10 @@ static void clean_vsite_dihs(gmx::EnumerationArray<InteractionFunction, Interact
     }
 }
 
-void clean_vsite_bondeds(gmx::EnumerationArray<InteractionFunction, InteractionsOfType>& plist,
-                         int                                                             natoms,
-                         bool                 bRmVSiteBds,
-                         const gmx::MDLogger& logger)
+void clean_vsite_bondeds(EnumerationArray<InteractionFunction, InteractionsOfType>& plist,
+                         int                                                        natoms,
+                         bool                                                       bRmVSiteBds,
+                         const MDLogger&                                            logger)
 {
     // Per-atom lookup table for the type and index of virtual site in
     // which this atom participates. std::nullopt when the atom does
@@ -1542,9 +1546,9 @@ void clean_vsite_bondeds(gmx::EnumerationArray<InteractionFunction, Interactions
     // interactions that involve virtual-site atoms.
     std::vector<std::optional<InteractionFunction>> vsite_type(natoms);
     int                                             nvsite = 0;
-    for (const auto ftype : gmx::EnumerationWrapper<InteractionFunction>{})
+    for (const auto ftype : EnumerationWrapper<InteractionFunction>{})
     {
-        if (interaction_function[ftype].flags & IF_VSITE)
+        if (interaction_function[ftype].categories & sc_ifcVirtualSite)
         {
             nvsite += plist[ftype].size();
             int i = 0;
@@ -1583,7 +1587,7 @@ void clean_vsite_bondeds(gmx::EnumerationArray<InteractionFunction, Interactions
         at2vc = make_at2vsitecon(natoms, plist);
 
         pindex.resize(natoms);
-        for (const auto ftype : gmx::EnumerationWrapper<InteractionFunction>{})
+        for (const auto ftype : EnumerationWrapper<InteractionFunction>{})
         {
             /* Here we skip VSITEN. In neary all practical use cases this
              * is not an issue, since VSITEN is intended for constructing
@@ -1596,9 +1600,10 @@ void clean_vsite_bondeds(gmx::EnumerationArray<InteractionFunction, Interactions
              * constructions with fixed distance (which is anyhow useless).
              * This will generate a fatal error in check_vsite_constraints.
              */
-            if ((interaction_function[ftype].flags & IF_VSITE) && ftype != InteractionFunction::VirtualSiteN)
+            if ((interaction_function[ftype].categories & sc_ifcVirtualSite)
+                && ftype != InteractionFunction::VirtualSiteN)
             {
-                for (gmx::Index interactionIndex = 0; interactionIndex < gmx::ssize(plist[ftype]);
+                for (Index interactionIndex = 0; interactionIndex < gmx::ssize(plist[ftype]);
                      interactionIndex++)
                 {
                     int k     = plist[ftype].interactionTypes[interactionIndex].ai();
@@ -1608,16 +1613,16 @@ void clean_vsite_bondeds(gmx::EnumerationArray<InteractionFunction, Interactions
         }
 
         /* remove interactions that include virtual sites */
-        for (const auto ftype : gmx::EnumerationWrapper<InteractionFunction>{})
+        for (const auto ftype : EnumerationWrapper<InteractionFunction>{})
         {
-            if (((interaction_function[ftype].flags & IF_BOND) && bRmVSiteBds)
-                || (interaction_function[ftype].flags & IF_CONSTRAINT))
+            if (((interaction_function[ftype].categories & sc_ifcBondedForce) && bRmVSiteBds)
+                || (interaction_function[ftype].categories & sc_ifcConstraint))
             {
-                if (interaction_function[ftype].flags & (IF_BTYPE | IF_CONSTRAINT))
+                if (interaction_function[ftype].categories & (sc_ifcBType | sc_ifcConstraint))
                 {
                     clean_vsite_bonds(plist, pindex, ftype, vsite_type, logger);
                 }
-                else if (interaction_function[ftype].flags & IF_ATYPE)
+                else if (interaction_function[ftype].categories & sc_ifcAngle)
                 {
                     clean_vsite_angles(plist, pindex, ftype, vsite_type, at2vc, logger);
                 }
@@ -1629,12 +1634,14 @@ void clean_vsite_bondeds(gmx::EnumerationArray<InteractionFunction, Interactions
             }
         }
         /* check that no remaining constraints include virtual sites */
-        for (const auto ftype : gmx::EnumerationWrapper<InteractionFunction>{})
+        for (const auto ftype : EnumerationWrapper<InteractionFunction>{})
         {
-            if (interaction_function[ftype].flags & IF_CONSTRAINT)
+            if (interaction_function[ftype].categories & sc_ifcConstraint)
             {
                 check_vsite_constraints(plist, ftype, vsite_type, logger);
             }
         }
     }
 }
+
+} // namespace gmx

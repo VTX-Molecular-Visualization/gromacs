@@ -48,7 +48,6 @@
 #include <numeric>
 #include <vector>
 
-#include "gromacs/math/functions.h"
 #include "gromacs/mdlib/dispersioncorrection.h"
 #include "gromacs/mdtypes/atominfo.h"
 #include "gromacs/mdtypes/forcerec.h"
@@ -58,6 +57,7 @@
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/vec.h"
 
@@ -158,7 +158,8 @@ static void generateCoordinates(int multiplicationFactor, std::vector<gmx::RVec>
     }
 }
 
-BenchmarkSystem::BenchmarkSystem(const int multiplicationFactor, const std::string& outputFile)
+BenchmarkSystem::BenchmarkSystem(const int multiplicationFactor, const std::string& outputFile) :
+    forceRec{ HostAllocationPolicy{} }
 {
     numAtomTypes = 2;
     nonbondedParameters.resize(numAtomTypes * numAtomTypes * 2, 0);

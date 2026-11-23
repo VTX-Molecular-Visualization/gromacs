@@ -54,7 +54,6 @@
 
 #include "gromacs/ewald/ewald_utils.h"
 #include "gromacs/gmxlib/network.h"
-#include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
@@ -73,6 +72,7 @@
 #include "gromacs/topology/topology_enums.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/real.h"
 #include "gromacs/utility/strconvert.h"
 #include "gromacs/utility/vec.h"
@@ -131,14 +131,14 @@ struct pot_derivatives_t
     real md3; // -V''' at the cutoff
 };
 
-VerletbufListSetup verletbufGetListSetup(gmx::NbnxmKernelType nbnxnKernelType)
+VerletbufListSetup verletbufGetListSetup(gmx::NbnxmKernelType nbnxmKernelType)
 {
     /* Note that the current buffer estimation code only handles clusters
      * of size 1, 2 or 4, so for 4x8 or 8x8 we use the estimate for 4x4.
      */
     VerletbufListSetup listSetup;
 
-    if (nbnxnKernelType == gmx::NbnxmKernelType::Gpu8x8x8)
+    if (nbnxmKernelType == gmx::NbnxmKernelType::Gpu8x8x8)
     {
         // Use the default GPU 8x8x8 pairlist layout here, as the results are
         // identical for anything above a cluster size of 4. This is asserted on later
@@ -148,8 +148,8 @@ VerletbufListSetup verletbufGetListSetup(gmx::NbnxmKernelType nbnxnKernelType)
     }
     else
     {
-        listSetup.cluster_size_i = sc_iClusterSize(nbnxnKernelType);
-        listSetup.cluster_size_j = sc_jClusterSize(nbnxnKernelType);
+        listSetup.cluster_size_i = sc_iClusterSize(nbnxmKernelType);
+        listSetup.cluster_size_j = sc_jClusterSize(nbnxmKernelType);
     }
 
     return listSetup;
@@ -162,26 +162,26 @@ VerletbufListSetup verletbufGetSafeListSetup(ListSetupType listType)
      * i- and j-cluster sizes, so we potentially overestimate, but never
      * underestimate, the buffer drift.
      */
-    gmx::NbnxmKernelType nbnxnKernelType;
+    gmx::NbnxmKernelType nbnxmKernelType;
 
     if (listType == ListSetupType::Gpu)
     {
-        nbnxnKernelType = gmx::NbnxmKernelType::Gpu8x8x8;
+        nbnxmKernelType = gmx::NbnxmKernelType::Gpu8x8x8;
     }
 #if GMX_SIMD && GMX_USE_SIMD_KERNELS
     else if (listType == ListSetupType::CpuSimdWhenSupported)
     {
         /* We use the smallest cluster size to be on the safe side */
-        nbnxnKernelType = (sc_haveNbnxmSimd2xmmKernels ? gmx::NbnxmKernelType::Cpu4xN_Simd_2xNN
+        nbnxmKernelType = (sc_haveNbnxmSimd2xmmKernels ? gmx::NbnxmKernelType::Cpu4xN_Simd_2xNN
                                                        : gmx::NbnxmKernelType::Cpu4xN_Simd_4xN);
     }
 #endif
     else
     {
-        nbnxnKernelType = gmx::NbnxmKernelType::Cpu4x4_PlainC;
+        nbnxmKernelType = gmx::NbnxmKernelType::Cpu4x4_PlainC;
     }
 
-    return verletbufGetListSetup(nbnxnKernelType);
+    return verletbufGetListSetup(nbnxmKernelType);
 }
 
 /* Returns the mass of atom atomIndex or 1 when setMassesToOne=true */
@@ -206,7 +206,7 @@ static void get_vsite_masses(const gmx_moltype_t&  moltype,
     int numNonlinearVsites = 0;
 
     /* Check for virtual sites, determine mass from constructing atoms */
-    for (const auto& ilist : extractILists(moltype.ilist, IF_VSITE))
+    for (const auto& ilist : extractILists(moltype.ilist, sc_ifcVirtualSite))
     {
         for (size_t i = 0; i < ilist.iatoms.size(); i += ilistStride(ilist))
         {
@@ -1660,7 +1660,7 @@ static std::vector<AtomConstraintProps> getAtomConstraintProps(const gmx_moltype
     const t_atoms&                   atoms = moltype.atoms;
     std::vector<AtomConstraintProps> props(atoms.nr);
 
-    for (const auto& ilist : extractILists(moltype.ilist, IF_CONSTRAINT))
+    for (const auto& ilist : extractILists(moltype.ilist, sc_ifcConstraint))
     {
         // Settles are handled separately
         if (ilist.functionType == InteractionFunction::SETTLE)

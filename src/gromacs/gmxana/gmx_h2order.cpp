@@ -44,6 +44,7 @@
 #include "gromacs/commandline/pargs.h"
 #include "gromacs/commandline/viewit.h"
 #include "gromacs/fileio/filetypes.h"
+#include "gromacs/fileio/timecontrol.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/fileio/xvgr.h"
 #include "gromacs/gmxana/gmx_ana.h"
@@ -85,7 +86,8 @@ static void calc_h2order(const char*             fn,
                          gmx_bool                bMicel,
                          int                     micel[],
                          int                     nmic,
-                         const gmx_output_env_t* oenv)
+                         const gmx_output_env_t* oenv,
+                         const gmx::TimeControl& timeControl)
 {
     rvec *x0,            /* coordinates with pbc */
             dipole,      /* dipole moment due to one molecules */
@@ -93,15 +95,15 @@ static void calc_h2order(const char*             fn,
     rvec*        dip;    /* sum of dipoles, unnormalized */
     matrix       box;    /* box (3x3) */
     t_trxstatus* status;
-    real         t,          /* time from trajectory */
-            *sum,            /* sum of all cosines of dipoles, per slice */
-            *frame;          /* order over one frame */
-    int natoms,              /* nr. atoms in trj */
+    double       t;          /* time from trajectory */
+    real*        sum;        /* sum of all cosines of dipoles, per slice */
+    real*        frame;      /* order over one frame */
+    int          natoms,     /* nr. atoms in trj */
             i, j, slice = 0, /* current slice number */
             *count;          /* nr. of atoms in one slice */
     gmx_rmpbc_t gpbc = nullptr;
 
-    if ((natoms = read_first_x(oenv, &status, fn, &t, &x0, box)) == 0)
+    if ((natoms = read_first_x(oenv, &status, fn, &t, &x0, box, &timeControl)) == 0)
     {
         gmx_fatal(FARGS, "Could not read coordinates from statusfile\n");
     }
@@ -217,6 +219,7 @@ static void calc_h2order(const char*             fn,
 
     } while (read_next_x(oenv, status, &t, x0, box));
     /*********** done with status file **********/
+    close_trx(status);
 
     fprintf(stderr, "\nRead trajectory. Printing parameters to file\n");
     gmx_rmpbc_done(gpbc);
@@ -290,8 +293,8 @@ int gmx_h2order(int argc, char* argv[])
         "dipole and the axis from the center of mass to the oxygen is calculated",
         "instead of the angle between the dipole and a box axis."
     };
-    static const char* axisOption[axisNR + 1] = { nullptr, "Z", "Y", "X", nullptr };
-    static int         nslices                = 0; /* nr of slices defined       */
+    const char* axisOption[axisNR + 1] = { nullptr, "Z", "Y", "X", nullptr };
+    int         nslices                = 0; /* nr of slices defined       */
     // The struct that will hold the parsed user input
     t_pargs     pa[]   = { { "-d",
                              FALSE,
@@ -312,6 +315,7 @@ int gmx_h2order(int argc, char* argv[])
     };
 
     gmx_output_env_t* oenv;
+    gmx::TimeControl  timeControl;
     real *            slOrder, /* av. cosine, per slice      */
             slWidth = 0.0;     /* width of a slice           */
     rvec* slDipole;
@@ -336,8 +340,19 @@ int gmx_h2order(int argc, char* argv[])
 #define NFILE asize(fnm)
 
     // Parse the user input in argv into pa
-    if (!parse_common_args(
-                &argc, argv, PCA_CAN_VIEW | PCA_CAN_TIME, NFILE, fnm, asize(pa), pa, asize(desc), desc, asize(bugs), bugs, &oenv))
+    if (!parse_common_args(&argc,
+                           argv,
+                           PCA_CAN_VIEW | PCA_CAN_TIME,
+                           NFILE,
+                           fnm,
+                           asize(pa),
+                           pa,
+                           asize(desc),
+                           desc,
+                           asize(bugs),
+                           bugs,
+                           &oenv,
+                           &timeControl))
     {
         return 0;
     }
@@ -378,7 +393,8 @@ int gmx_h2order(int argc, char* argv[])
                  bMicel,
                  micelle,
                  nmic,
-                 oenv);
+                 oenv,
+                 timeControl);
 
     h2order_plot(slDipole, slOrder, opt2fn("-o", NFILE, fnm), nslices, slWidth, oenv);
 

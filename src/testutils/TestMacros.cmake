@@ -31,8 +31,6 @@
 # To help us fund GROMACS development, we humbly ask that you cite
 # the research papers on the package. Check out https://www.gromacs.org.
 
-include(CMakeParseArguments)
-
 set(GMX_TEST_TIMEOUT_FACTOR "1" CACHE STRING "Scaling factor to apply for test timeouts")
 mark_as_advanced(GMX_TEST_TIMEOUT_FACTOR)
 
@@ -65,12 +63,17 @@ elseif (NOT GMX_THREAD_MPI)
 endif()
 
 function (gmx_add_unit_test_library NAME)
-    if (GMX_BUILD_UNITTESTS AND BUILD_TESTING)
+    if (BUILD_TESTING)
         add_library(${NAME} STATIC ${UNITTEST_TARGET_OPTIONS} ${ARGN})
         gmx_target_compile_options(${NAME})
         target_compile_definitions(${NAME} PRIVATE HAVE_CONFIG_H)
         target_include_directories(${NAME} SYSTEM BEFORE PRIVATE ${PROJECT_SOURCE_DIR}/src/external/thread_mpi/include)
         target_compile_definitions(${NAME} PRIVATE TMPI_USE_VISIBILITY)
+        # These two include directories are supplied by the gmock target below
+        # but can be added after global include directories added e.g. for
+        # FFTW, which leads to unexpected mismatches. See #5141 and #5531.
+        target_include_directories(${NAME} SYSTEM BEFORE PRIVATE ${PROJECT_SOURCE_DIR}/src/external/googletest/googletest/include)
+        target_include_directories(${NAME} SYSTEM BEFORE PRIVATE ${PROJECT_SOURCE_DIR}/src/external/googletest/googlemock/include)
         target_link_libraries(${NAME} PRIVATE testutils gmock)
         if (GMX_BUILD_FOR_COVERAGE)
             target_link_libraries(${NAME} PRIVATE gcov)
@@ -91,10 +94,6 @@ function (gmx_add_unit_test_library NAME)
                 # warns about when it is the host compiler
                 gmx_target_warning_suppression(${NAME} "-Wno-old-style-cast" HAS_NO_OLD_STYLE_CAST)
             endif()
-        endif()
-        # GCC 14 has false positives with -Wmaybe-uninitialized in GoogleTest
-        if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 14 AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 15)
-            gmx_target_warning_suppression(${NAME} "-Wno-maybe-uninitialized" HAS_WARNING_NO_MAYBE_UNINITIALIZED)
         endif()
     endif()
 endfunction ()
@@ -126,7 +125,7 @@ endfunction ()
 # Note that multi-value options (like source-file lists) must follow the
 # no-option or single-value options.
 function (gmx_add_gtest_executable EXENAME)
-    if (GMX_BUILD_UNITTESTS AND BUILD_TESTING)
+    if (BUILD_TESTING)
         set(_options MPI NVSHMEM HARDWARE_DETECTION DYNAMIC_REGISTRATION)
         set(_multi_value_keywords
             CPP_SOURCE_FILES
@@ -209,12 +208,20 @@ function (gmx_add_gtest_executable EXENAME)
         elseif (GMX_GPU_SYCL)
             target_sources(${EXENAME} PRIVATE ${ARG_SYCL_CPP_SOURCE_FILES} ${ARG_GPU_CPP_SOURCE_FILES})
             # Ensure that libsycl is properly linked when GPU source
-            # files are compiled directly into ${EXENAME}, and also
-            # when libgromacs is linked statically to e.g. MKL
-            add_sycl_to_target(
-                TARGET ${EXENAME}
-                SOURCES ${ARG_SYCL_CPP_SOURCE_FILES} ${ARG_GPU_CPP_SOURCE_FILES}
-                )
+            # files are compiled directly into ${EXENAME}, and when
+            # libgromacs is a static library.
+            #
+            # TODO The third predicate is used in release-2025 branch
+            # to maximize stability of the default shared-library
+            # build configuration. After merging to main branch,
+            # remove the third predicate, because it may be useful and
+            # seems unlikely to cause harm.
+            if(ARG_SYCL_CPP_SOURCE_FILES OR ARG_GPU_CPP_SOURCE_FILES OR NOT BUILD_SHARED_LIBS)
+                add_sycl_to_target(
+                    TARGET ${EXENAME}
+                    SOURCES ${ARG_SYCL_CPP_SOURCE_FILES} ${ARG_GPU_CPP_SOURCE_FILES}
+                    )
+            endif()
         else()
             target_sources(${EXENAME} PRIVATE ${ARG_NON_GPU_CPP_SOURCE_FILES} ${ARG_GPU_CPP_SOURCE_FILES})
         endif()
@@ -234,6 +241,11 @@ function (gmx_add_gtest_executable EXENAME)
             target_compile_definitions(${EXENAME} PRIVATE _POSIX_C_SOURCE=200809L)
         endif()
 
+        # These two include directories are supplied by the gmock target below
+        # but can be added after global include directories added e.g. for
+        # FFTW, which leads to unexpected mismatches. See #5141 and #5531.
+        target_include_directories(${EXENAME} SYSTEM BEFORE PRIVATE ${PROJECT_SOURCE_DIR}/src/external/googletest/googletest/include)
+        target_include_directories(${EXENAME} SYSTEM BEFORE PRIVATE ${PROJECT_SOURCE_DIR}/src/external/googletest/googlemock/include)
         target_link_libraries(${EXENAME} PRIVATE
             testutils common libgromacs gmock
             ${GMX_COMMON_LIBRARIES} ${GMX_EXE_LINKER_FLAGS})
@@ -257,10 +269,6 @@ function (gmx_add_gtest_executable EXENAME)
                 # warns about when it is the host compiler
                 gmx_target_warning_suppression(${EXENAME} "-Wno-old-style-cast" HAS_NO_OLD_STYLE_CAST)
             endif()
-        endif()
-        # GCC 14 has false positives with -Wmaybe-uninitialized in GoogleTest
-        if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 14 AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 15)
-            gmx_target_warning_suppression(${EXENAME} "-Wno-maybe-uninitialized" HAS_WARNING_NO_MAYBE_UNINITIALIZED)
         endif()
     endif()
 endfunction()
@@ -288,7 +296,7 @@ endfunction()
 # that ctest can run the test binary over a range of numbers of MPI
 # ranks.
 function (gmx_register_gtest_test NAME EXENAME)
-    if (GMX_BUILD_UNITTESTS AND BUILD_TESTING)
+    if (BUILD_TESTING)
         set(_options INTEGRATION_TEST SLOW_TEST IGNORE_LEAKS QUICK_GPU_TEST SLOW_GPU_TEST)
         set(_one_value_args MPI_RANKS OPENMP_THREADS)
         cmake_parse_arguments(ARG "${_options}" "${_one_value_args}" "" ${ARGN})
@@ -308,6 +316,11 @@ function (gmx_register_gtest_test NAME EXENAME)
                 set(_timeout 300)
             else()
                 set(_timeout 120)
+            endif()
+            # Allow marking IntegrationTest with SLOW_TEST as well
+            if (ARG_SLOW_TEST)
+                list(APPEND _labels SlowTest)
+                math(EXPR _timeout "${_timeout} * 4")
             endif()
         elseif (ARG_SLOW_TEST)
             list(APPEND _labels SlowTest)
@@ -340,7 +353,7 @@ function (gmx_register_gtest_test NAME EXENAME)
                 list(APPEND _cmd -ntmpi ${ARG_MPI_RANKS})
             endif()
             math(EXPR _nproc "${_nproc} * ${ARG_MPI_RANKS}")
-	elseif(GMX_MPI)
+        elseif(GMX_MPI)
                 set(_cmd
                     ${MPIEXEC} ${MPIEXEC_NUMPROC_FLAG} 1
                     ${MPIEXEC_PREFLAGS} ${_cmd} ${MPIEXEC_POSTFLAGS})

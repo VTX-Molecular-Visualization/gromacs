@@ -64,6 +64,9 @@
 
 struct gmx_output_env_t;
 
+namespace gmx
+{
+
 int gmx_genrestr(int argc, char* argv[])
 {
     const char* desc[] = {
@@ -91,14 +94,14 @@ int gmx_genrestr(int argc, char* argv[])
         "maintain the overall conformation of a protein without tieing it to",
         "a specific position (as with position restraints)."
     };
-    static rvec     fc           = { 1000.0, 1000.0, 1000.0 };
-    static real     freeze_level = 0.0;
-    static real     disre_dist   = 0.1;
-    static real     disre_frac   = 0.0;
-    static real     disre_up2    = 1.0;
-    static gmx_bool bDisre       = FALSE;
-    static gmx_bool bConstr      = FALSE;
-    static real     cutoff       = -1.0;
+    rvec     fc           = { 1000.0, 1000.0, 1000.0 };
+    real     freeze_level = 0.0;
+    real     disre_dist   = 0.1;
+    real     disre_frac   = 0.0;
+    real     disre_up2    = 1.0;
+    gmx_bool bDisre       = FALSE;
+    gmx_bool bConstr      = FALSE;
+    real     cutoff       = -1.0;
 
     t_pargs pa[] = {
         { "-fc", FALSE, etRVEC, { fc }, "Force constants (kJ/mol nm^2)" },
@@ -161,7 +164,8 @@ int gmx_genrestr(int argc, char* argv[])
                        { efNDX, "-of", "freeze", ffOPTWR } };
 #define NFILE asize(fnm)
 
-    if (!parse_common_args(&argc, argv, 0, NFILE, fnm, npargs, pa, asize(desc), desc, 0, nullptr, &oenv))
+    if (!parse_common_args(
+                &argc, argv, 0, NFILE, fnm, npargs, pa, asize(desc), desc, 0, nullptr, &oenv, nullptr))
     {
         return 0;
     }
@@ -321,3 +325,5 @@ int gmx_genrestr(int argc, char* argv[])
 
     return 0;
 }
+
+} // namespace gmx

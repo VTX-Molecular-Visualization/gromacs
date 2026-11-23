@@ -40,9 +40,9 @@
  * This class provides functionality for setting up and accessing atoms
  * on a grid for one domain decomposition zone. This grid is used for
  * generating cluster pair lists for computing non-bonded pair interactions.
- * The grid consists of a regular array of columns along dimensions x and y.
- * Along z the number of cells and their boundaries vary between the columns.
- * Each cell can hold one or more clusters of atoms, depending on the grid
+ * The grid consists of a regular array of cells along dimensions x and y.
+ * Along z the number of bins and their boundaries vary between the cells.
+ * Each bin can hold one or more clusters of atoms, depending on the grid
  * geometry, which is set by the pair-list type.
  *
  * \author Berk Hess <hess@kth.se>
@@ -70,14 +70,14 @@
 namespace gmx
 {
 
-struct nbnxn_atomdata_t;
+struct nbnxm_atomdata_t;
 enum class PairlistType;
 class UpdateGroupsCog;
 struct GridSetData;
 struct GridWork;
 
 /*! \internal
- * \brief Bounding box for one dimension of a grid cell
+ * \brief Bounding box for one dimension of a grid bin
  */
 struct BoundingBox1D
 {
@@ -90,16 +90,16 @@ struct BoundingBox1D
 //! The physical dimensions of a grid \internal
 struct GridDimensions
 {
-    //! Returns the lower corner along dimension \p dim of the cell with index \p cellIndex
+    //! Returns the lower corner along dimension \p dim of the cell with index \p binIndex
     real cellLowerCorner(int dim, int cellIndex) const
     {
         return lowerCorner[dim] + cellIndex * cellSize[dim];
     }
 
-    //! Return the index of the column on the grid given the x+y-indices
-    int columnIndex(int columnIndexX, int columnIndexY) const
+    //! Return the index of the cell on the grid given the x+y-indices
+    int cellIndex(int cellIndexX, int cellIndexY) const
     {
-        return columnIndexX * numCells[YY] + columnIndexY;
+        return cellIndexX * numCells[YY] + cellIndexY;
     }
 
     //! The lower corner of the (local) grid
@@ -110,7 +110,7 @@ struct GridDimensions
     RVec gridSize;
     //! An estimate for the atom number density of the region targeted by the grid
     real atomDensity;
-    //! The maximum distance an atom can be outside of a cell and outside of the grid
+    //! The maximum distance an atom can be outside of a cell/bin and outside of the grid
     real maxAtomGroupRadius;
     //! Size of cell along dimension x and y
     real cellSize[DIM - 1];
@@ -125,20 +125,21 @@ struct GridDimensions
  *
  * This is a rectangular 3D grid covering a potentially non-rectangular
  * volume which is either the whole unit cell or the local zone or part
- * of a non-local zone when using domain decomposition. The grid cells
- * are even spaced along x/y and irregular along z. Each cell is sub-divided
- * into atom clusters. With a CPU geometry, each cell contains 1 or 2 clusters.
- * With a GPU geometry, each cell contains up to 8 clusters. The geometry is
+ * of a non-local zone when using domain decomposition. An uniformly space
+ * grid is used along dimensions x and y. Along dimension z atoms are
+ * organized in bins with equal atom count. Each bin is sub-divided
+ * into atom clusters. With a CPU geometry, each bin contains 1 or 2 clusters.
+ * With a GPU geometry, each bin contains 8 clusters. The geometry is
  * set by the pairlist type which is the only argument of the constructor.
  *
  * When multiple grids are used, i.e. with domain decomposition, we want
  * to avoid the overhead of multiple coordinate arrays or extra indexing.
- * Therefore each grid stores a cell offset, so a contiguous cell index
+ * Therefore each grid stores a bin offset, so a contiguous bin index
  * can be used to index atom arrays. All methods returning atom indices
  * return indices which index into a full atom array.
  *
  * Note that when atom groups, instead of individual atoms, are assigned
- * to grid cells, individual atoms can be geometrically outside the cell
+ * to grid bins, individual atoms can be geometrically outside the bin
  * and grid that they have been assigned to (as determined by the center
  * or geometry of the atom group they belong to).
  */
@@ -146,11 +147,11 @@ class Grid
 {
 public:
     /*! \internal
-     * \brief The cluster and cell geometry of a grid
+     * \brief The cluster and bin geometry of a grid
      */
     struct Geometry
     {
-        //! Constructs the cluster/cell geometry given the type of pairlist
+        //! Constructs the cluster+bin geometry given the type of pairlist
         Geometry(PairlistType pairlistType);
 
         //! Is this grid simple (CPU) or hierarchical (GPU)
@@ -159,8 +160,8 @@ public:
         int numAtomsICluster_;
         //! Number of atoms for list j-clusters
         int numAtomsJCluster_;
-        //! Number of atoms per cell
-        int numAtomsPerCell_;
+        //! Number of atoms per bin
+        int numAtomsPerBin_;
         //! 2log of na_c
         int numAtomsICluster2Log_;
         //! What type of pairlist is in use.
@@ -168,9 +169,9 @@ public:
     };
 
     //! Constructs a grid given the type of pairlist
-    Grid(PairlistType pairlistType, int ddZone, const bool& haveFep, PinningPolicy pinningPolicy);
+    Grid(PairlistType pairlistType, int ddZone, const bool& haveFep, const HostAllocationPolicy& hostAllocationPolicy);
 
-    //! Returns the geometry of the grid cells
+    //! Returns the geometry of the grid bins
     const Geometry& geometry() const { return geometry_; }
 
     //! Returns the zone this grid belong to
@@ -179,56 +180,53 @@ public:
     //! Returns the dimensions of the grid
     const GridDimensions& dimensions() const { return dimensions_; }
 
-    //! Returns the total number of grid columns
-    int numColumns() const { return dimensions_.numCells[XX] * dimensions_.numCells[YY]; }
-
     //! Returns the total number of grid cells
-    int numCells() const { return numCellsTotal_; }
+    int numCells() const { return dimensions_.numCells[XX] * dimensions_.numCells[YY]; }
 
-    //! Returns the cell offset of (the first cell of) this grid in the list of cells combined over all grids
-    int cellOffset() const { return cellOffset_; }
+    //! Returns the total number of grid bins
+    int numBins() const { return numBinsTotal_; }
 
-    //! Returns the maximum number of grid cells in a column
-    int numCellsColumnMax() const { return numCellsColumnMax_; }
+    //! Returns the bin offset of (the first bin of) this grid in the list of bins combined over all grids
+    int binOffset() const { return binOffset_; }
 
-    //! Returns the first cell index in the grid, starting at 0 in this grid
-    int firstCellInColumn(int columnIndex) const { return cxy_ind_[columnIndex]; }
+    //! Returns the maximum number of grid bins in a cell
+    int maxNumBinsPerCell() const { return maxNumBinsPerCell_; }
 
-    //! Returns the number of cells in the column
-    int numCellsInColumn(int columnIndex) const
+    //! Returns the first bin index in the grid, starting at 0 in this grid
+    int firstBinInCell(int cellIndex) const { return cellToBin_[cellIndex]; }
+
+    //! Returns the number of bins in the cell
+    int numBinsInCell(int cellIndex) const
     {
-        return cxy_ind_[columnIndex + 1LL] - cxy_ind_[columnIndex];
+        return cellToBin_[cellIndex + 1LL] - cellToBin_[cellIndex];
     }
 
-    //! Returns the index of the first atom in the column
-    int firstAtomInColumn(int columnIndex) const
+    //! Returns the index of the first atom in the cell
+    int firstAtomInCell(int cellIndex) const
     {
-        return (cellOffset_ + cxy_ind_[columnIndex]) * geometry_.numAtomsPerCell_;
+        return (binOffset_ + cellToBin_[cellIndex]) * geometry_.numAtomsPerBin_;
     }
 
-    //! Returns the number of real atoms in the column
-    int numAtomsInColumn(int columnIndex) const { return cxy_na_[columnIndex]; }
+    //! Returns the number of real atoms in the cell
+    int numAtomsInCell(int cellIndex) const { return numAtomsPerCell_[cellIndex]; }
 
-    /*! \brief Returns a view of the number of non-filler, atoms for each grid column
-     *
-     * \todo Needs a useful name. */
-    ArrayRef<const int> cxy_na() const { return cxy_na_; }
-    /*! \brief Returns a view of the grid-local cell index for each grid column
-     *
-     * \todo Needs a useful name. */
-    ArrayRef<const int> cxy_ind() const { return cxy_ind_; }
+    //! Returns a view of the number of non-filler, atoms for each grid cell
+    ArrayRef<const int> numAtomsPerCell() const { return numAtomsPerCell_; }
 
-    //! Returns the number of real atoms in the column
-    int numAtomsPerCell() const { return geometry_.numAtomsPerCell_; }
+    //! Returns a view of the grid-local bin index for each grid cell
+    ArrayRef<const int> cellToBin() const { return cellToBin_; }
 
-    //! Returns the number of atoms in the column including padding
-    int paddedNumAtomsInColumn(int columnIndex) const
+    //! Returns the number of atoms in a bin
+    int numAtomsPerBin() const { return geometry_.numAtomsPerBin_; }
+
+    //! Returns the number of atoms in the cell including padding
+    int paddedNumAtomsInCell(int cellIndex) const
     {
-        return numCellsInColumn(columnIndex) * geometry_.numAtomsPerCell_;
+        return numBinsInCell(cellIndex) * geometry_.numAtomsPerBin_;
     }
 
     //! Returns the end of the atom index range on the grid, including padding
-    int atomIndexEnd() const { return (cellOffset_ + numCellsTotal_) * geometry_.numAtomsPerCell_; }
+    int atomIndexEnd() const { return (binOffset_ + numBinsTotal_) * geometry_.numAtomsPerBin_; }
 
     //! Returns whether any atom in the cluster is perturbed
     bool clusterIsPerturbed(int clusterIndex) const { return fep_[clusterIndex] != 0U; }
@@ -243,22 +241,22 @@ public:
     unsigned int fepBits(int clusterIndex) const { return fep_[clusterIndex]; }
 
     //! Returns the i-bounding boxes for all clusters on the grid
-    ArrayRef<const BoundingBox> iBoundingBoxes() const { return bb_; }
+    ArrayRef<const BoundingBox> iBoundingBoxes() const { return iClusterBoundingBoxes_; }
 
     //! Returns the j-bounding boxes for all clusters on the grid
-    ArrayRef<const BoundingBox> jBoundingBoxes() const { return bbj_; }
+    ArrayRef<const BoundingBox> jBoundingBoxes() const { return jClusterBoundingBoxes_; }
 
     //! Returns the packed bounding boxes for all clusters on the grid, empty with a CPU list
-    ArrayRef<const float> packedBoundingBoxes() const { return pbb_; }
+    ArrayRef<const float> packedBoundingBoxes() const { return packedClusterBoundingBoxes_; }
 
-    //! Returns the bounding boxes along z for all i-cells on the grid
-    ArrayRef<const BoundingBox1D> zBoundingBoxes() const { return bbcz_; }
+    //! Returns the bounding boxes along z for all i-bins on the grid
+    ArrayRef<const BoundingBox1D> zBoundingBoxes() const { return binBoundingBoxesZ_; }
 
     //! Returns the flags for all clusters on the grid
     ArrayRef<const int> clusterFlags() const { return flags_; }
 
-    //! Returns the number of clusters for all cells on the grid, empty with a CPU geometry
-    ArrayRef<const int> numClustersPerCell() const { return numClusters_; }
+    //! Returns the number of clusters for all bins on the grid, empty with a CPU geometry
+    ArrayRef<const int> numClustersPerBin() const { return numClusters_; }
 
     //! Returns the cluster index for an atom
     int atomToCluster(int atomIndex) const
@@ -271,7 +269,7 @@ public:
     {
         if (geometry_.isSimple_)
         {
-            return numCellsTotal_;
+            return numBinsTotal_;
         }
         else
         {
@@ -279,11 +277,12 @@ public:
         }
     }
 
-    //! Returns the avarage dimension of a grid cell
-    RVec averageCellSize() const;
+    //! Returns the average spatial size of a grid bin
+    RVec averageBinSize() const;
 
-    //! Resizes the bouding box and FEP flag lists for at most \p maxNumCells
-    void resizeBoundingBoxesAndFlags(const int maxNumCells);
+private:
+    //! Resizes the bouding box and FEP flag lists for at most \p maxNumBins
+    void resizeBoundingBoxesAndFlags(int maxNumBins);
 
     /*! \brief Sets the grid dimensions
      *
@@ -294,172 +293,45 @@ public:
      * \param[in] upperCorner      The maximum Cartesian coordinates of the grid
      * \param[in,out] atomDensity  The atom density, will be computed when <= 0
      * \param[in] maxAtomGroupRadius  The maximum radius of atom groups
+     *
+     * \returns the number of cells along z for the grid for density estimation
      */
-    void setDimensions(int         ddZone,
-                       int         numAtomsTotal,
-                       int         numAtomsWithoutFillers,
-                       const RVec& lowerCorner,
-                       const RVec& upperCorner,
-                       real*       atomDensity,
-                       real        maxAtomGroupRadius);
+    int setDimensions(int         ddZone,
+                      int         numAtomsTotal,
+                      int         numAtomsWithoutFillers,
+                      const RVec& lowerCorner,
+                      const RVec& upperCorner,
+                      real*       atomDensity,
+                      real        maxAtomGroupRadius);
 
-    //! Sets the cell indices using indices in \p gridSetData and \p gridWork
-    void setCellIndices(int                     ddZone,
-                        int                     cellOffset,
-                        GridSetData*            gridSetData,
-                        ArrayRef<GridWork>      gridWork,
-                        Range<int>              atomRange,
-                        ArrayRef<const int32_t> atomInfo,
-                        ArrayRef<const RVec>    x,
-                        nbnxn_atomdata_t*       nbat);
-
-    /*! \brief Sets a non-local grid using data communicated from a different domain
+public:
+    /*! \brief Sets the 2D search grid dimensions puts the atoms on the 2D grid
      *
-     * \note The cluster indices passed in \p clusterRanges use a size of the maximum
-     *       of the i- and j-cluster size in atoms, whereas \c Grid use the i-cluster size.
+     * The \p atomDensity parameter is used to set the, uniform, grid size.
+     * When \p atomDensity <= 0, it is computed as the atom count divided by the zone volume.
+     * For inhomogenous systems this can result in very sub-optimal performance due to many
+     * zero interactions in the list. To avoid this, this function can return an estimate
+     * of the effective atom density, which puts more weights on denser areas. This estimate
+     * is accurate for dimensions x and y, but uses the global std.dev. of the z-coordinates.
      *
-     * \param[in] ddZone      The domain decomposition zone this grid belongs to
-     * \param[in] dimensions  The dimensions of the grid
-     * \param[in] clusterRanges  A list of column indices and number of clusters for a column,
-     *                           the list should be ordered on column index, the same column
-     *                           index can appear multiple times; note that the clusters
-     *                           here have size of the maximum of the i- and j-sizes
-     * \param[in] cellOffset  The offset of this grid in the list of cells over all grids
-     * \param[in] atomInfo    A list of information for all local and non-local atoms
-     * \param[in] x           The coordinates for all local and non-local atoms
-     * \param[in,out] gridSetData  The data shared over all grids
-     * \param[in,out] nbat    The NBNxM atom data, used here for storing the atom coordinates
+     * \param[in,out] gridWork  Working data for each thread
+     * \param[in,out] cells     The grid cell list
+     * \param[in] lowerCorner   The minimum Cartesian coordinates of the grid
+     * \param[in] upperCorner   The maximum Cartesian coordinates of the grid
+     * \param[in] updateGroupsCog  The center of geometry of update groups, can be nullptr
+     * \param[in] atomRange     The range of atoms to put on this grid, may include moved atoms
+     * \param[in] numGridAtomsWithoutFillers  The number of atoms that are not filler particles
+     *                                        and have not moved by to another domain by DD
+     * \param[in,out] atomDensity  The atom density, will be computed when <= 0
+     * \param[in] maxAtomGroupRadius  The maximum radius of atom groups
+     * \param[in] x             The coordinates of the atoms
+     * \param[in] ddZone        The domain decomposition zone
+     * \param[in] move          Tells whether atoms have moved to another DD domain
+     * \param[in] computeEffectiveAtomDensity  When true, return an estimate of the atom density
+     *
+     * \returns When \p computeEffectiveAtomDensity==true, an estimate of the effective atom density
      */
-    void setNonLocalGrid(int                                 ddZone,
-                         const GridDimensions&               dimensions,
-                         ArrayRef<const std::pair<int, int>> clusterRanges,
-                         int                                 cellOffset,
-                         ArrayRef<const int32_t>             atomInfo,
-                         ArrayRef<const RVec>                x,
-                         GridSetData*                        gridSetData,
-                         nbnxn_atomdata_t*                   nbat);
-
-    //! Determine in which grid columns atoms should go, store cells and atom counts in \p cell and \p cxy_na
-    static void calcColumnIndices(const GridDimensions&  gridDims,
-                                  const UpdateGroupsCog* updateGroupsCog,
-                                  Range<int>             atomRange,
-                                  ArrayRef<const RVec>   x,
-                                  int                    dd_zone,
-                                  const int*             move,
-                                  int                    thread,
-                                  int                    nthread,
-                                  ArrayRef<int>          cell,
-                                  ArrayRef<int>          cxy_na);
-
-private:
-    /*! \brief Fill a pair search cell with atoms
-     *
-     * Optionally sorts atoms and sets the interaction flags.
-     */
-    void fillCell(GridSetData*            gridSetData,
-                  nbnxn_atomdata_t*       nbat,
-                  int                     atomStart,
-                  int                     atomEnd,
-                  ArrayRef<const int32_t> atomInfo,
-                  ArrayRef<const RVec>    x);
-
-    //! Spatially sort the atoms within the given column range, for CPU geometry
-    void sortColumnsCpuGeometry(GridSetData*            gridSetData,
-                                int                     dd_zone,
-                                ArrayRef<const int32_t> atomInfo,
-                                ArrayRef<const RVec>    x,
-                                nbnxn_atomdata_t*       nbat,
-                                Range<int>              columnRange,
-                                ArrayRef<int>           sort_work);
-
-    //! Spatially sort the atoms within the given column range, for GPU geometry
-    void sortColumnsGpuGeometry(GridSetData*            gridSetData,
-                                int                     dd_zone,
-                                ArrayRef<const int32_t> atomInfo,
-                                ArrayRef<const RVec>    x,
-                                nbnxn_atomdata_t*       nbat,
-                                Range<int>              columnRange,
-                                ArrayRef<int>           sort_work);
-
-    // Data members
-
-    //! The geometry of the grid clusters and cells
-    Geometry geometry_;
-
-    // The DD zone the grid belong to
-    int ddZone_;
-
-    //! The physical dimensions of the grid
-    GridDimensions dimensions_;
-
-    //! The total number of cells in this grid
-    int numCellsTotal_;
-    //! Index in nbs->cell corresponding to cell 0
-    int cellOffset_;
-    //! The maximum number of cells in a column
-    int numCellsColumnMax_;
-
-    /* Grid data */
-    /*! \brief The number of, non-filler, atoms for each grid column.
-     *
-     * \todo Needs a useful name. */
-    HostVector<int> cxy_na_;
-    /*! \brief The grid-local cell index for each grid column
-     *
-     * \todo Needs a useful name. */
-    HostVector<int> cxy_ind_;
-
-    //! The number of clusters for each column
-    std::vector<int> numClusters_;
-
-    /* Bounding boxes */
-    //! Bounding boxes in z for the i-cells
-    std::vector<BoundingBox1D> bbcz_;
-    //! 3D bounding boxes for the sub cells
-    std::vector<BoundingBox, AlignedAllocator<BoundingBox>> bb_;
-    //! 3D j-bounding boxes for the case where the i- and j-cluster sizes are different
-    std::vector<BoundingBox, AlignedAllocator<BoundingBox>> bbjStorage_;
-    //! 3D j-bounding boxes
-    ArrayRef<BoundingBox> bbj_;
-    //! 3D bounding boxes in packed xxxx format per cell
-    std::vector<float, AlignedAllocator<float>> pbb_;
-
-    //! Tells whether we have perturbed interactions, authorative source is in GridSet (never modified)
-    const bool& haveFep_;
-
-    /* Bit-flag information */
-    //! Flags for properties of clusters in each cell
-    std::vector<int> flags_;
-    //! Signal bits for atoms in each cell that tell whether an atom is perturbed
-    std::vector<unsigned int> fep_;
-
-    /* Statistics */
-    //! Total number of clusters, used for printing
-    int numClustersTotal_;
-};
-
-/*! \brief Sets the 2D search grid dimensions puts the atoms on the 2D grid
- *
- * \param[in,out] grid      The pair search grid for one DD zone
- * \param[in,out] gridWork  Working data for each thread
- * \param[in,out] cells     The grid cell list
- * \param[in] lowerCorner   The minimum Cartesian coordinates of the grid
- * \param[in] upperCorner   The maximum Cartesian coordinates of the grid
- * \param[in] updateGroupsCog  The center of geometry of update groups, can be nullptr
- * \param[in] atomRange     The range of atoms to put on this grid, may include moved atoms
- * \param[in] numGridAtomsWithoutFillers  The number of atoms that are not filler particles
- *                                        and have not moved by to another domain by DD
- * \param[in,out] atomDensity  The atom density, will be computed when <= 0
- * \param[in] maxAtomGroupRadius  The maximum radius of atom groups
- * \param[in] x             The coordinates of the atoms
- * \param[in] ddZone        The domain decomposition zone
- * \param[in] move          Tells whether atoms have moved to another DD domain
- * \param[in] computeGridDensityRatio  When true, return the grid density ratio
- *
- * \returns When \p computeGridDensityRatio==true, the ratio of the effective 2D grid density and the uniform grid density
- */
-real generateAndFill2DGrid(Grid*                  grid,
-                           ArrayRef<GridWork>     gridWork,
+    real generateAndFill2D(ArrayRef<GridWork>     gridWork,
                            HostVector<int>*       cells,
                            const rvec             lowerCorner,
                            const rvec             upperCorner,
@@ -471,7 +343,139 @@ real generateAndFill2DGrid(Grid*                  grid,
                            ArrayRef<const RVec>   x,
                            int                    ddZone,
                            const int*             move,
-                           bool                   computeGridDensityRatio);
+                           bool                   computeEffectiveAtomDensity);
+
+    //! Sets the bin indices using indices in \p gridSetData and \p gridWork
+    void setBinIndices(int                     ddZone,
+                       int                     binOffset,
+                       GridSetData*            gridSetData,
+                       ArrayRef<GridWork>      gridWork,
+                       Range<int>              atomRange,
+                       ArrayRef<const int32_t> atomInfo,
+                       ArrayRef<const RVec>    x,
+                       nbnxm_atomdata_t*       nbat);
+
+    /*! \brief Sets a non-local grid using data communicated from a different domain
+     *
+     * \note The cluster indices passed in \p clusterRanges use a size of the maximum
+     *       of the i- and j-cluster size in atoms, whereas \c Grid use the i-cluster size.
+     *
+     * \param[in] ddZone      The domain decomposition zone this grid belongs to
+     * \param[in] dimensions  The dimensions of the grid
+     * \param[in] clusterRanges  A list of cell indices and number of clusters for a cell,
+     *                           the list should be ordered on cell index, the same cell
+     *                           index can appear multiple times; note that the clusters
+     *                           here have size of the maximum of the i- and j-sizes
+     * \param[in] binOffset   The offset of this grid in the list of bins over all grids
+     * \param[in] atomInfo    A list of information for all local and non-local atoms
+     * \param[in] x           The coordinates for all local and non-local atoms
+     * \param[in,out] gridSetData  The data shared over all grids
+     * \param[in,out] nbat    The NBNxM atom data, used here for storing the atom coordinates
+     */
+    void setNonLocalGrid(int                                 ddZone,
+                         const GridDimensions&               dimensions,
+                         ArrayRef<const std::pair<int, int>> clusterRanges,
+                         int                                 binOffset,
+                         ArrayRef<const int32_t>             atomInfo,
+                         ArrayRef<const RVec>                x,
+                         GridSetData*                        gridSetData,
+                         nbnxm_atomdata_t*                   nbat);
+
+    //! Determine in which grid cells atoms should go, store bins and atom counts in \p bins and \p numAtomsPerCell
+    static void calcCellIndices(const GridDimensions&  gridDims,
+                                const UpdateGroupsCog* updateGroupsCog,
+                                Range<int>             atomRange,
+                                ArrayRef<const RVec>   x,
+                                int                    dd_zone,
+                                const int*             move,
+                                int                    thread,
+                                int                    nthread,
+                                ArrayRef<int>          bins,
+                                int                    numCellsZ,
+                                ArrayRef<int>          numAtomsPerCell);
+
+private:
+    /*! \brief Fill a pair search bin with atoms
+     *
+     * Optionally sorts atoms and sets the interaction flags.
+     */
+    void fillBin(GridSetData*            gridSetData,
+                 nbnxm_atomdata_t*       nbat,
+                 int                     atomStart,
+                 int                     atomEnd,
+                 ArrayRef<const int32_t> atomInfo,
+                 ArrayRef<const RVec>    x);
+
+    //! Spatially sort the atoms within the given cell range, for CPU geometry
+    void sortCellsCpuGeometry(GridSetData*            gridSetData,
+                              int                     dd_zone,
+                              ArrayRef<const int32_t> atomInfo,
+                              ArrayRef<const RVec>    x,
+                              nbnxm_atomdata_t*       nbat,
+                              Range<int>              cellRange,
+                              ArrayRef<int>           sort_work);
+
+    //! Spatially sort the atoms within the given cell range, for GPU geometry
+    void sortCellsGpuGeometry(GridSetData*            gridSetData,
+                              int                     dd_zone,
+                              ArrayRef<const int32_t> atomInfo,
+                              ArrayRef<const RVec>    x,
+                              nbnxm_atomdata_t*       nbat,
+                              Range<int>              cellRange,
+                              ArrayRef<int>           sort_work);
+
+    // Data members
+
+    //! The geometry of the grid clusters and bins
+    Geometry geometry_;
+
+    // The DD zone the grid belong to
+    int ddZone_;
+
+    //! The physical dimensions of the grid
+    GridDimensions dimensions_;
+
+    //! The total number of bins in this grid
+    int numBinsTotal_;
+    //! Index in GridSetData corresponding to bin 0 of this grid
+    int binOffset_;
+    //! The maximum number of bins in a cell
+    int maxNumBinsPerCell_;
+
+    /* Grid data */
+    //! The number of, non-filler, atoms for each grid cell.
+    HostVector<int> numAtomsPerCell_;
+    //! The grid-local bin index for each grid cell
+    HostVector<int> cellToBin_;
+
+    //! The number of clusters for each cell
+    std::vector<int> numClusters_;
+
+    /* Bounding boxes */
+    //! Bounding boxes in z for the i-bins
+    std::vector<BoundingBox1D> binBoundingBoxesZ_;
+    //! 3D bounding boxes for the clusters
+    std::vector<BoundingBox, AlignedAllocator<BoundingBox>> iClusterBoundingBoxes_;
+    //! 3D j-bounding boxes for the case where the i- and j-cluster sizes are different
+    std::vector<BoundingBox, AlignedAllocator<BoundingBox>> jClusterBoundingBoxesStorage_;
+    //! 3D j-bounding boxes
+    ArrayRef<BoundingBox> jClusterBoundingBoxes_;
+    //! 3D bounding boxes in packed xxxx format per cluster
+    std::vector<float, AlignedAllocator<float>> packedClusterBoundingBoxes_;
+
+    //! Tells whether we have perturbed interactions, authorative source is in GridSet (never modified)
+    const bool& haveFep_;
+
+    /* Bit-flag information */
+    //! Flags for properties of clusters in each bin
+    std::vector<int> flags_;
+    //! Signal bits for atoms in each cluster that tell whether an atom is perturbed
+    std::vector<unsigned int> fep_;
+
+    /* Statistics */
+    //! Total number of clusters, used for printing
+    int numClustersTotal_;
+};
 
 } // namespace gmx
 

@@ -32,7 +32,13 @@
 # the research papers on the package. Check out https://www.gromacs.org.
 
 if(GMX_GPU_OPENCL)
-    file(GLOB OPENCL_NB_SOURCES *.cpp)
+    set(OPENCL_NB_SOURCES
+        nbnxm_gpu_buffer_ops_internal_ocl.cpp
+        nbnxm_ocl.cpp
+        nbnxm_ocl_data_mgmt.cpp
+        nbnxm_ocl_jit_support.cpp
+        )
+    list(TRANSFORM OPENCL_NB_SOURCES PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/")
     set(NBNXM_SOURCES ${NBNXM_SOURCES} ${OPENCL_NB_SOURCES} PARENT_SCOPE)
 endif()
 
@@ -76,10 +82,10 @@ foreach(ELEC_DEF IN LISTS ELEC_DEFS)
                 ${CMAKE_CURRENT_SOURCE_DIR}/nbnxm_ocl_kernels.cl ${CLANG_TIDY_ARGS}
                 -Xclang -finclude-default-header  -D_${VENDOR}_SOURCE_
                 -DGMX_OCL_FASTGEN ${ELEC_DEF} ${VDW_DEF}
-                -Dc_nbnxnGpuClusterSize=${CLUSTER_SIZE}
+                -Dc_nbnxmGpuClusterSize=${CLUSTER_SIZE}
                 -DNBNXM_MIN_DISTANCE_SQUARED_VALUE_FLOAT=3.82e-07
-                -Dc_nbnxnGpuNumClusterPerSupercluster=8
-                -Dc_nbnxnGpuJgroupSize=4
+                -Dc_nbnxmGpuNumClusterPerSupercluster=8
+                -Dc_nbnxmGpuJgroupSize=4
                 -Dc_centralShiftIndex=22
                 -DIATYPE_SHMEM
                 -c -I ${CMAKE_SOURCE_DIR}/src -std=cl1.2

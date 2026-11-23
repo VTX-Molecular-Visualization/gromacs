@@ -42,6 +42,10 @@
 #define GMX_FILEIO_H5MD_H5MD_WRAPPER_H
 
 #include <filesystem>
+#include <optional>
+
+struct gmx_mtop_t;
+struct t_inputrec;
 
 namespace gmx
 {
@@ -58,11 +62,22 @@ H5md* makeH5md(const std::filesystem::path& fileName, H5mdFileMode mode);
 
 /*! \brief Set up the file from input data.
  *
- * \param[out] h5md       Handle to H5md object
- * \param[in] topology    Topology data of system.
- * \param[in] inputRecord Simulation parameters.
+ * \param[out] h5md        Handle to H5md object
+ * \param[in] topology     Topology data of system.
+ * \param[in] inputRecord  Simulation parameters.
  */
 void setupFileFromInput(H5md* h5md, const gmx_mtop_t& topology, const t_inputrec& inputRecord);
+
+/*! \brief Write the MD parameters of the simulation to the file.
+ *
+ * \param[out] h5md        Handle to H5md object
+ * \param[in] inputRecord  Simulation parameters.
+ * \param[in] topology     Topology of the simulated system.
+ * \param[in] isRerun      Whether the energies of an existing trajectory are recomputed.
+ *
+ * \throws H5mdError if the MD parameters cannot be written.
+ */
+void setupMDParameters(H5md* h5md, const t_inputrec& inputRecord, const gmx_mtop_t& topology, bool isRerun);
 
 /*! \brief Set up from an existing \p h5md file for restarting with appending.
  *
@@ -76,7 +91,7 @@ void setupFileFromInput(H5md* h5md, const gmx_mtop_t& topology, const t_inputrec
  * \param[in] restartingFromStep Step which we are restarting the simulation from
  * \param[in]  numParticles      Number of particles in system
  *
- * \throws gmx::FileIOError if the existing file contents are not
+ * \throws H5mdError if the existing file contents are not
  * for a system of \p numParticles.
  */
 void setupFromExistingFileForAppending(H5md* h5md, int64_t restartingFromStep, int64_t numParticles);
@@ -90,8 +105,9 @@ void setupFromExistingFileForAppending(H5md* h5md, int64_t restartingFromStep, i
  * \param[in] box           Simulation box for frame.
  * \param[in] step          Simulation step for frame.
  * \param[in] time          Simulation time for frame.
+ * \param[in] positionPrecision (Optional) Precision for lossy compression of \p positions.
  *
- * \throws gmx::FileIOError if \p position, \p velocity or \p force data is given
+ * \throws H5mdError if \p positions, \p velocities or \p forces data is given
  *     but the corresponding data set has not been created, or if the size of
  *     the data buffers do not match the number of atoms of the system.
  */
@@ -101,7 +117,8 @@ void writeNextFrame(H5md*                h5md,
                     ArrayRef<const RVec> forces,
                     const matrix         box,
                     int64_t              step,
-                    double               time);
+                    double               time,
+                    std::optional<real>  positionPrecision = {});
 
 //! Deallocate \c h5md
 void destroyH5md(H5md* h5md);

@@ -46,6 +46,7 @@
 #include "gromacs/mdlib/mdoutf.h"
 #include "gromacs/mdlib/stat.h"
 #include "gromacs/mdlib/update.h"
+#include "gromacs/mdlib/vsite.h"
 #include "gromacs/mdtypes/checkpointdata.h"
 #include "gromacs/mdtypes/commrec.h"
 #include "gromacs/mdtypes/forcerec.h"
@@ -74,31 +75,38 @@ void do_md_trajectory_writing(FILE*                          fplog,
                               t_forcerec*                    fr,
                               gmx_mdoutf_t                   outf,
                               const gmx::EnergyOutput&       energyOutput,
-                              gmx_ekindata_t*                ekind,
+                              const gmx_ekindata_t*          ekindata,
                               gmx::ArrayRef<const gmx::RVec> f,
+                              gmx::VirtualSitesHandler*      vsiteHandler,
                               gmx_bool                       bCPT,
                               gmx_bool                       bRerunMD,
                               gmx_bool                       bLastStep,
-                              gmx_bool                       bDoConfOut,
-                              const EkindataState            ekindataState)
+                              gmx_bool                       bDoConfOut)
 {
     int   mdof_flags;
     rvec* x_for_confout = nullptr;
 
     mdof_flags = 0;
-    if (do_per_step(step, ir->nstxout))
+    if (do_per_step(step, ir->outputControl.nstxout))
     {
         mdof_flags |= MDOF_X;
     }
-    if (do_per_step(step, ir->nstvout))
+    if (do_per_step(step, ir->outputControl.nstvout))
     {
+        // Construct the virtual site velocities, which are needed only for output
+        if (vsiteHandler)
+        {
+            wallcycle_start(mdoutf_get_wcycle(outf), WallCycleCounter::VsiteConstr);
+            vsiteHandler->construct(state->x, state->v, state->box, gmx::VSiteOperation::Velocities);
+            wallcycle_stop(mdoutf_get_wcycle(outf), WallCycleCounter::VsiteConstr);
+        }
         mdof_flags |= MDOF_V;
     }
-    if (do_per_step(step, ir->nstfout))
+    if (do_per_step(step, ir->outputControl.nstfout))
     {
         mdof_flags |= MDOF_F;
     }
-    if (do_per_step(step, ir->nstxout_compressed))
+    if (do_per_step(step, ir->outputControl.nstxout_compressed))
     {
         mdof_flags |= MDOF_X_COMPRESSED;
     }
@@ -128,19 +136,17 @@ void do_md_trajectory_writing(FILE*                          fplog,
         wallcycle_start(mdoutf_get_wcycle(outf), WallCycleCounter::Traj);
         if (bCPT)
         {
-            const bool checkpointEkindata = (ekindataState != EkindataState::NotUsed);
-            if (checkpointEkindata)
+            if (ekindata)
             {
                 update_ekinstate(cr->commMyGroup.isMainRank() ? &state_global->ekinstate : nullptr,
-                                 ekind,
-                                 ekindataState == EkindataState::UsedNeedToReduce,
+                                 *ekindata,
                                  cr->commMyGroup,
                                  cr->dd);
             }
 
             if (cr->commMyGroup.isMainRank())
             {
-                state_global->ekinstate.bUpToDate = checkpointEkindata;
+                state_global->ekinstate.bUpToDate = (ekindata != nullptr);
 
                 energyOutput.fillEnergyHistory(observablesHistory->energyHistory.get());
             }

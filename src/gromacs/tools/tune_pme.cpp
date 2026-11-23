@@ -52,8 +52,8 @@
 #include "gromacs/commandline/filenm.h"
 #include "gromacs/fileio/filetypes.h"
 #include "gromacs/fileio/oenv.h"
-#include "gromacs/math/functions.h"
 #include "gromacs/utility/basedefinitions.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/real.h"
 #include "gromacs/utility/vectypes.h"
 
@@ -88,6 +88,12 @@
 
 struct gmx_output_env_t;
 
+namespace gmx
+{
+
+namespace
+{
+
 /* Enum for situations that can occur during log file parsing, the
  * corresponding string entries can be found in do_the_tests() in
  * const char* ParseLog[] */
@@ -107,6 +113,8 @@ enum
     eParselogFatal,
     eParselogNr
 };
+
+} // namespace
 
 
 typedef struct
@@ -193,6 +201,9 @@ static void finalize(const char* fn_out)
 }
 
 
+namespace
+{
+
 enum
 {
     eFoundNothing,
@@ -200,6 +211,8 @@ enum
     eFoundAccountingStr,
     eFoundCycleStr
 };
+
+} // namespace
 
 static int parse_logfile(const char* logfile,
                          const char* errfile,
@@ -515,7 +528,7 @@ static gmx_bool analyze_data(FILE*          fp,
                     s = 0.0;
                     for (j = 0; j < nrepeats; j++)
                     {
-                        s += gmx::square(pd->Gcycles[j] - pd->Gcycles_Av);
+                        s += square(pd->Gcycles[j] - pd->Gcycles_Av);
                     }
                     s /= (nrepeats - 1);
                     s = std::sqrt(s);
@@ -800,7 +813,7 @@ static std::string make_gpu_id_command_line(const char* eligible_gpu_ids)
      * to mdrun -gpu_id */
     if (eligible_gpu_ids != nullptr)
     {
-        return gmx::formatString("-gpu_id %s", eligible_gpu_ids);
+        return formatString("-gpu_id %s", eligible_gpu_ids);
     }
 
 
@@ -1145,10 +1158,8 @@ static void make_benchmark_tprs(const char* fn_sim_tpr,  /* READ : User-provided
         info->fsz[j]      = fac * fourierspacing;
 
         /* Write the benchmark tpr file */
-        fn_bench_tprs[j] =
-                gmx_strdup(gmx::concatenateBeforeExtension(fn_sim_tpr, gmx::formatString("_bench%.2d", j))
-                                   .string()
-                                   .c_str());
+        fn_bench_tprs[j] = gmx_strdup(
+                concatenateBeforeExtension(fn_sim_tpr, formatString("_bench%.2d", j)).string().c_str());
 
         fprintf(stdout, "Writing benchmark tpr %s with nsteps=", fn_bench_tprs[j]);
         fprintf(stdout, "%" PRId64, ir->nsteps);
@@ -1221,7 +1232,7 @@ static void cleanup(const t_filenm* fnm, int nfile, int k, int nnodes, int nPMEn
             {
                 sprintf(numstring, "_%d", nr);
             }
-            std::string newfilename = gmx::formatString(
+            std::string newfilename = formatString(
                     "%s_no%d_np%d_npme%d%s", opt2fn("-bg", nfile, fnm), k, nnodes, nPMEnodes, numstring);
             if (gmx_fexist(opt2fn("-bg", nfile, fnm)))
             {
@@ -1241,7 +1252,7 @@ static void cleanup(const t_filenm* fnm, int nfile, int k, int nnodes, int nPMEn
                 sprintf(numstring, "_%d", nr);
             }
             std::string newfilename =
-                    gmx::formatString("%s_no%d_np%d_npme%d%s", fn, k, nnodes, nPMEnodes, numstring);
+                    formatString("%s_no%d_np%d_npme%d%s", fn, k, nnodes, nPMEnodes, numstring);
             if (gmx_fexist(fn))
             {
                 if (bKeepStderr)
@@ -1266,6 +1277,9 @@ static void cleanup(const t_filenm* fnm, int nfile, int k, int nnodes, int nPMEn
 }
 
 
+namespace
+{
+
 enum
 {
     eNpmeAuto,
@@ -1274,6 +1288,8 @@ enum
     eNpmeSubset,
     eNpmeNr
 };
+
+} // namespace
 
 /* Create a list of numbers of PME nodes to test */
 static void make_npme_list(const char* npmevalues_opt, /* Make a complete list with all
@@ -1392,8 +1408,8 @@ static void init_perfdata(t_perf* perfdata[], int ntprs, int datasets, int repea
 }
 
 
-/* Check for errors on mdrun -h */
-static void make_sure_it_runs(const char* mdrun_cmd_line, int length, FILE* fp, const t_filenm* fnm, int nfile)
+/* Check for errors on mdrun -h, returns whether the benchmark could be run */
+static bool make_sure_it_runs(const char* mdrun_cmd_line, int length, FILE* fp, const t_filenm* fnm, int nfile)
 {
     char *command, *msg;
     int   ret;
@@ -1423,7 +1439,9 @@ static void make_sure_it_runs(const char* mdrun_cmd_line, int length, FILE* fp, 
         sep_line(fp);
         fprintf(fp, "%s", msg);
 
-        std::exit(ret);
+        sfree(command);
+        sfree(msg);
+        return false;
     }
     fprintf(stdout, "Benchmarks can be executed!\n");
 
@@ -1438,9 +1456,15 @@ static void make_sure_it_runs(const char* mdrun_cmd_line, int length, FILE* fp, 
 
     sfree(command);
     sfree(msg);
+    return true;
 }
 
-static void do_the_tests(FILE*  fp,                    /* General tune_pme output file           */
+/*! \brief Runs the benchmarks
+ *
+ * \returns whether the benchmarks were run, false when -r is 0 or when
+ * the first benchmark could not be executed.
+ */
+static bool do_the_tests(FILE*  fp,                    /* General tune_pme output file           */
                          char** tpr_names,             /* Filenames of the input files to test   */
                          int    maxPMEnodes,           /* Max fraction of nodes to use for PME   */
                          int    minPMEnodes,           /* Min fraction of nodes to use for PME   */
@@ -1523,9 +1547,10 @@ static void do_the_tests(FILE*  fp,                    /* General tune_pme outpu
     if (0 == repeats)
     {
         fprintf(fp, "\nNo benchmarks done since number of repeats (-r) is 0.\n");
-        gmx_ffclose(fp);
-        finalize(opt2fn("-p", nfile, fnm));
-        std::exit(0);
+        sfree(nPMEnodes);
+        sfree(command);
+        sfree(cmd_stub);
+        return false;
     }
 
     /* Allocate one dataset for each tpr input file: */
@@ -1587,7 +1612,16 @@ static void do_the_tests(FILE*  fp,                    /* General tune_pme outpu
                        implement that after some refactoring of how
                        the number of MPI ranks is managed. */
                     sprintf(temporary_cmd_line, "%s-npme 0 -nb cpu -s %s %s", cmd_stub, tpr_names[k], cmd_args_bench);
-                    make_sure_it_runs(temporary_cmd_line, cmdline_length, fp, fnm, nfile);
+                    const bool runs =
+                            make_sure_it_runs(temporary_cmd_line, cmdline_length, fp, fnm, nfile);
+                    sfree(temporary_cmd_line);
+                    if (!runs)
+                    {
+                        sfree(nPMEnodes);
+                        sfree(command);
+                        sfree(cmd_stub);
+                        return false;
+                    }
                 }
                 bFirst = FALSE;
 
@@ -1682,6 +1716,7 @@ static void do_the_tests(FILE*  fp,                    /* General tune_pme outpu
     }
     sfree(command);
     sfree(cmd_stub);
+    return true;
 }
 
 
@@ -2257,60 +2292,60 @@ int gmx_tune_pme(int argc, char* argv[])
     /* Print out how long the tuning took */
     double seconds;
 
-    static t_filenm fnm[] = { /* tune_pme */
-                              { efOUT, "-p", "perf", ffWRITE },
-                              { efLOG, "-err", "bencherr", ffWRITE },
-                              { efTPR, "-so", "tuned", ffWRITE },
-                              /* mdrun: */
-                              { efTPR, "-s", nullptr, ffREAD },
-                              { efTRN, "-o", nullptr, ffWRITE },
-                              { efCOMPRESSED, "-x", nullptr, ffOPTWR },
-                              { efCPT, "-cpi", nullptr, ffOPTRD },
-                              { efCPT, "-cpo", nullptr, ffOPTWR },
-                              { efSTO, "-c", "confout", ffWRITE },
-                              { efEDR, "-e", "ener", ffWRITE },
-                              { efLOG, "-g", "md", ffWRITE },
-                              { efXVG, "-dhdl", "dhdl", ffOPTWR },
-                              { efXVG, "-field", "field", ffOPTWR },
-                              { efXVG, "-table", "table", ffOPTRD },
-                              { efXVG, "-tablep", "tablep", ffOPTRD },
-                              { efXVG, "-tableb", "table", ffOPTRD },
-                              { efTRX, "-rerun", "rerun", ffOPTRD },
-                              { efXVG, "-tpi", "tpi", ffOPTWR },
-                              { efXVG, "-tpid", "tpidist", ffOPTWR },
-                              { efEDI, "-ei", "sam", ffOPTRD },
-                              { efXVG, "-eo", "edsam", ffOPTWR },
-                              { efXVG, "-px", "pullx", ffOPTWR },
-                              { efXVG, "-pf", "pullf", ffOPTWR },
-                              { efXVG, "-ro", "rotation", ffOPTWR },
-                              { efLOG, "-ra", "rotangles", ffOPTWR },
-                              { efLOG, "-rs", "rotslabs", ffOPTWR },
-                              { efLOG, "-rt", "rottorque", ffOPTWR },
-                              { efMTX, "-mtx", "nm", ffOPTWR },
-                              { efXVG, "-swap", "swapions", ffOPTWR },
-                              /* Output files that are deleted after each benchmark run */
-                              { efTRN, "-bo", "bench", ffWRITE },
-                              { efXTC, "-bx", "bench", ffWRITE },
-                              { efCPT, "-bcpo", "bench", ffWRITE },
-                              { efSTO, "-bc", "bench", ffWRITE },
-                              { efEDR, "-be", "bench", ffWRITE },
-                              { efLOG, "-bg", "bench", ffWRITE },
-                              { efXVG, "-beo", "benchedo", ffOPTWR },
-                              { efXVG, "-bdhdl", "benchdhdl", ffOPTWR },
-                              { efXVG, "-bfield", "benchfld", ffOPTWR },
-                              { efXVG, "-btpi", "benchtpi", ffOPTWR },
-                              { efXVG, "-btpid", "benchtpid", ffOPTWR },
-                              { efXVG, "-bdevout", "benchdev", ffOPTWR },
-                              { efXVG, "-brunav", "benchrnav", ffOPTWR },
-                              { efXVG, "-bpx", "benchpx", ffOPTWR },
-                              { efXVG, "-bpf", "benchpf", ffOPTWR },
-                              { efXVG, "-bro", "benchrot", ffOPTWR },
-                              { efLOG, "-bra", "benchrota", ffOPTWR },
-                              { efLOG, "-brs", "benchrots", ffOPTWR },
-                              { efLOG, "-brt", "benchrott", ffOPTWR },
-                              { efMTX, "-bmtx", "benchn", ffOPTWR },
-                              { efNDX, "-bdn", "bench", ffOPTWR },
-                              { efXVG, "-bswap", "benchswp", ffOPTWR }
+    t_filenm fnm[] = { /* tune_pme */
+                       { efOUT, "-p", "perf", ffWRITE },
+                       { efLOG, "-err", "bencherr", ffWRITE },
+                       { efTPR, "-so", "tuned", ffWRITE },
+                       /* mdrun: */
+                       { efTPR, "-s", nullptr, ffREAD },
+                       { efTRN, "-o", nullptr, ffWRITE },
+                       { efCOMPRESSED, "-x", nullptr, ffOPTWR },
+                       { efCPT, "-cpi", nullptr, ffOPTRD },
+                       { efCPT, "-cpo", nullptr, ffOPTWR },
+                       { efSTO, "-c", "confout", ffWRITE },
+                       { efEDR, "-e", "ener", ffWRITE },
+                       { efLOG, "-g", "md", ffWRITE },
+                       { efXVG, "-dhdl", "dhdl", ffOPTWR },
+                       { efXVG, "-field", "field", ffOPTWR },
+                       { efXVG, "-table", "table", ffOPTRD },
+                       { efXVG, "-tablep", "tablep", ffOPTRD },
+                       { efXVG, "-tableb", "table", ffOPTRD },
+                       { efTRX, "-rerun", "rerun", ffOPTRD },
+                       { efXVG, "-tpi", "tpi", ffOPTWR },
+                       { efXVG, "-tpid", "tpidist", ffOPTWR },
+                       { efEDI, "-ei", "sam", ffOPTRD },
+                       { efXVG, "-eo", "edsam", ffOPTWR },
+                       { efXVG, "-px", "pullx", ffOPTWR },
+                       { efXVG, "-pf", "pullf", ffOPTWR },
+                       { efXVG, "-ro", "rotation", ffOPTWR },
+                       { efLOG, "-ra", "rotangles", ffOPTWR },
+                       { efLOG, "-rs", "rotslabs", ffOPTWR },
+                       { efLOG, "-rt", "rottorque", ffOPTWR },
+                       { efMTX, "-mtx", "nm", ffOPTWR },
+                       { efXVG, "-swap", "swapions", ffOPTWR },
+                       /* Output files that are deleted after each benchmark run */
+                       { efTRN, "-bo", "bench", ffWRITE },
+                       { efXTC, "-bx", "bench", ffWRITE },
+                       { efCPT, "-bcpo", "bench", ffWRITE },
+                       { efSTO, "-bc", "bench", ffWRITE },
+                       { efEDR, "-be", "bench", ffWRITE },
+                       { efLOG, "-bg", "bench", ffWRITE },
+                       { efXVG, "-beo", "benchedo", ffOPTWR },
+                       { efXVG, "-bdhdl", "benchdhdl", ffOPTWR },
+                       { efXVG, "-bfield", "benchfld", ffOPTWR },
+                       { efXVG, "-btpi", "benchtpi", ffOPTWR },
+                       { efXVG, "-btpid", "benchtpid", ffOPTWR },
+                       { efXVG, "-bdevout", "benchdev", ffOPTWR },
+                       { efXVG, "-brunav", "benchrnav", ffOPTWR },
+                       { efXVG, "-bpx", "benchpx", ffOPTWR },
+                       { efXVG, "-bpf", "benchpf", ffOPTWR },
+                       { efXVG, "-bro", "benchrot", ffOPTWR },
+                       { efLOG, "-bra", "benchrota", ffOPTWR },
+                       { efLOG, "-brs", "benchrots", ffOPTWR },
+                       { efLOG, "-brt", "benchrott", ffOPTWR },
+                       { efMTX, "-bmtx", "benchn", ffOPTWR },
+                       { efNDX, "-bdn", "bench", ffOPTWR },
+                       { efXVG, "-bswap", "benchswp", ffOPTWR }
     };
 
     gmx_bool bThreads = FALSE;
@@ -2448,7 +2483,7 @@ int gmx_tune_pme(int argc, char* argv[])
     seconds = gmx_gettime();
 
     if (!parse_common_args(
-                &argc, argv, PCA_NOEXIT_ON_ARGS, NFILE, fnm, asize(pa), pa, asize(desc), desc, 0, nullptr, &oenv))
+                &argc, argv, PCA_NOEXIT_ON_ARGS, NFILE, fnm, asize(pa), pa, asize(desc), desc, 0, nullptr, &oenv, nullptr))
     {
         return 0;
     }
@@ -2709,28 +2744,38 @@ int gmx_tune_pme(int argc, char* argv[])
     {
         GMX_RELEASE_ASSERT(npmevalues_opt[0] != nullptr,
                            "Options inconsistency; npmevalues_opt[0] is NULL");
-        do_the_tests(fp,
-                     tpr_names,
-                     maxPMEnodes,
-                     minPMEnodes,
-                     npme_fixed,
-                     npmevalues_opt[0],
-                     perfdata,
-                     &pmeentries,
-                     repeats,
-                     nnodes,
-                     ntprs,
-                     bThreads,
-                     cmd_mpirun,
-                     cmd_np,
-                     cmd_mdrun,
-                     cmd_args_bench,
-                     fnm,
-                     NFILE,
-                     presteps,
-                     cpt_steps,
-                     bCheck,
-                     eligible_gpu_ids);
+        if (!do_the_tests(fp,
+                          tpr_names,
+                          maxPMEnodes,
+                          minPMEnodes,
+                          npme_fixed,
+                          npmevalues_opt[0],
+                          perfdata,
+                          &pmeentries,
+                          repeats,
+                          nnodes,
+                          ntprs,
+                          bThreads,
+                          cmd_mpirun,
+                          cmd_np,
+                          cmd_mdrun,
+                          cmd_args_bench,
+                          fnm,
+                          NFILE,
+                          presteps,
+                          cpt_steps,
+                          bCheck,
+                          eligible_gpu_ids))
+        {
+            gmx_ffclose(fp);
+            if (repeats != 0)
+            {
+                // The first benchmark failed, the error was already reported
+                return 1;
+            }
+            finalize(opt2fn("-p", NFILE, fnm));
+            return 0;
+        }
 
         fprintf(fp, "\nTuning took%8.1f minutes.\n", (gmx_gettime() - seconds) / 60.0);
 
@@ -2773,3 +2818,5 @@ int gmx_tune_pme(int argc, char* argv[])
 
     return 0;
 }
+
+} // namespace gmx

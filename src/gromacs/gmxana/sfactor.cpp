@@ -46,7 +46,6 @@
 #include "gromacs/fileio/confio.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/fileio/xvgr.h"
-#include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/topology/index.h"
@@ -57,6 +56,7 @@
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/fileptr.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/futil.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/strdb.h"
@@ -452,7 +452,8 @@ extern int do_scattering_intensity(const char*             fnTPS,
                                    real                    end_q,
                                    real                    energy,
                                    int                     ng,
-                                   const gmx_output_env_t* oenv)
+                                   const gmx_output_env_t* oenv,
+                                   const gmx::TimeControl& timeControl)
 {
     int               i, *isize, flags = TRX_READ_X, **index_atp;
     t_trxstatus*      status;
@@ -502,7 +503,7 @@ extern int do_scattering_intensity(const char*             fnTPS,
     }
 
     /* The first time we read data is a little special */
-    read_first_frame(oenv, &status, fnTRX, &fr, flags);
+    read_first_frame(oenv, &status, fnTRX, &fr, &timeControl, flags);
 
     sf->total_n_atoms = fr.natoms;
 
@@ -546,6 +547,7 @@ extern int do_scattering_intensity(const char*             fnTPS,
     }
 
     while (read_next_frame(oenv, status, &fr));
+    close_trx(status);
 
     save_data(static_cast<structure_factor_t*>(sf), fnXVG, ng, start_q, end_q, oenv);
 

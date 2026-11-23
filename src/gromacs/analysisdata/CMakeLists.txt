@@ -32,7 +32,23 @@
 # the research papers on the package. Check out https://www.gromacs.org.
 
 add_library(analysisdata INTERFACE)
-file(GLOB ANALYSISDATA_SOURCES *.cpp modules/*.cpp)
+set(ANALYSISDATA_SOURCES
+    abstractdata.cpp
+    analysisdata.cpp
+    arraydata.cpp
+    dataframe.cpp
+    datamodule.cpp
+    datamodulemanager.cpp
+    dataproxy.cpp
+    datastorage.cpp
+    modules/average.cpp
+    modules/displacement.cpp
+    modules/frameaverager.cpp
+    modules/histogram.cpp
+    modules/lifetime.cpp
+    modules/plot.cpp
+    )
+list(TRANSFORM ANALYSISDATA_SOURCES PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/")
 set(LIBGROMACS_SOURCES ${LIBGROMACS_SOURCES} ${ANALYSISDATA_SOURCES} PARENT_SCOPE)
 
 # Source files have the following private module dependencies.
@@ -59,6 +75,33 @@ target_link_libraries(analysisdata INTERFACE
 #target_link_libraries(analysisdata PRIVATE tng_io)
 # TODO: Explicitly link specific modules.
 #target_link_libraries(analysisdata PRIVATE legacy_modules)
+
+# Headers that are installed as part of the legacy API. The module owns its
+# part of the installed include tree and installs it through a target file set.
+target_include_directories(analysisdata INTERFACE
+                           $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+
+target_sources(analysisdata
+    INTERFACE
+        FILE_SET public_headers
+        TYPE HEADERS
+        BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/include
+        FILES
+            include/gromacs/analysisdata/abstractdata.h
+            include/gromacs/analysisdata/analysisdata.h
+            include/gromacs/analysisdata/arraydata.h
+            include/gromacs/analysisdata/dataframe.h
+            include/gromacs/analysisdata/datamodule.h
+            include/gromacs/analysisdata/modules/average.h
+            include/gromacs/analysisdata/modules/displacement.h
+            include/gromacs/analysisdata/modules/histogram.h
+            include/gromacs/analysisdata/modules/lifetime.h
+            include/gromacs/analysisdata/modules/plot.h
+)
+
+if(GMX_INSTALL_LEGACY_API)
+    install(TARGETS analysisdata FILE_SET public_headers DESTINATION include)
+endif()
 
 if (BUILD_TESTING)
     add_subdirectory(tests)

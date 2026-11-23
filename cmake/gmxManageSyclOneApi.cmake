@@ -35,6 +35,9 @@
 # https://gitlab.kitware.com/cmake/cmake/-/issues/21711
 
 include(gmxFindFlagsForSource)
+include(CMakePushCheckState)
+include(CheckCompilerFlag)
+include(CheckCXXSourceCompiles)
 
 if(NOT GMX_GPU_SYCL OR GMX_SYCL_ACPP OR NOT GMX_SYCL_DPCPP)
     message(FATAL_ERROR "Internal error: OneAPI configuration script was included when it should not")
@@ -65,12 +68,10 @@ set(SAMPLE_SYCL_SOURCE
              return 0;
          }")
 set(SYCL_CXX_FLAGS "-fsycl")
-gmx_check_source_compiles_with_flags(
-    "${SAMPLE_SYCL_SOURCE}"
-    "${SYCL_CXX_FLAGS}"
-    "CXX"
-    SYCL_CXX_FLAGS_RESULT
-)
+cmake_push_check_state()
+set(CMAKE_REQUIRED_FLAGS "${SYCL_CXX_FLAGS}")
+check_cxx_source_compiles("${SAMPLE_SYCL_SOURCE}" SYCL_CXX_FLAGS_RESULT)
+cmake_pop_check_state()
 if (SYCL_CXX_FLAGS_RESULT)
     if(NOT CHECK_SYCL_CXX_FLAGS_QUIETLY)
         message(STATUS "Checking for flags to enable SYCL - ${SYCL_CXX_FLAGS}")
@@ -80,6 +81,15 @@ if (SYCL_CXX_FLAGS_RESULT)
     set(SYCL_TOOLCHAIN_LINKER_FLAGS ${SYCL_CXX_FLAGS})
 else()
     message(FATAL_ERROR "Cannot compile a SYCL program with ${SYCL_CXX_FLAGS}. Try a different compiler or disable SYCL.")
+endif()
+
+# When using the Ninja generator, CMake uses linker itself for dependency tracking.
+# In case of ICPX, the dependencies include many temporary files.
+# This causes re-linking of libgromacs.so (which is rather slow) every
+# time any build command is run, including `ninja check`.
+# No such problems observed with plain Make.
+if(CMAKE_GENERATOR MATCHES "Ninja")
+    set(CMAKE_LINK_DEPENDS_USE_LINKER FALSE)
 endif()
 
 # Try compiling an empty kernel to sniff out the enabled targets
@@ -113,6 +123,7 @@ try_compile(
     SOURCES_TYPE NORMAL
     SOURCE_FROM_VAR "sample_sycl_kernel_probe.cpp" SAMPLE_SYCL_KERNEL_PROBE_SOURCE
     COMPILE_DEFINITIONS "${SYCL_TOOLCHAIN_CXX_FLAGS};${SYCL_CXX_FLAGS_EXTRA}"
+    LOG_DESCRIPTION "Checking which oneAPI DPC++ targets are enabled"
     OUTPUT_VARIABLE SYCL_KERNEL_COMPILATION_LOG
 )
 unset(CMAKE_TRY_COMPILE_TARGET_TYPE)
@@ -145,12 +156,10 @@ list(APPEND SYCL_TOOLCHAIN_LINKER_FLAGS ${SYCL_CXX_FLAGS_EXTRA})
 # Add kernel-splitting flag if available, both for compiling and linking
 set(SYCL_DEVICE_CODE_SPLIT_CXX_FLAGS "-fsycl-device-code-split=per_kernel")
 list(JOIN SYCL_TOOLCHAIN_CXX_FLAGS " " SYCL_TOOLCHAIN_CXX_FLAGS_STR)
-gmx_check_source_compiles_with_flags(
-    "${SAMPLE_SYCL_SOURCE}"
-    "${SYCL_TOOLCHAIN_CXX_FLAGS_STR} ${SYCL_DEVICE_CODE_SPLIT_CXX_FLAGS}"
-    "CXX"
-    SYCL_DEVICE_CODE_SPLIT_CXX_FLAGS_RESULT
-)
+cmake_push_check_state()
+set(CMAKE_REQUIRED_FLAGS "${SYCL_TOOLCHAIN_CXX_FLAGS_STR} ${SYCL_DEVICE_CODE_SPLIT_CXX_FLAGS}")
+check_cxx_source_compiles("${SAMPLE_SYCL_SOURCE}" SYCL_DEVICE_CODE_SPLIT_CXX_FLAGS_RESULT)
+cmake_pop_check_state()
 if (SYCL_DEVICE_CODE_SPLIT_CXX_FLAGS_RESULT)
     list(APPEND SYCL_TOOLCHAIN_CXX_FLAGS ${SYCL_DEVICE_CODE_SPLIT_CXX_FLAGS})
     list(APPEND SYCL_TOOLCHAIN_LINKER_FLAGS ${SYCL_DEVICE_CODE_SPLIT_CXX_FLAGS})
@@ -172,21 +181,13 @@ endif()
 
 # We compile PME kernels for all possible sub-group sizes, so the warning is useless.
 # Added after oneAPI 2024.0 (https://github.com/intel/llvm/pull/11991).
-gmx_check_compiler_flag(
-    "-Wno-incorrect-sub-group-size"
-    "CXX"
-    HAVE_W_NO_INCORRECT_SUB_GROUP_SIZE_RESULT
-)
+check_compiler_flag(CXX "-Wno-incorrect-sub-group-size" HAVE_W_NO_INCORRECT_SUB_GROUP_SIZE_RESULT)
 if (HAVE_W_NO_INCORRECT_SUB_GROUP_SIZE_RESULT)
     list(APPEND SYCL_TOOLCHAIN_CXX_FLAGS "-Wno-incorrect-sub-group-size")
 endif()
 
 # Force small GRF size on PVC, see #5105
-gmx_check_compiler_flag(
-    "-ftarget-register-alloc-mode=pvc:small"
-    "CXX"
-    HAVE_TARGET_REGISTER_ALLOC_MODE_FLAG
-)
+check_compiler_flag(CXX "-ftarget-register-alloc-mode=pvc:small" HAVE_TARGET_REGISTER_ALLOC_MODE_FLAG)
 if (HAVE_TARGET_REGISTER_ALLOC_MODE_FLAG)
     list(APPEND SYCL_TOOLCHAIN_LINKER_FLAGS "-ftarget-register-alloc-mode=pvc:small")
 endif()
@@ -196,12 +197,10 @@ if(GMX_DPCPP_HAVE_CUDA_TARGET OR GMX_DPCPP_HAVE_HIP_TARGET)
     set(SYCL_WARNINGS_CXX_FLAGS "-Wno-linker-warnings;-Wno-override-module;-Wno-sycl-target")
     list(JOIN SYCL_TOOLCHAIN_CXX_FLAGS " " SYCL_TOOLCHAIN_CXX_FLAGS_STR)
     list(JOIN SYCL_WARNINGS_CXX_FLAGS " " SYCL_WARNINGS_CXX_FLAGS_STR)
-    gmx_check_source_compiles_with_flags(
-        "${SAMPLE_SYCL_SOURCE}"
-        "${SYCL_TOOLCHAIN_CXX_FLAGS_STR} ${SYCL_WARNINGS_CXX_FLAGS_STR}"
-        "CXX"
-        SYCL_WARNINGS_CXX_FLAGS_RESULT
-    )
+    cmake_push_check_state()
+    set(CMAKE_REQUIRED_FLAGS "${SYCL_TOOLCHAIN_CXX_FLAGS_STR} ${SYCL_WARNINGS_CXX_FLAGS_STR}")
+    check_cxx_source_compiles("${SAMPLE_SYCL_SOURCE}" SYCL_WARNINGS_CXX_FLAGS_RESULT)
+    cmake_pop_check_state()
     if (SYCL_WARNINGS_CXX_FLAGS_RESULT)
         list(APPEND SYCL_TOOLCHAIN_CXX_FLAGS ${SYCL_WARNINGS_CXX_FLAGS})
         list(APPEND SYCL_TOOLCHAIN_LINKER_FLAGS ${SYCL_WARNINGS_CXX_FLAGS})
@@ -228,12 +227,11 @@ if(GMX_DPCPP_HAVE_CUDA_TARGET OR GMX_DPCPP_HAVE_HIP_TARGET)
     if (GMX_DPCPP_HAVE_HIP_TARGET)
         set(OCLC_UNSAFE_FP_ATOMICS_FLAG "-mllvm=--amdgpu-oclc-unsafe-fp-atomics=true")
         list(JOIN SYCL_TOOLCHAIN_CXX_FLAGS " " SYCL_TOOLCHAIN_CXX_FLAGS_STR)
-        gmx_check_source_compiles_with_flags(
-            "${SAMPLE_SYCL_KERNEL_PROBE_SOURCE}"  # To check -mllvm= flags, we need to trigger the kernel pass
-            "${SYCL_TOOLCHAIN_CXX_FLAGS_STR} ${OCLC_UNSAFE_FP_ATOMICS_FLAG}"
-            "CXX"
-            OCLC_UNSAFE_FP_ATOMICS_FLAG_RESULT
-        )
+        cmake_push_check_state()
+        set(CMAKE_REQUIRED_FLAGS "${SYCL_TOOLCHAIN_CXX_FLAGS_STR} ${OCLC_UNSAFE_FP_ATOMICS_FLAG}")
+        # To check -mllvm= flags, we need to trigger the kernel pass.
+        check_cxx_source_compiles("${SAMPLE_SYCL_KERNEL_PROBE_SOURCE}" OCLC_UNSAFE_FP_ATOMICS_FLAG_RESULT)
+        cmake_pop_check_state()
         if (OCLC_UNSAFE_FP_ATOMICS_FLAG_RESULT)
             list(APPEND SYCL_TOOLCHAIN_CXX_FLAGS "${OCLC_UNSAFE_FP_ATOMICS_FLAG}")
         endif()
@@ -316,8 +314,14 @@ if(GMX_GPU_FFT_MKL)
 
     list(JOIN SYCL_TOOLCHAIN_CXX_FLAGS " " CMAKE_REQUIRED_FLAGS)
     set(CMAKE_REQUIRED_LIBRARIES "${GMX_EXTRA_LIBRARIES};${FFT_LIBRARIES}")
+    # oneAPI 2025.0 deprecated dfti.hpp in favour of dft.hpp
+    # oneAPI 2026.0 removed dfti.hpp
     check_cxx_source_compiles("
+#if __has_include(\"oneapi/mkl/dft.hpp\")
+#include <oneapi/mkl/dft.hpp>
+#else
 #include <oneapi/mkl/dfti.hpp>
+#endif
 int main() {
     oneapi::mkl::dft::descriptor<oneapi::mkl::dft::precision::SINGLE, oneapi::mkl::dft::domain::REAL> d({3,5,7});
     sycl::queue q;
@@ -344,6 +348,9 @@ if(GMX_GPU_FFT_BBFFT)
     # The double-batched FFT library is still called by its former
     # name bbfft in the implementation. For now, only the shared
     # libraries can link into GROMACS shared libraries.
+    if (NOT _sycl_has_valid_fft)  # Warn only once; see #5658
+        message(WARNING "Support for BBFFT is deprecated since GROMACS 2027 and can be removed in the future")
+    endif()
     if (BUILD_SHARED_LIBS)
         find_package(bbfft-sycl 0.3.1 REQUIRED shared)
     else()
@@ -361,9 +368,9 @@ endif()
 list(APPEND SYCL_TOOLCHAIN_CXX_FLAGS "-DSYCL2020_DISABLE_DEPRECATION_WARNINGS")
 
 # Make strings for pretty-printing in gmx -version
-string(REPLACE ";" " " SYCL_TOOLCHAIN_CXX_FLAGS_STR "${SYCL_TOOLCHAIN_CXX_FLAGS}")
+list(JOIN SYCL_TOOLCHAIN_CXX_FLAGS " " SYCL_TOOLCHAIN_CXX_FLAGS_STR)
 string(STRIP "${SYCL_TOOLCHAIN_CXX_FLAGS_STR}" SYCL_TOOLCHAIN_CXX_FLAGS_STR)
-string(REPLACE ";" " " SYCL_TOOLCHAIN_LINKER_FLAGS_STR "${SYCL_TOOLCHAIN_LINKER_FLAGS}")
+list(JOIN SYCL_TOOLCHAIN_LINKER_FLAGS " " SYCL_TOOLCHAIN_LINKER_FLAGS_STR)
 string(STRIP "${SYCL_TOOLCHAIN_LINKER_FLAGS_STR}" SYCL_TOOLCHAIN_LINKER_FLAGS_STR)
 
 # Add function wrapper similar to the one used by AdaptiveCpp
@@ -377,4 +384,4 @@ function(add_sycl_to_target)
     )
     set_property(SOURCE ${ARGS_SOURCES} APPEND PROPERTY COMPILE_OPTIONS ${SYCL_TOOLCHAIN_CXX_FLAGS})
     target_link_options(${ARGS_TARGET} PRIVATE ${SYCL_TOOLCHAIN_LINKER_FLAGS})
-endfunction(add_sycl_to_target)
+endfunction()

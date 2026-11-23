@@ -50,6 +50,7 @@
 
 #include "gromacs/fileio/pdbio.h"
 #include "gromacs/gmxpreprocess/add_par.h"
+#include "gromacs/gmxpreprocess/extendableforcefield.h"
 #include "gromacs/gmxpreprocess/fflibutil.h"
 #include "gromacs/gmxpreprocess/gen_ad.h"
 #include "gromacs/gmxpreprocess/gen_vsite.h"
@@ -61,7 +62,6 @@
 #include "gromacs/gmxpreprocess/topdirs.h"
 #include "gromacs/gmxpreprocess/topio.h"
 #include "gromacs/gmxpreprocess/toputil.h"
-#include "gromacs/math/functions.h"
 #include "gromacs/mdrun/binary_information.h"
 #include "gromacs/topology/atoms.h"
 #include "gromacs/topology/ifunc.h"
@@ -74,6 +74,7 @@
 #include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/futil.h"
 #include "gromacs/utility/logger.h"
 #include "gromacs/utility/niceheader.h"
@@ -89,15 +90,18 @@
 #include "hackblock.h"
 #include "resall.h"
 
+namespace gmx
+{
+
 const char* enumValueToString(HistidineStates enumValue)
 {
-    constexpr gmx::EnumerationArray<HistidineStates, const char*> histidineStateNames = {
+    constexpr EnumerationArray<HistidineStates, const char*> histidineStateNames = {
         "HISD", "HISE", "HISH", "HIS1"
     };
     return histidineStateNames[enumValue];
 }
 
-static int missing_atoms(const PreprocessResidue* rp, int resind, t_atoms* at, int i0, int i, const gmx::MDLogger& logger)
+static int missing_atoms(const PreprocessResidue* rp, int resind, t_atoms* at, int i0, int i, const MDLogger& logger)
 {
     int nmiss = 0;
     for (int j = 0; j < rp->natom(); j++)
@@ -144,24 +148,23 @@ bool is_int(double x)
     {
         x = -x;
     }
-    ix = gmx::roundToInt(x);
+    ix = roundToInt(x);
 
     return (std::fabs(x - ix) < tol);
 }
 
-static std::filesystem::path
-choose_ff_impl(const char* ffsel, char* forcefield, int ff_maxlen, const gmx::MDLogger& logger)
+static std::filesystem::path choose_ff_impl(const char* ffsel, char* forcefield, int ff_maxlen, const MDLogger& logger)
 {
-    std::vector<gmx::DataFileInfo> ffdirs = fflib_enumerate_forcefields();
-    const int                      nff    = gmx::ssize(ffdirs);
+    std::vector<DataFileInfo> ffdirs = fflib_enumerate_forcefields();
+    const int                 nff    = gmx::ssize(ffdirs);
 
     /* Store the force field names in ffs */
     std::vector<std::string> ffs;
     ffs.reserve(ffdirs.size());
     for (int i = 0; i < nff; ++i)
     {
-        ffs.push_back(gmx::stripSuffixIfPresent(ffdirs[i].name_.string(),
-                                                fflib_forcefield_dir_ext().string().c_str()));
+        ffs.push_back(stripSuffixIfPresent(ffdirs[i].name_.string(),
+                                           fflib_forcefield_dir_ext().string().c_str()));
     }
 
     int sel;
@@ -205,23 +208,23 @@ choose_ff_impl(const char* ffsel, char* forcefield, int ff_maxlen, const gmx::MD
             }
             else
             {
-                std::string message = gmx::formatString(
+                std::string message = formatString(
                         "Force field '%s' occurs in %d places, but not in "
                         "the current directory.\n"
                         "Run without the -ff switch and select the force "
                         "field interactively.",
                         ffsel,
                         nfound);
-                GMX_THROW(gmx::InconsistentInputError(message));
+                GMX_THROW(InconsistentInputError(message));
             }
         }
         else if (nfound == 0)
         {
-            std::string message = gmx::formatString(
+            std::string message = formatString(
                     "Could not find force field '%s' in current directory, "
                     "install tree or GMXLIB path.",
                     ffsel);
-            GMX_THROW(gmx::InconsistentInputError(message));
+            GMX_THROW(InconsistentInputError(message));
         }
     }
     else if (nff > 1)
@@ -235,7 +238,7 @@ choose_ff_impl(const char* ffsel, char* forcefield, int ff_maxlen, const gmx::MD
                                        .append(fflib_forcefield_doc().string());
             // TODO: Just try to open the file with a method that does not
             // throw/bail out with a fatal error instead of multiple checks.
-            if (gmx::File::exists(docFileName, gmx::File::returnFalseOnError))
+            if (File::exists(docFileName, File::returnFalseOnError))
             {
                 // TODO: Use a C++ API without such an intermediate/fixed-length buffer.
                 char buf[STRLEN];
@@ -321,7 +324,7 @@ choose_ff_impl(const char* ffsel, char* forcefield, int ff_maxlen, const gmx::MD
         {
             if (ffs[i] == ffs[sel])
             {
-                std::string message = gmx::formatString(
+                std::string message = formatString(
                         "Can only select the first of multiple force "
                         "field entries with directory name '%s%s' in "
                         "the list. If you want to use the next entry, "
@@ -331,7 +334,7 @@ choose_ff_impl(const char* ffsel, char* forcefield, int ff_maxlen, const gmx::MD
                         "in the current working directory.",
                         ffs[sel].c_str(),
                         fflib_forcefield_dir_ext().string().c_str());
-                GMX_THROW(gmx::NotImplementedError(message));
+                GMX_THROW(NotImplementedError(message));
             }
         }
     }
@@ -342,10 +345,10 @@ choose_ff_impl(const char* ffsel, char* forcefield, int ff_maxlen, const gmx::MD
 
     if (ffs[sel].length() >= static_cast<size_t>(ff_maxlen))
     {
-        std::string message = gmx::formatString("Length of force field name (%d) >= maxlen (%d)",
-                                                static_cast<int>(ffs[sel].length()),
-                                                ff_maxlen);
-        GMX_THROW(gmx::InvalidInputError(message));
+        std::string message = formatString("Length of force field name (%d) >= maxlen (%d)",
+                                           static_cast<int>(ffs[sel].length()),
+                                           ff_maxlen);
+        GMX_THROW(InvalidInputError(message));
     }
     std::strcpy(forcefield, ffs[sel].c_str());
 
@@ -361,7 +364,7 @@ choose_ff_impl(const char* ffsel, char* forcefield, int ff_maxlen, const gmx::MD
     return ffpath;
 }
 
-std::filesystem::path choose_ff(const char* ffsel, char* forcefield, int ff_maxlen, const gmx::MDLogger& logger)
+std::filesystem::path choose_ff(const char* ffsel, char* forcefield, int ff_maxlen, const MDLogger& logger)
 {
     try
     {
@@ -370,10 +373,32 @@ std::filesystem::path choose_ff(const char* ffsel, char* forcefield, int ff_maxl
     GMX_CATCH_ALL_AND_EXIT_WITH_FATAL_ERROR
 }
 
-void choose_watermodel(const char*                  wmsel,
-                       const std::filesystem::path& ffdir,
-                       char**                       watermodel,
-                       const gmx::MDLogger&         logger)
+/*!
+ * \brief Check that the topology file of a water model can be found.
+ *
+ * \throws gmx::InconsistentInputError if \p watermodel.itp is not found
+ *         through \p forceField.
+ */
+static void checkWaterModelTopology(const ExtendableForceField& forceField, const char* watermodel)
+{
+    const std::filesystem::path waterFile =
+            std::filesystem::path(watermodel).replace_extension("itp");
+    if (!forceField.findSinglePath(waterFile))
+    {
+        auto message = formatString(
+                "The topology file '%s' for the selected water "
+                "model '%s' can not be found in the force field "
+                "directory. Select a different water model.",
+                (forceField.forceFieldName() / waterFile).string().c_str(),
+                watermodel);
+        GMX_THROW(InconsistentInputError(message));
+    }
+}
+
+void choose_watermodel(const char*                 wmsel,
+                       const ExtendableForceField& forceField,
+                       char**                      watermodel,
+                       const MDLogger&             logger)
 {
     const char* fn_watermodels = "watermodels.dat";
     FILE*       fp;
@@ -390,13 +415,14 @@ void choose_watermodel(const char*                  wmsel,
     }
     else if (std::strcmp(wmsel, "select") != 0)
     {
+        checkWaterModelTopology(forceField, wmsel);
         *watermodel = gmx_strdup(wmsel);
 
         return;
     }
 
-    auto filename = std::filesystem::path(ffdir).append(fn_watermodels);
-    if (!fflib_fexist(filename))
+    const auto watermodelsFile = forceField.findSinglePath(fn_watermodels);
+    if (!watermodelsFile)
     {
         GMX_LOG(logger.warning)
                 .asParagraph()
@@ -406,7 +432,7 @@ void choose_watermodel(const char*                  wmsel,
         return;
     }
 
-    fp = fflib_open(filename);
+    fp = fflib_open(*watermodelsFile);
     GMX_LOG(logger.info).asParagraph().appendTextFormatted("Select the Water Model:");
     nwm   = 0;
     model = nullptr;
@@ -447,6 +473,7 @@ void choose_watermodel(const char*                  wmsel,
     }
     else
     {
+        checkWaterModelTopology(forceField, model[sel]);
         *watermodel = gmx_strdup(model[sel]);
     }
 
@@ -457,10 +484,10 @@ void choose_watermodel(const char*                  wmsel,
     sfree(model);
 }
 
-static int name2type(t_atoms*                               at,
-                     gmx::ArrayRef<const PreprocessResidue> usedPpResidues,
-                     const ResidueTypeMap&                  residueTypeMap,
-                     const gmx::MDLogger&                   logger)
+static int name2type(t_atoms*                          at,
+                     ArrayRef<const PreprocessResidue> usedPpResidues,
+                     const ResidueTypeMap&             residueTypeMap,
+                     const MDLogger&                   logger)
 {
     int    i, j, prevresind, i0;
     char*  name;
@@ -538,15 +565,15 @@ void print_top_comment(FILE* out, const std::filesystem::path& filename, const s
 {
     try
     {
-        gmx::TextWriter writer(out);
-        gmx::niceHeader(&writer, filename.string().c_str(), ';');
-        writer.writeLine(gmx::formatString(";\tThis is a %s topology file", bITP ? "include" : "standalone"));
+        TextWriter writer(out);
+        niceHeader(&writer, filename.string().c_str(), ';');
+        writer.writeLine(formatString(";\tThis is a %s topology file", bITP ? "include" : "standalone"));
         writer.writeLine(";");
 
-        gmx::BinaryInformationSettings settings;
+        BinaryInformationSettings settings;
         settings.generatedByHeader(true);
         settings.linePrefix(";\t");
-        gmx::printBinaryInformation(&writer, gmx::getProgramContext(), settings);
+        printBinaryInformation(&writer, getProgramContext(), settings);
     }
     GMX_CATCH_ALL_AND_EXIT_WITH_FATAL_ERROR
 
@@ -607,12 +634,14 @@ static void print_top_posre(FILE* out, const std::filesystem::path& pr)
     fprintf(out, "#endif\n\n");
 }
 
-static void print_top_water(FILE* out, const std::filesystem::path& ffdir, const char* water)
+static void print_top_water(FILE* out, const ExtendableForceField& forceField, const char* water)
 {
     fprintf(out, "; Include water topology\n");
 
-    auto waterPath = ffdir;
-    waterPath.append(water).replace_extension("itp");
+    const std::filesystem::path waterFile = std::filesystem::path(water).replace_extension("itp");
+    // The existence of the water model topology was checked when the model was
+    // selected; look it up again to write the location it was found in.
+    const std::filesystem::path waterPath = forceField.findRequiredPath(waterFile);
     fprintf(out, "#include \"%s\"\n", waterPath.generic_string().c_str());
 
     fprintf(out, "\n");
@@ -624,22 +653,17 @@ static void print_top_water(FILE* out, const std::filesystem::path& ffdir, const
     fprintf(out, "#endif\n");
     fprintf(out, "\n");
 
-    auto ionPerWaterPath = ffdir;
-    ionPerWaterPath.append(std::string("ions_").append(water).append(".itp"));
-
-    auto ionPath = ffdir;
-    ionPath.append("ions.itp");
-
-    if (fflib_fexist(ionPerWaterPath))
+    if (auto ionPerWaterPath = forceField.findSinglePath(
+                std::filesystem::path(std::string("ions_").append(water).append(".itp"))))
     {
         fprintf(out, "; Include topology for ions\n");
-        fprintf(out, "#include \"%s\"\n", ionPerWaterPath.generic_string().c_str());
+        fprintf(out, "#include \"%s\"\n", ionPerWaterPath->generic_string().c_str());
         fprintf(out, "\n");
     }
-    else if (fflib_fexist(ionPath))
+    else if (auto ionPath = forceField.findSinglePath("ions.itp"))
     {
         fprintf(out, "; Include topology for ions\n");
-        fprintf(out, "#include \"%s\"\n", ionPath.generic_string().c_str());
+        fprintf(out, "#include \"%s\"\n", ionPath->generic_string().c_str());
         fprintf(out, "\n");
     }
 }
@@ -651,12 +675,12 @@ static void print_top_system(FILE* out, const char* title)
     fprintf(out, "%s\n\n", title[0] ? title : "Protein");
 }
 
-void print_top_mols(FILE*                                      out,
-                    const char*                                title,
-                    const std::filesystem::path&               ffdir,
-                    const char*                                water,
-                    gmx::ArrayRef<const std::filesystem::path> incls,
-                    gmx::ArrayRef<const t_mols>                mols)
+void print_top_mols(FILE*                                 out,
+                    const char*                           title,
+                    const ExtendableForceField&           forceField,
+                    const char*                           water,
+                    ArrayRef<const std::filesystem::path> incls,
+                    ArrayRef<const t_mols>                mols)
 {
 
     if (!incls.empty())
@@ -671,7 +695,7 @@ void print_top_mols(FILE*                                      out,
 
     if (water)
     {
-        print_top_water(out, ffdir, water);
+        print_top_water(out, forceField, water);
     }
     print_top_system(out, title);
 
@@ -686,16 +710,16 @@ void print_top_mols(FILE*                                      out,
     }
 }
 
-void write_top(FILE*                                                                 out,
-               const std::filesystem::path&                                          pr,
-               const char*                                                           molname,
-               t_atoms*                                                              at,
-               bool                                                                  bRTPresname,
-               gmx::ArrayRef<const int>                                              bts,
-               const gmx::EnumerationArray<InteractionFunction, InteractionsOfType>& plist,
-               t_excls                                                               excls[],
-               PreprocessingAtomTypes*                                               atype,
-               int                                                                   nrexcl)
+void write_top(FILE*                                                            out,
+               const std::filesystem::path&                                     pr,
+               const char*                                                      molname,
+               t_atoms*                                                         at,
+               bool                                                             bRTPresname,
+               ArrayRef<const int>                                              bts,
+               const EnumerationArray<InteractionFunction, InteractionsOfType>& plist,
+               t_excls                                                          excls[],
+               PreprocessingAtomTypes*                                          atype,
+               int                                                              nrexcl)
 /* NOTE: nrexcl is not the size of *excl! */
 {
     if (at && atype)
@@ -746,16 +770,16 @@ void write_top(FILE*                                                            
         print_bondeds(out, at->nr, Directive::d_vsites2, InteractionFunction::VirtualSite2, 0, plist);
         print_bondeds(out, at->nr, Directive::d_vsites3, InteractionFunction::VirtualSite3, 0, plist);
         print_bondeds(
-                out, at->nr, Directive::d_vsites3, InteractionFunction::VirtualSite3FlexibleDistance, 0, plist);
+                out, at->nr, Directive::d_vsites3, InteractionFunction::VirtualSite3FixedDistance, 0, plist);
         print_bondeds(
-                out, at->nr, Directive::d_vsites3, InteractionFunction::VirtualSite3FlexibleAngleDistance, 0, plist);
+                out, at->nr, Directive::d_vsites3, InteractionFunction::VirtualSite3FixedAngleDistance, 0, plist);
         print_bondeds(out, at->nr, Directive::d_vsites3, InteractionFunction::VirtualSite3Outside, 0, plist);
         print_bondeds(
-                out, at->nr, Directive::d_vsites4, InteractionFunction::VirtualSite4FlexibleDistance, 0, plist);
+                out, at->nr, Directive::d_vsites4, InteractionFunction::VirtualSite4FixedDistance, 0, plist);
         print_bondeds(out,
                       at->nr,
                       Directive::d_vsites4,
-                      InteractionFunction::VirtualSite4FlexibleDistanceNormalization,
+                      InteractionFunction::VirtualSite4FixedDistanceNormalization,
                       0,
                       plist);
 
@@ -767,10 +791,7 @@ void write_top(FILE*                                                            
 }
 
 
-static void do_ssbonds(InteractionsOfType*                ps,
-                       t_atoms*                           atoms,
-                       gmx::ArrayRef<const DisulfideBond> ssbonds,
-                       bool                               bAllowMissing)
+static void do_ssbonds(InteractionsOfType* ps, t_atoms* atoms, ArrayRef<const DisulfideBond> ssbonds, bool bAllowMissing)
 {
     for (const auto& bond : ssbonds)
     {
@@ -791,20 +812,20 @@ static void do_ssbonds(InteractionsOfType*                ps,
     }
 }
 
-static void at2bonds(InteractionsOfType*                  psb,
-                     gmx::ArrayRef<MoleculePatchDatabase> globalPatches,
-                     t_atoms*                             atoms,
-                     gmx::ArrayRef<const gmx::RVec>       x,
-                     real                                 long_bond_dist,
-                     real                                 short_bond_dist,
-                     gmx::ArrayRef<const int>             cyclicBondsIndex,
-                     const gmx::MDLogger&                 logger)
+static void at2bonds(InteractionsOfType*             psb,
+                     ArrayRef<MoleculePatchDatabase> globalPatches,
+                     t_atoms*                        atoms,
+                     ArrayRef<const RVec>            x,
+                     real                            long_bond_dist,
+                     real                            short_bond_dist,
+                     ArrayRef<const int>             cyclicBondsIndex,
+                     const MDLogger&                 logger)
 {
     real        long_bond_dist2, short_bond_dist2;
     const char* ptr;
 
-    long_bond_dist2  = gmx::square(long_bond_dist);
-    short_bond_dist2 = gmx::square(short_bond_dist);
+    long_bond_dist2  = square(long_bond_dist);
+    short_bond_dist2 = square(short_bond_dist);
 
     if (debug)
     {
@@ -897,7 +918,7 @@ static bool pcompar(const InteractionOfType& a, const InteractionOfType& b)
     }
 }
 
-static void clean_bonds(InteractionsOfType* ps, const gmx::MDLogger& logger)
+static void clean_bonds(InteractionsOfType* ps, const MDLogger& logger)
 {
     if (ps->size() > 0)
     {
@@ -932,7 +953,7 @@ static void clean_bonds(InteractionsOfType* ps, const gmx::MDLogger& logger)
     }
 }
 
-void print_sums(const t_atoms* atoms, bool bSystem, const gmx::MDLogger& logger)
+void print_sums(const t_atoms* atoms, bool bSystem, const MDLogger& logger)
 {
     double      m, qtot;
     int         i;
@@ -980,7 +1001,7 @@ static void check_restp_types(const PreprocessResidue& r0, const PreprocessResid
                      static_cast<int>(r0.bRemoveDihedralIfWithImproper),
                      static_cast<int>(r1.bRemoveDihedralIfWithImproper));
 
-    for (auto i : gmx::EnumerationWrapper<BondedTypes>{})
+    for (auto i : EnumerationWrapper<BondedTypes>{})
     {
         check_restp_type(enumValueToString(i), r0.rb[i].type, r1.rb[i].type);
     }
@@ -998,7 +1019,7 @@ static void add_atom_to_restp(PreprocessResidue*   usedPpResidues,
         std::string buf = patch->nname;
         if (patch->nr > 1)
         {
-            buf.append(gmx::formatString("%d", k + 1));
+            buf.append(formatString("%d", k + 1));
         }
         usedPpResidues->atomname.insert(usedPpResidues->atomname.begin() + at_start + 1 + k,
                                         put_symtab(symtab, buf.c_str()));
@@ -1006,19 +1027,19 @@ static void add_atom_to_restp(PreprocessResidue*   usedPpResidues,
     }
 }
 
-void get_hackblocks_rtp(std::vector<MoleculePatchDatabase>*    globalPatches,
-                        std::vector<PreprocessResidue>*        usedPpResidues,
-                        gmx::ArrayRef<const PreprocessResidue> rtpFFDB,
-                        int                                    nres,
-                        t_resinfo*                             resinfo,
-                        int                                    nterpairs,
-                        t_symtab*                              symtab,
-                        gmx::ArrayRef<MoleculePatchDatabase*>  ntdb,
-                        gmx::ArrayRef<MoleculePatchDatabase*>  ctdb,
-                        gmx::ArrayRef<const int>               rn,
-                        gmx::ArrayRef<const int>               rc,
-                        bool                                   bAllowMissing,
-                        const gmx::MDLogger&                   logger)
+void get_hackblocks_rtp(std::vector<MoleculePatchDatabase>* globalPatches,
+                        std::vector<PreprocessResidue>*     usedPpResidues,
+                        ArrayRef<const PreprocessResidue>   rtpFFDB,
+                        int                                 nres,
+                        t_resinfo*                          resinfo,
+                        int                                 nterpairs,
+                        t_symtab*                           symtab,
+                        ArrayRef<MoleculePatchDatabase*>    ntdb,
+                        ArrayRef<MoleculePatchDatabase*>    ctdb,
+                        ArrayRef<const int>                 rn,
+                        ArrayRef<const int>                 rc,
+                        bool                                bAllowMissing,
+                        const MDLogger&                     logger)
 {
     char* key;
     bool  bRM;
@@ -1188,7 +1209,7 @@ static bool atomname_cmp_nr(const char* anm, const MoleculePatch* patch, int* nr
     {
         *nr = 0;
 
-        return (gmx::equalCaseInsensitive(anm, patch->nname));
+        return (equalCaseInsensitive(anm, patch->nname));
     }
     else
     {
@@ -1213,13 +1234,13 @@ static bool atomname_cmp_nr(const char* anm, const MoleculePatch* patch, int* nr
 }
 
 static bool match_atomnames_with_rtp_atom(t_atoms*                     pdba,
-                                          gmx::ArrayRef<gmx::RVec>     x,
+                                          ArrayRef<RVec>               x,
                                           t_symtab*                    symtab,
                                           int                          atind,
                                           PreprocessResidue*           localPpResidue,
                                           const MoleculePatchDatabase& singlePatch,
                                           bool                         bVerbose,
-                                          const gmx::MDLogger&         logger)
+                                          const MDLogger&              logger)
 {
     int   resnr;
     char* oldnm;
@@ -1232,7 +1253,7 @@ static bool match_atomnames_with_rtp_atom(t_atoms*                     pdba,
     bDeleted = FALSE;
     for (auto patch = singlePatch.hack.begin(); patch != singlePatch.hack.end(); patch++)
     {
-        if (patch->type() == MoleculePatchType::Replace && gmx::equalCaseInsensitive(oldnm, patch->oname))
+        if (patch->type() == MoleculePatchType::Replace && equalCaseInsensitive(oldnm, patch->oname))
         {
             /* This is a replace entry. */
             /* Check if we are not replacing a replaced atom. */
@@ -1240,7 +1261,7 @@ static bool match_atomnames_with_rtp_atom(t_atoms*                     pdba,
             for (auto selfPatch = singlePatch.hack.begin(); selfPatch != singlePatch.hack.end(); selfPatch++)
             {
                 if (patch != selfPatch && selfPatch->type() == MoleculePatchType::Replace
-                    && gmx::equalCaseInsensitive(selfPatch->nname, patch->oname))
+                    && equalCaseInsensitive(selfPatch->nname, patch->oname))
                 {
                     /* The replace in patch replaces an atom that
                      * was already replaced in selfPatch, we do not want
@@ -1260,7 +1281,7 @@ static bool match_atomnames_with_rtp_atom(t_atoms*                     pdba,
             auto        found = std::find_if(localPpResidue->atomname.begin(),
                                       localPpResidue->atomname.end(),
                                       [&newnm](char** name)
-                                      { return gmx::equalCaseInsensitive(newnm, *name); });
+                                      { return equalCaseInsensitive(newnm, *name); });
             if (found == localPpResidue->atomname.end())
             {
                 /* The new name is not present in the rtp.
@@ -1286,14 +1307,12 @@ static bool match_atomnames_with_rtp_atom(t_atoms*                     pdba,
                         }
                         else
                         {
-                            start_at = gmx::formatString(
-                                    "%s%d", singlePatch.hack[k].nname.c_str(), anmnr - 1);
+                            start_at = formatString("%s%d", singlePatch.hack[k].nname.c_str(), anmnr - 1);
                         }
-                        auto found2 =
-                                std::find_if(localPpResidue->atomname.begin(),
-                                             localPpResidue->atomname.end(),
-                                             [&start_at](char** name)
-                                             { return gmx::equalCaseInsensitive(start_at, *name); });
+                        auto found2 = std::find_if(localPpResidue->atomname.begin(),
+                                                   localPpResidue->atomname.end(),
+                                                   [&start_at](char** name)
+                                                   { return equalCaseInsensitive(start_at, *name); });
                         if (found2 == localPpResidue->atomname.end())
                         {
                             gmx_fatal(FARGS,
@@ -1339,8 +1358,7 @@ static bool match_atomnames_with_rtp_atom(t_atoms*                     pdba,
             /* Rename the atom in pdba */
             pdba->atomname[atind] = put_symtab(symtab, newnm.c_str());
         }
-        else if (patch->type() == MoleculePatchType::Delete
-                 && gmx::equalCaseInsensitive(oldnm, patch->oname))
+        else if (patch->type() == MoleculePatchType::Delete && equalCaseInsensitive(oldnm, patch->oname))
         {
             /* This is a delete entry, check if this atom is present
              * in the rtp entry of this residue.
@@ -1348,7 +1366,7 @@ static bool match_atomnames_with_rtp_atom(t_atoms*                     pdba,
             auto found3 = std::find_if(localPpResidue->atomname.begin(),
                                        localPpResidue->atomname.end(),
                                        [&oldnm](char** name)
-                                       { return gmx::equalCaseInsensitive(oldnm, *name); });
+                                       { return equalCaseInsensitive(oldnm, *name); });
             if (found3 == localPpResidue->atomname.end())
             {
                 /* This atom is not present in the rtp entry,
@@ -1382,22 +1400,22 @@ static bool match_atomnames_with_rtp_atom(t_atoms*                     pdba,
     return bDeleted;
 }
 
-void match_atomnames_with_rtp(gmx::ArrayRef<PreprocessResidue>     usedPpResidues,
-                              gmx::ArrayRef<MoleculePatchDatabase> globalPatches,
-                              t_atoms*                             pdba,
-                              t_symtab*                            symtab,
-                              gmx::ArrayRef<gmx::RVec>             x,
-                              bool                                 bVerbose,
-                              const gmx::MDLogger&                 logger)
+void match_atomnames_with_rtp(ArrayRef<PreprocessResidue>     usedPpResidues,
+                              ArrayRef<MoleculePatchDatabase> globalPatches,
+                              t_atoms*                        pdba,
+                              t_symtab*                       symtab,
+                              ArrayRef<RVec>                  x,
+                              bool                            bVerbose,
+                              const MDLogger&                 logger)
 {
     for (int i = 0; i < pdba->nr; i++)
     {
         const char*        oldnm          = *pdba->atomname[i];
         PreprocessResidue* localPpResidue = &usedPpResidues[pdba->atom[i].resind];
-        auto               found          = std::find_if(localPpResidue->atomname.begin(),
-                                  localPpResidue->atomname.end(),
-                                  [&oldnm](char** name)
-                                  { return gmx::equalCaseInsensitive(oldnm, *name); });
+        auto               found =
+                std::find_if(localPpResidue->atomname.begin(),
+                             localPpResidue->atomname.end(),
+                             [&oldnm](char** name) { return equalCaseInsensitive(oldnm, *name); });
         if (found == localPpResidue->atomname.end())
         {
             /* Not found yet, check if we have to rename this atom */
@@ -1412,11 +1430,11 @@ void match_atomnames_with_rtp(gmx::ArrayRef<PreprocessResidue>     usedPpResidue
 }
 
 #define NUM_CMAP_ATOMS 5
-static void gen_cmap(InteractionsOfType*                    psb,
-                     gmx::ArrayRef<const PreprocessResidue> usedPpResidues,
-                     t_atoms*                               atoms,
-                     gmx::ArrayRef<const int>               cyclicBondsIndex,
-                     const gmx::MDLogger&                   logger)
+static void gen_cmap(InteractionsOfType*               psb,
+                     ArrayRef<const PreprocessResidue> usedPpResidues,
+                     t_atoms*                          atoms,
+                     ArrayRef<const int>               cyclicBondsIndex,
+                     const MDLogger&                   logger)
 {
     int         residx;
     const char* ptr;
@@ -1526,35 +1544,35 @@ static void gen_cmap(InteractionsOfType*                    psb,
     /* Start the next residue */
 }
 
-void pdb2top(FILE*                                  top_file,
-             const std::filesystem::path&           posre_fn,
-             const char*                            molname,
-             t_atoms*                               atoms,
-             std::vector<gmx::RVec>*                x,
-             PreprocessingAtomTypes*                atype,
-             t_symtab*                              tab,
-             gmx::ArrayRef<const PreprocessResidue> rtpFFDB,
-             gmx::ArrayRef<PreprocessResidue>       usedPpResidues,
-             gmx::ArrayRef<MoleculePatchDatabase>   globalPatches,
-             bool                                   bAllowMissing,
-             bool                                   bVsites,
-             bool                                   bVsiteAromatics,
-             const std::filesystem::path&           ffdir,
-             real                                   mHmult,
-             gmx::ArrayRef<const DisulfideBond>     ssbonds,
-             real                                   long_bond_dist,
-             real                                   short_bond_dist,
-             bool                                   bDeuterate,
-             bool                                   bCmap,
-             bool                                   bRenumRes,
-             bool                                   bRTPresname,
-             gmx::ArrayRef<const int>               cyclicBondsIndex,
-             const gmx::MDLogger&                   logger)
+void pdb2top(FILE*                             top_file,
+             const std::filesystem::path&      posre_fn,
+             const char*                       molname,
+             t_atoms*                          atoms,
+             std::vector<RVec>*                x,
+             PreprocessingAtomTypes*           atype,
+             t_symtab*                         tab,
+             ArrayRef<const PreprocessResidue> rtpFFDB,
+             ArrayRef<PreprocessResidue>       usedPpResidues,
+             ArrayRef<MoleculePatchDatabase>   globalPatches,
+             bool                              bAllowMissing,
+             bool                              bVsites,
+             bool                              bVsiteAromatics,
+             const ExtendableForceField&       forceField,
+             real                              mHmult,
+             ArrayRef<const DisulfideBond>     ssbonds,
+             real                              long_bond_dist,
+             real                              short_bond_dist,
+             bool                              bDeuterate,
+             bool                              bCmap,
+             bool                              bRenumRes,
+             bool                              bRTPresname,
+             ArrayRef<const int>               cyclicBondsIndex,
+             const MDLogger&                   logger)
 {
-    gmx::EnumerationArray<InteractionFunction, InteractionsOfType> plist;
-    t_excls*                                                       excls;
-    int                                                            nmissat;
-    gmx::EnumerationArray<BondedTypes, int>                        bts;
+    EnumerationArray<InteractionFunction, InteractionsOfType> plist;
+    t_excls*                                                  excls;
+    int                                                       nmissat;
+    EnumerationArray<BondedTypes, int>                        bts;
 
     ResidueTypeMap residueTypeMap = residueTypeMapFromLibraryFile("residuetypes.dat");
 
@@ -1606,7 +1624,7 @@ void pdb2top(FILE*                                  top_file,
         }
         /* determine which atoms will be vsites and add dummy masses
            also renumber atom numbers in plist[0..Count]! */
-        do_vsites(rtpFFDB, atype, atoms, tab, x, plist, &vsiteTypeAndSign, mHmult, bVsiteAromatics, ffdir);
+        do_vsites(rtpFFDB, atype, atoms, tab, x, plist, &vsiteTypeAndSign, mHmult, bVsiteAromatics, forceField);
     }
 
     /* Make Angles and Dihedrals */
@@ -1654,11 +1672,11 @@ void pdb2top(FILE*                                  top_file,
                     plist[InteractionFunction::Bonds].size(),
                     plist[InteractionFunction::VirtualSite2].size()
                             + plist[InteractionFunction::VirtualSite3].size()
-                            + plist[InteractionFunction::VirtualSite3FlexibleDistance].size()
-                            + plist[InteractionFunction::VirtualSite3FlexibleAngleDistance].size()
+                            + plist[InteractionFunction::VirtualSite3FixedDistance].size()
+                            + plist[InteractionFunction::VirtualSite3FixedAngleDistance].size()
                             + plist[InteractionFunction::VirtualSite3Outside].size()
-                            + plist[InteractionFunction::VirtualSite4FlexibleDistance].size()
-                            + plist[InteractionFunction::VirtualSite4FlexibleDistanceNormalization].size());
+                            + plist[InteractionFunction::VirtualSite4FixedDistance].size()
+                            + plist[InteractionFunction::VirtualSite4FixedDistanceNormalization].size());
 
     print_sums(atoms, FALSE, logger);
 
@@ -1677,7 +1695,7 @@ void pdb2top(FILE*                                  top_file,
         /* We can copy the bonded types from the first restp,
          * since the types have to be identical for all residues in one molecule.
          */
-        for (auto i : gmx::EnumerationWrapper<BondedTypes>{})
+        for (auto i : EnumerationWrapper<BondedTypes>{})
         {
             bts[i] = usedPpResidues[0].rb[i].type;
         }
@@ -1701,3 +1719,5 @@ void pdb2top(FILE*                                  top_file,
     }
     sfree(excls);
 }
+
+} // namespace gmx

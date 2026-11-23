@@ -133,6 +133,29 @@ int getDeviceComputeUnitFactor(const DeviceInformation& deviceInfo)
     }
 }
 
+int chooseSubGroupSizeForDevice(const DeviceInformation& deviceInfo, int preferredSize)
+{
+    if (deviceInfo.supportedSubGroupSizes.size() == 1)
+    {
+        return deviceInfo.supportedSubGroupSizes[0];
+    }
+    else if (deviceInfo.supportedSubGroupSizes.size() > 1)
+    {
+        GMX_RELEASE_ASSERT(
+                std::find(deviceInfo.supportedSubGroupSizes.begin(),
+                          deviceInfo.supportedSubGroupSizes.end(),
+                          preferredSize)
+                        != deviceInfo.supportedSubGroupSizes.end(),
+                "Device has flexible sub-groups but does not support the preferred sub-group size");
+        return preferredSize;
+    }
+    else
+    {
+        GMX_RELEASE_ASSERT(false, "Device has no known supported sub-group sizes");
+        return 0;
+    }
+}
+
 
 std::vector<std::reference_wrapper<DeviceInformation>>
 getCompatibleDevices(const std::vector<std::unique_ptr<DeviceInformation>>& deviceInfoList)

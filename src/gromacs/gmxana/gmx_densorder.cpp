@@ -49,6 +49,7 @@
 #include "gromacs/fileio/matio.h"
 #include "gromacs/fileio/oenv.h"
 #include "gromacs/fileio/rgb.h"
+#include "gromacs/fileio/timecontrol.h"
 #include "gromacs/fileio/tpxio.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/fileio/xvgr.h"
@@ -137,7 +138,8 @@ static void density_in_time(const char*             fn,
                             int                     axis,
                             gmx_bool                bCenter,
                             gmx_bool                bps1d,
-                            const gmx_output_env_t* oenv)
+                            const gmx_output_env_t* oenv,
+                            const gmx::TimeControl& timeControl)
 
 {
     /*
@@ -159,7 +161,8 @@ static void density_in_time(const char*             fn,
             slicex, slicey, slicez; /*slice # of x y z position */
     real*** Densslice = nullptr;    /* Density-slice in one frame*/
     real    dscale;                 /*physical scaling factor*/
-    real    t, x, y, z;             /* time and coordinates*/
+    double  t;                      /* time */
+    real    x, y, z;                /* coordinates */
     rvec    bbww;
 
     *tblock = 0; /* blocknr in block average - initialise to 0*/
@@ -181,7 +184,7 @@ static void density_in_time(const char*             fn,
         default: gmx_fatal(FARGS, "Invalid axes. Terminating\n");
     }
 
-    if (read_first_x(oenv, &status, fn, &t, &x0, box) == 0)
+    if (read_first_x(oenv, &status, fn, &t, &x0, box, &timeControl) == 0)
     {
         gmx_fatal(FARGS, "Could not read coordinates from file"); /* Open trajectory for read*/
     }
@@ -725,46 +728,47 @@ static void writeraw(t_interf***                      int1,
 
 int gmx_densorder(int argc, char* argv[])
 {
-    static const char* desc[] = { "[THISMODULE] reduces a two-phase density distribution",
-                                  "along an axis, computed over a MD trajectory,",
-                                  "to 2D surfaces fluctuating in time, by a fit to",
-                                  "a functional profile for interfacial densities.",
-                                  "A time-averaged spatial representation of the",
-                                  "interfaces can be output with the option [TT]-tavg[tt]." };
+    const char* desc[] = { "[THISMODULE] reduces a two-phase density distribution",
+                           "along an axis, computed over a MD trajectory,",
+                           "to 2D surfaces fluctuating in time, by a fit to",
+                           "a functional profile for interfacial densities.",
+                           "A time-averaged spatial representation of the",
+                           "interfaces can be output with the option [TT]-tavg[tt]." };
 
     /* Extra arguments - but note how you always get the begin/end
      * options when running the program, without mentioning them here!
      */
 
-    gmx_output_env_t*  oenv;
-    t_topology*        top;
-    char**             grpname;
-    PbcType            pbcType;
-    int*               ngx;
-    static real        binw      = 0.2;
-    static real        binwz     = 0.05;
-    static real        dens1     = 0.00;
-    static real        dens2     = 1000.00;
-    static int         ftorder   = 0;
-    static int         nsttblock = 100;
-    static int         axis      = 2;
-    static const char* axtitle   = "Z";
-    int**              index; /* Index list for single group*/
-    int                xslices, yslices, zslices, tblock;
-    static gmx_bool    bGraph   = FALSE;
-    static gmx_bool    bCenter  = FALSE;
-    static gmx_bool    bFourier = FALSE;
-    static gmx_bool    bRawOut  = FALSE;
-    static gmx_bool    bOut     = FALSE;
-    static gmx_bool    b1d      = FALSE;
-    static int         nlevels  = 100;
+    gmx_output_env_t* oenv;
+    gmx::TimeControl  timeControl;
+    t_topology*       top;
+    char**            grpname;
+    PbcType           pbcType;
+    int*              ngx;
+    real              binw      = 0.2;
+    real              binwz     = 0.05;
+    real              dens1     = 0.00;
+    real              dens2     = 1000.00;
+    int               ftorder   = 0;
+    int               nsttblock = 100;
+    int               axis      = 2;
+    const char*       axtitle   = "Z";
+    int**             index; /* Index list for single group*/
+    int               xslices, yslices, zslices, tblock;
+    gmx_bool          bGraph   = FALSE;
+    gmx_bool          bCenter  = FALSE;
+    gmx_bool          bFourier = FALSE;
+    gmx_bool          bRawOut  = FALSE;
+    gmx_bool          bOut     = FALSE;
+    gmx_bool          b1d      = FALSE;
+    int               nlevels  = 100;
     /*Densitymap - Densmap[t][x][y][z]*/
     real**** Densmap = nullptr;
     /* Surfaces surf[t][surf_x,surf_y]*/
     t_interf ***surf1, ***surf2;
 
-    static const char* meth[] = { nullptr, "bisect", "functional", nullptr };
-    int                eMeth;
+    const char* meth[] = { nullptr, "bisect", "functional", nullptr };
+    int         eMeth;
 
     t_pargs pa[] = {
         { "-1d", FALSE, etBOOL, { &b1d }, "Pseudo-1d interface geometry" },
@@ -807,7 +811,7 @@ int gmx_densorder(int argc, char* argv[])
     /* This is the routine responsible for adding default options,
      * calling the X/motif interface, etc. */
     if (!parse_common_args(
-                &argc, argv, PCA_CAN_TIME | PCA_CAN_VIEW, NFILE, fnm, asize(pa), pa, asize(desc), desc, 0, nullptr, &oenv))
+                &argc, argv, PCA_CAN_TIME | PCA_CAN_VIEW, NFILE, fnm, asize(pa), pa, asize(desc), desc, 0, nullptr, &oenv, &timeControl))
     {
         return 0;
     }
@@ -844,7 +848,8 @@ int gmx_densorder(int argc, char* argv[])
                     axis,
                     bCenter,
                     b1d,
-                    oenv);
+                    oenv,
+                    timeControl);
 
     if (ftorder > 0)
     {

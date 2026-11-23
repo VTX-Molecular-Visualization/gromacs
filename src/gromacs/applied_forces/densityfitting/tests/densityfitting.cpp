@@ -57,7 +57,6 @@
 #include "gromacs/mdtypes/imdmodule.h"
 #include "gromacs/mdtypes/imdpoptionprovider.h"
 #include "gromacs/mdtypes/imdpoptionprovider_test_helper.h"
-#include "gromacs/mdtypes/mdatom.h"
 #include "gromacs/options/options.h"
 #include "gromacs/options/treesupport.h"
 #include "gromacs/utility/keyvaluetree.h"
@@ -74,7 +73,8 @@
 
 namespace gmx
 {
-
+namespace test
+{
 namespace
 {
 
@@ -137,5 +137,5 @@ TEST_F(DensityFittingTest, SingleAtom)
 }
 
 } // namespace
-
+} // namespace test
 } // namespace gmx

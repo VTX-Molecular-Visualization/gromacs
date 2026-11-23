@@ -42,20 +42,23 @@
 
 #include "compute_io.h"
 
-#include "gromacs/math/functions.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/mdtypes/pull_params.h"
 #include "gromacs/topology/topology.h"
 #include "gromacs/topology/topology_enums.h"
 #include "gromacs/utility/enumerationhelpers.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/real.h"
+
+namespace gmx
+{
 
 static int div_nsteps(int nsteps, int nst)
 {
     if (nst > 0)
     {
-        return gmx::divideRoundUp(1 + nsteps, nst);
+        return divideRoundUp(1 + nsteps, nst);
     }
     else
     {
@@ -65,17 +68,18 @@ static int div_nsteps(int nsteps, int nst)
 
 double compute_io(const t_inputrec* ir, int natoms, const SimulationGroups& groups, int nrener, int nrepl)
 {
+    const OutputControl& outputControl = ir->outputControl;
 
     int    nsteps    = ir->nsteps;
     int    nxtcatoms = 0;
     int    nstx, nstv, nstf, nste, nstlog, nstxtc;
     double cio;
 
-    nstx   = div_nsteps(nsteps, ir->nstxout);
-    nstv   = div_nsteps(nsteps, ir->nstvout);
-    nstf   = div_nsteps(nsteps, ir->nstfout);
-    nstxtc = div_nsteps(nsteps, ir->nstxout_compressed);
-    if (ir->nstxout_compressed > 0)
+    nstx   = div_nsteps(nsteps, outputControl.nstxout);
+    nstv   = div_nsteps(nsteps, outputControl.nstvout);
+    nstf   = div_nsteps(nsteps, outputControl.nstfout);
+    nstxtc = div_nsteps(nsteps, outputControl.nstxout_compressed);
+    if (outputControl.nstxout_compressed > 0)
     {
         for (int i = 0; i < natoms; i++)
         {
@@ -86,11 +90,11 @@ double compute_io(const t_inputrec* ir, int natoms, const SimulationGroups& grou
             }
         }
     }
-    nstlog = div_nsteps(nsteps, ir->nstlog);
+    nstlog = div_nsteps(nsteps, outputControl.nstlog);
     /* We add 2 for the header */
-    nste = div_nsteps(2 + nsteps, ir->nstenergy);
+    nste = div_nsteps(2 + nsteps, outputControl.nstenergy);
 
-    cio = 80 * natoms;
+    cio = 80.0 * natoms;
     cio += (nstx + nstf + nstv) * sizeof(real) * (3.0 * natoms);
     cio += nstxtc * (14 * 4 + nxtcatoms * 5.0); /* roughly 5 bytes per atom */
     cio += nstlog * (nrener * 16 * 2.0);        /* 16 bytes per energy term plus header */
@@ -145,7 +149,8 @@ double compute_io(const t_inputrec* ir, int natoms, const SimulationGroups& grou
             else
             {
                 /* as histograms: dh_hist_size ints per histogram */
-                cio += div_nsteps(nsteps, ir->nstenergy) * sizeof(int) * ir->fepvals->dh_hist_size * ndh;
+                cio += div_nsteps(nsteps, outputControl.nstenergy) * sizeof(int)
+                       * ir->fepvals->dh_hist_size * ndh;
             }
         }
     }
@@ -157,3 +162,5 @@ double compute_io(const t_inputrec* ir, int natoms, const SimulationGroups& grou
 
     return cio * nrepl / (1024 * 1024);
 }
+
+} // namespace gmx

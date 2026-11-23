@@ -104,10 +104,13 @@ public:
      * \param[in] container Handle to container in which to open the group.
      * \param[in] name      Name of group to open.
      *
-     * \throws FileIOError if the group does not exist, or if the value or step data sets
+     * \throws H5mdError if the group does not exist, or if the value or step data sets
      * cannot be found within, or if the data set types do not match.
      */
     H5mdTimeDataBlock(hid_t container, const char* name);
+
+    //! \brief Return the absolute error bound of the value data set (if lossy compression is applied).
+    std::optional<double> absoluteError() const;
 
     //! \brief Return whether or not this block manages a time data set.
     bool hasTime() const { return timeDataSet_.has_value(); }
@@ -124,7 +127,7 @@ public:
      * \param[in] frameIndex Index of frame to get the value for.
      *
      * \returns The step or std::nullopt if \p frameIndex is not within [0, numFrames).
-     * \throws  FileIOError if there was an error reading the value.
+     * \throws  H5mdError if there was an error reading the value.
      */
     std::optional<int64_t> readStepAtIndex(int64_t frameIndex);
 
@@ -136,7 +139,7 @@ public:
      *
      * \returns The time if available, or std::nullopt if \p frameIndex is not within
      *          [0, numFrames).
-     * \throws  FileIOError if there was an error reading the value.
+     * \throws  H5mdError if there was an error reading the value.
      */
     std::optional<double> readTimeAtIndex(int64_t frameIndex);
 
@@ -146,7 +149,7 @@ public:
      * \param[out] values      Buffer to read the value into.
      *
      * \returns Whether the index is within [0, numframes) and thus if the value was read into the buffer.
-     * \throws  FileIOError if there was an error reading the value.
+     * \throws  H5mdError if there was an error reading the value.
      */
     bool readValueAtIndex(int64_t frameIndex, ArrayRef<ValueType> values);
 
@@ -161,7 +164,7 @@ public:
      * \param[out] time       Buffer to read time into, or nullptr if not to read.
      *
      * \returns Whether the index is within [0,  numFrames) and thus if the frame was read.
-     * \throws  FileIOError if there was an error reading any value.
+     * \throws  H5mdError if there was an error reading any value.
      */
     bool readFrame(int64_t frameIndex, ArrayRef<ValueType> values, int64_t* step, double* time);
 
@@ -179,7 +182,7 @@ public:
      * \param[in] values Values to write.
      * \param[in] step   Step to write.
      *
-     * \throws FileIOError if there was an error writing the values or if a time
+     * \throws H5mdError if there was an error writing the values or if a time
      * data set is managed.
      */
     void writeNextFrame(ArrayRef<const ValueType> values, int64_t step);
@@ -194,7 +197,7 @@ public:
      * \param[in] step   Step to write.
      * \param[in] time   Time to write, if managed.
      *
-     * \throws FileIOError if there was an error writing the values.
+     * \throws H5mdError if there was an error writing the values.
      */
     void writeNextFrame(ArrayRef<const ValueType> values, int64_t step, double time);
 
@@ -208,7 +211,7 @@ private:
      * \param[in] stepDataSet  Data set for steps.
      * \param[in] timeDataSet  (Optional) Data set for times.
      *
-     * \throws FileIOError if the sets do not have the same number of values along
+     * \throws H5mdError if the sets do not have the same number of values along
      * their primary axis.
      */
     H5mdTimeDataBlock(H5mdFrameDataSet<ValueType>&&                   valueDataSet,
@@ -254,12 +257,21 @@ class H5mdTimeDataBlockBuilder
 public:
     /*! \brief Return a builder to create a \c H5mdTimeDataBlock (called \p name, in \p container).
      *
-     * \throws gmx::FileIOError if there already exists an object at the given path.
+     * \throws H5mdError if there already exists an object at the given path.
      */
     H5mdTimeDataBlockBuilder(hid_t container, const std::string& name);
 
-    //! \brief Set \p compression for value data set (default is uncompressed).
-    H5mdTimeDataBlockBuilder& withCompression(H5mdCompression compression);
+    /*! \brief Set \p compression for value data set (default is uncompressed).
+     *
+     * If \p compression is a lossy compression scheme, a positive \p absoluteError
+     * must be provided.
+     *
+     * See H5mdDataSetBuilder::withCompression for more details.
+     *
+     * \param[in] compression   Compression scheme for value data set.
+     * \param[in] absoluteError Absolute error for lossy compression scheme.
+     */
+    H5mdTimeDataBlockBuilder& withCompression(H5mdCompression compression, double absoluteError = 0.0);
 
     //! \brief Set dimension for a single frame in the value data set.
     H5mdTimeDataBlockBuilder& withFrameDimension(ArrayRef<const hsize_t> dims);

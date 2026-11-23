@@ -52,8 +52,8 @@
 #include "gromacs/gpu_utils/devicebuffer_hip.h"
 #include "gromacs/gpu_utils/hiputils.h"
 #include "gromacs/hardware/device_information.h"
-#include "gromacs/math/functions.h"
 #include "gromacs/timing/wallcycle.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/template_mp.h"
 #include "gromacs/utility/vec.h"
 
@@ -580,7 +580,7 @@ __global__ void pmegrid_to_fftgrid(float* __restrict__ gm_realGrid,
     int fftidx   = ix * fftSize.y * fftSize.z + iy * fftSize.z + iz;
     int pmeIndex = ix * pmeSize.y * pmeSize.z + iy * pmeSize.z + iz;
 
-    if (pmeToFft)
+    if constexpr (pmeToFft)
     {
         gm_fftGrid[fftidx] = gm_realGrid[pmeIndex];
     }
@@ -1575,8 +1575,9 @@ void convertPmeGridToFftGrid(const PmeGpu* pmeGpu, DeviceBuffer<float>* d_fftRea
         int fftSize = localFftSize[ZZ] * localFftSize[YY] * localFftNData[XX];
         if (pmeToFft)
         {
-            copyBetweenDeviceBuffers(d_fftRealGrid,
-                                     &pmeGpu->kernelParams->grid.d_realGrid[gridIndex],
+            copyBetweenDeviceBuffers(asRawDevicePointer(*d_fftRealGrid),
+                                     asRawDevicePointer(pmeGpu->kernelParams->grid.d_realGrid[gridIndex]),
+                                     0,
                                      fftSize,
                                      pmeGpu->archSpecific->pmeStream_,
                                      pmeGpu->settings.transferKind,
@@ -1584,8 +1585,9 @@ void convertPmeGridToFftGrid(const PmeGpu* pmeGpu, DeviceBuffer<float>* d_fftRea
         }
         else
         {
-            copyBetweenDeviceBuffers(&pmeGpu->kernelParams->grid.d_realGrid[gridIndex],
-                                     d_fftRealGrid,
+            copyBetweenDeviceBuffers(asRawDevicePointer(pmeGpu->kernelParams->grid.d_realGrid[gridIndex]),
+                                     asRawDevicePointer(*d_fftRealGrid),
+                                     0,
                                      fftSize,
                                      pmeGpu->archSpecific->pmeStream_,
                                      pmeGpu->settings.transferKind,

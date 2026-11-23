@@ -61,7 +61,6 @@
 #include "gromacs/mdlib/constr.h"
 #include "gromacs/mdlib/coupling.h"
 #include "gromacs/mdlib/energyoutput.h"
-#include "gromacs/mdlib/mdatoms.h"
 #include "gromacs/mdlib/resethandler.h"
 #include "gromacs/mdrun/replicaexchange.h"
 #include "gromacs/mdrun/shellfc.h"
@@ -73,7 +72,7 @@
 #include "gromacs/mdtypes/forcerec.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
-#include "gromacs/mdtypes/mdatom.h"
+#include "gromacs/mdtypes/mdatoms.h"
 #include "gromacs/mdtypes/mdrunoptions.h"
 #include "gromacs/mdtypes/observableshistory.h"
 #include "gromacs/modularsimulator/energydata.h"
@@ -116,7 +115,8 @@ void ModularSimulator::run()
             .asParagraph()
             .appendText("Using the modular simulator.");
 
-    ModularSimulatorAlgorithmBuilder algorithmBuilder(compat::make_not_null(legacySimulatorData_),
+    ModularSimulatorAlgorithmBuilder algorithmBuilder(deviceStreamManager_,
+                                                      compat::make_not_null(legacySimulatorData_),
                                                       std::move(checkpointDataHolder_));
     addIntegrationElements(&algorithmBuilder);
     auto algorithm = algorithmBuilder.build();
@@ -433,7 +433,7 @@ MessageStringCollector getReasonsForIncompatibility(const t_inputrec*           
                     || inputrec->deform[ZZ][XX] != 0.0 || inputrec->deform[ZZ][YY] != 0.0
                     || inputrec->deform[ZZ][ZZ] != 0.0,
             "Deformation is not supported by the modular simulator.");
-    reasonsForIncompatibility.appendIf(gmx_mtop_interaction_count(globalTopology, IF_VSITE) > 0,
+    reasonsForIncompatibility.appendIf(gmx_mtop_interaction_count(globalTopology, sc_ifcVirtualSite) > 0,
                                        "Virtual sites are not supported by the modular simulator.");
     reasonsForIncompatibility.appendIf(inputrec->bDoAwh,
                                        "AWH is not supported by the modular simulator.");
@@ -553,8 +553,10 @@ bool ModularSimulator::isInputCompatible(const MDLogger&                  mdlog,
     return true;
 }
 
-ModularSimulator::ModularSimulator(std::unique_ptr<LegacySimulatorData>      legacySimulatorData,
+ModularSimulator::ModularSimulator(const DeviceStreamManager*                deviceStreamManager,
+                                   std::unique_ptr<LegacySimulatorData>      legacySimulatorData,
                                    std::unique_ptr<ReadCheckpointDataHolder> checkpointDataHolder) :
+    deviceStreamManager_(deviceStreamManager),
     legacySimulatorData_(std::move(legacySimulatorData)),
     checkpointDataHolder_(std::move(checkpointDataHolder))
 {
@@ -599,8 +601,9 @@ void ModularSimulator::readCheckpointToTrxFrame(t_trxframe*               fr,
                        "written by modular simulator.");
     fr->bStep = true;
     fr->step = int64_to_int(checkpointHeaderContents.step, "conversion of checkpoint to trajectory");
-    fr->bTime = true;
-    fr->time  = checkpointHeaderContents.t;
+    fr->bTime        = true;
+    fr->timeIsDouble = true;
+    fr->time         = checkpointHeaderContents.t;
 
     fr->bAtoms = false;
 

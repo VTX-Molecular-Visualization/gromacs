@@ -67,7 +67,6 @@
 #include "gromacs/gmxlib/nrnb.h"
 #include "gromacs/listed_forces/listed_forces.h"
 #include "gromacs/math/arrayrefwithpadding.h"
-#include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
 #include "gromacs/mdlib/constr.h"
 #include "gromacs/mdlib/dispersioncorrection.h"
@@ -75,7 +74,6 @@
 #include "gromacs/mdlib/force.h"
 #include "gromacs/mdlib/force_flags.h"
 #include "gromacs/mdlib/gmx_omp_nthreads.h"
-#include "gromacs/mdlib/mdatoms.h"
 #include "gromacs/mdlib/tgroup.h"
 #include "gromacs/mdlib/update.h"
 #include "gromacs/mdlib/vsite.h"
@@ -90,7 +88,7 @@
 #include "gromacs/mdtypes/interaction_const.h"
 #include "gromacs/mdtypes/locality.h"
 #include "gromacs/mdtypes/md_enums.h"
-#include "gromacs/mdtypes/mdatom.h"
+#include "gromacs/mdtypes/mdatoms.h"
 #include "gromacs/mdtypes/mdrunoptions.h"
 #include "gromacs/mdtypes/multipletimestepping.h"
 #include "gromacs/mdtypes/simulation_workload.h"
@@ -116,6 +114,7 @@
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/logger.h"
 #include "gromacs/utility/range.h"
@@ -127,10 +126,9 @@
 
 #include "legacysimulator.h"
 
-struct gmx_edsam;
-
 namespace gmx
 {
+struct edsam;
 
 //! Global max algorithm
 static void global_max(const MpiComm& mpiComm, int* n)
@@ -142,21 +140,21 @@ static void global_max(const MpiComm& mpiComm, int* n)
 }
 
 //! Computes and returns the RF exclusion energy for the last molecule starting at \p beginAtom
-static real reactionFieldExclusionCorrection(gmx::ArrayRef<const gmx::RVec> x,
-                                             const t_mdatoms&               mdatoms,
-                                             const interaction_const_t&     ic,
-                                             const int                      beginAtom)
+static real reactionFieldExclusionCorrection(ArrayRef<const RVec>       x,
+                                             const MDAtoms&             mdAtoms,
+                                             const interaction_const_t& ic,
+                                             const int                  beginAtom)
 {
     real energy = 0;
 
-    for (int i = beginAtom; i < mdatoms.homenr; i++)
+    for (int i = beginAtom; i < mdAtoms.numHomeAtoms; i++)
     {
-        const real qi = mdatoms.chargeA[i];
+        const real qi = mdAtoms.chargeA[i];
         energy -= 0.5 * qi * qi * ic.coulomb.reactionFieldShift;
 
-        for (int j = i + 1; j < mdatoms.homenr; j++)
+        for (int j = i + 1; j < mdAtoms.numHomeAtoms; j++)
         {
-            const real qj  = mdatoms.chargeA[j];
+            const real qj  = mdAtoms.chargeA[j];
             const real rsq = distance2(x[i], x[j]);
             energy += qi * qj * (ic.coulomb.reactionFieldCoefficient * rsq - ic.coulomb.reactionFieldShift);
         }
@@ -177,7 +175,7 @@ public:
     TestParticleInsertion(const t_inputrec&         inputRec,
                           const gmx_mtop_t&         topGlobal,
                           const gmx_localtop_t&     top,
-                          const t_mdatoms&          mdatoms,
+                          const MDAtoms&            mdAtoms,
                           const MDModulesNotifiers& mdModulesNotifiers,
                           t_forcerec*               forceRec,
                           gmx_enerdata_t*           enerd,
@@ -249,13 +247,13 @@ private:
     //! The local topology
     const gmx_localtop_t& top_;
     //! The MD-atoms data
-    const t_mdatoms& mdatoms_;
+    const MDAtoms& mdAtoms_;
 
     //! Notifiers for MDModules
     const MDModulesNotifiers& mdModulesNotifiers_;
 
     //! A single rank MPI communicator
-    gmx::MpiComm mpiCommSingleRank_ = gmx::MpiComm(gmx::MpiComm::SingleRank{});
+    MpiComm mpiCommSingleRank_ = MpiComm(MpiComm::SingleRank{});
     //! A non-parallel commrec for the energy calculations
     const t_commrec cr_;
 
@@ -264,7 +262,7 @@ private:
     //! Energy output
     gmx_enerdata_t& enerd_;
     //! The force buffers
-    gmx::ForceBuffers forceBuffers_;
+    ForceBuffers forceBuffers_;
 
     //! Random number generator with 16 bits internal counter => 2^16 * 2 = 131072 values per stream
     ThreeFry2x64<16> rng_;
@@ -326,13 +324,13 @@ namespace
 {
 
 //! Returns whether there are electrostatic contributions to the insertion energy
-bool haveElectrostatics(const t_mdatoms& mdatoms, const Range<int>& testAtomsRange)
+bool haveElectrostatics(const MDAtoms& mdAtoms, const Range<int>& testAtomsRange)
 {
     return std::any_of(testAtomsRange.begin(),
                        testAtomsRange.end(),
-                       [mdatoms](int i) {
-                           return mdatoms.chargeA[i] != 0
-                                  || (!mdatoms.chargeB.empty() && mdatoms.chargeB[i] != 0);
+                       [mdAtoms](int i) {
+                           return mdAtoms.chargeA[i] != 0
+                                  || (!mdAtoms.chargeB.empty() && mdAtoms.chargeB[i] != 0);
                        });
 }
 
@@ -341,7 +339,7 @@ bool haveElectrostatics(const t_mdatoms& mdatoms, const Range<int>& testAtomsRan
 TestParticleInsertion::TestParticleInsertion(const t_inputrec&         inputRec,
                                              const gmx_mtop_t&         topGlobal,
                                              const gmx_localtop_t&     top,
-                                             const t_mdatoms&          mdatoms,
+                                             const MDAtoms&            mdAtoms,
                                              const MDModulesNotifiers& mdModulesNotifiers,
                                              t_forcerec*               forceRec,
                                              gmx_enerdata_t*           enerd,
@@ -355,7 +353,7 @@ TestParticleInsertion::TestParticleInsertion(const t_inputrec&         inputRec,
     inputRec_(inputRec),
     topGlobal_(topGlobal),
     top_(top),
-    mdatoms_(mdatoms),
+    mdAtoms_(mdAtoms),
     mdModulesNotifiers_(mdModulesNotifiers),
     cr_(mpiCommSingleRank_, mpiCommSingleRank_, nullptr),
     fr_(*forceRec),
@@ -366,7 +364,7 @@ TestParticleInsertion::TestParticleInsertion(const t_inputrec&         inputRec,
     xMoleculeToInsert_(xMoleculeToInsert.begin(), xMoleculeToInsert.end()),
     ngid_(topGlobal.groups.groups[SimulationAtomGroupType::EnergyOutput].size()),
     beta_(beta),
-    haveElectrostatics_(haveElectrostatics(mdatoms, testAtomsRange)),
+    haveElectrostatics_(haveElectrostatics(mdAtoms, testAtomsRange)),
     rfExclusionEnergy_(rfExclusionEnergy),
     referenceVolumeShift_(std::log(referenceVolume)),
     bins_(1),
@@ -379,7 +377,7 @@ TestParticleInsertion::TestParticleInsertion(const t_inputrec&         inputRec,
 
     forceBuffers_.resize(topGlobal_.natoms);
 
-    gid_tp_ = atomInfoInsertion.atomInfo[0] & gmx::sc_atomInfo_EnergyGroupIdMask;
+    gid_tp_ = atomInfoInsertion.atomInfo[0] & sc_atomInfo_EnergyGroupIdMask;
 
     haveDispCorr_ = (inputRec.eDispCorr != DispersionCorrectionType::No);
     haveRFExcl_   = (haveElectrostatics_ && usingRF(inputRec.coulombtype));
@@ -431,8 +429,7 @@ void TestParticleInsertion::checkEnergyGroups(ArrayRef<const AtomInfoWithinMolec
 
     for (int a : testAtomsRange_)
     {
-        if ((atomInfoInsertion.atomInfo[a - *testAtomsRange_.begin()] & gmx::sc_atomInfo_EnergyGroupIdMask)
-            != gid_tp_)
+        if ((atomInfoInsertion.atomInfo[a - *testAtomsRange_.begin()] & sc_atomInfo_EnergyGroupIdMask) != gid_tp_)
         {
             fprintf(fpLog,
                     "NOTE: Atoms in the molecule to insert belong to different energy groups.\n"
@@ -457,7 +454,7 @@ FILE* TestParticleInsertion::openOutputFile(const char* fileName, const gmx_outp
 
     for (int i = 0; i < ngid_; i++)
     {
-        leg.emplace_back(gmx::formatString(
+        leg.emplace_back(formatString(
                 "f. <U\\sVdW %s\\Ne\\S-\\betaU\\N>",
                 *(groups.groupNames[groups.groups[SimulationAtomGroupType::EnergyOutput][i]])));
     }
@@ -469,7 +466,7 @@ FILE* TestParticleInsertion::openOutputFile(const char* fileName, const gmx_outp
     {
         for (int i = 0; i < ngid_; i++)
         {
-            leg.emplace_back(gmx::formatString(
+            leg.emplace_back(formatString(
                     "f. <U\\sCoul %s\\Ne\\S-\\betaU\\N>",
                     *(groups.groupNames[groups.groups[SimulationAtomGroupType::EnergyOutput][i]])));
         }
@@ -555,7 +552,7 @@ std::pair<double, double> TestParticleInsertion::performSingleInsertion(const do
 
     /* Note: NonLocal refers to the inserted molecule */
     fr_.nbv->convertCoordinates(AtomLocality::NonLocal, x);
-    fr_.longRangeNonbondeds->updateAfterPartition(mdatoms_);
+    fr_.longRangeNonbondeds->updateAfterPartition(mdAtoms_);
 
     // TPI might place a particle so close that the potential
     // is infinite. Since this is intended to happen, we
@@ -569,8 +566,10 @@ std::pair<double, double> TestParticleInsertion::performSingleInsertion(const do
     runScheduleWork->stepWork = setupStepWorkload(legacyForceFlags,
                                                   inputRec_.mtsLevels,
                                                   step,
+                                                  {},
                                                   runScheduleWork->domainWork,
-                                                  runScheduleWork->simulationWork);
+                                                  runScheduleWork->simulationWork,
+                                                  inputRec_);
 
     tensor force_vir;
     clear_mat(force_vir);
@@ -593,7 +592,7 @@ std::pair<double, double> TestParticleInsertion::performSingleInsertion(const do
              &stateGlobal->hist,
              &forceBuffers_.view(),
              force_vir,
-             &mdatoms_,
+             mdAtoms_,
              &enerd_,
              stateGlobal->lambda,
              &fr_,
@@ -820,7 +819,7 @@ double TestParticleInsertion::insertIntoFrame(const double           t,
 
             /* TODO: Avoid updating all atoms at every bNS step */
             fr_.nbv->setAtomProperties(
-                    mdatoms_.typeA, mdatoms_.chargeA, fr_.atomInfo, mdatoms_.typeB, mdatoms_.chargeB);
+                    mdAtoms_.typeA, mdAtoms_.chargeA, fr_.atomInfo, mdAtoms_.typeB, mdAtoms_.chargeB);
 
             fr_.nbv->constructPairlist(InteractionLocality::Local, top_.excls, false, step, nrnb);
 
@@ -924,7 +923,7 @@ void LegacySimulator::do_tpi()
 
     /*
        init_em(fplog,TPI,inputrec,&lambda,nrnb,mu_tot,
-       state_global->box,fr,mdatoms,top,cr,nfile,fnm,NULL,NULL);*/
+       state_global->box,fr,mdAtoms,top,cr,nfile,fnm,NULL,NULL);*/
     /* We never need full pbc for TPI */
     fr_->pbcType = PbcType::Xyz;
     /* Determine the temperature for the Boltzmann weighting */
@@ -945,7 +944,7 @@ void LegacySimulator::do_tpi()
         }
         fprintf(fpLog_, "\n  The temperature for test particle insertion is %.3f K\n\n", temp);
     }
-    const real beta = 1.0 / (gmx::c_boltz * temp);
+    const real beta = 1.0 / (c_boltz * temp);
 
     /* Number of insertions per frame */
     const int64_t nsteps = inputRec_->nsteps;
@@ -955,13 +954,11 @@ void LegacySimulator::do_tpi()
      */
     const real drmax = inputRec_->rtpi;
 
-    auto* mdatoms = mdAtoms_->mdatoms();
-    atoms2md(topGlobal_, *inputRec_, -1, {}, topGlobal_.natoms, mdAtoms_);
-    const double initMassLambda =
+    const real initMassLambda =
             (inputRec_->efep == FreeEnergyPerturbationType::No
                      ? 0.0
                      : inputRec_->fepvals->initialLambda(FreeEnergyPerturbationCouplingType::Mass));
-    update_mdatoms(mdatoms, initMassLambda);
+    mdAtoms_->updateAfterPartition(topGlobal_.natoms, {}, topGlobal_.natoms, initMassLambda);
 
     /* Print to log file  */
     walltime_accounting_start_time(wallTimeAccounting_);
@@ -980,7 +977,7 @@ void LegacySimulator::do_tpi()
 
     if (usingPme(fr_->ic->coulomb.type))
     {
-        gmx_pme_reinit_atoms(fr_->pmedata, *testAtomsRange.begin(), {}, {});
+        gmx_pme_reinit_atoms(fr_->pmedata.get(), *testAtomsRange.begin(), {}, {});
     }
 
     /* With reacion-field we have distance dependent potentials
@@ -991,7 +988,7 @@ void LegacySimulator::do_tpi()
     if (usingRF(fr_->ic->coulomb.type))
     {
         rfExclusionEnergy =
-                reactionFieldExclusionCorrection(x, *mdatoms, *fr_->ic, *testAtomsRange.begin());
+                reactionFieldExclusionCorrection(x, *mdAtoms_, *fr_->ic, *testAtomsRange.begin());
         if (debug)
         {
             fprintf(debug, "RF exclusion correction for inserted molecule: %f kJ/mol\n", rfExclusionEnergy);
@@ -1042,7 +1039,7 @@ void LegacySimulator::do_tpi()
         fprintf(fpLog_,
                 "\nWill insert %d atoms %s partial charges\n",
                 testAtomsRange.size(),
-                haveElectrostatics(*mdatoms, testAtomsRange) ? "with" : "without");
+                haveElectrostatics(*mdAtoms_, testAtomsRange) ? "with" : "without");
 
         fprintf(fpLog_,
                 "\nWill insert %" PRId64 " times in each frame of %s\n",
@@ -1098,7 +1095,7 @@ void LegacySimulator::do_tpi()
     const InteractionDefinitions emptyInteractionDefinitions(emptyFFParams);
     for (auto& listedForces : fr_->listedForces)
     {
-        listedForces.setup(emptyInteractionDefinitions, 0, false, mdatoms->cVCM);
+        listedForces.setup(emptyInteractionDefinitions, 0, false, mdAtoms_->cVCM);
     }
 
     double V_all     = 0;
@@ -1109,12 +1106,12 @@ void LegacySimulator::do_tpi()
 
     t_trxstatus* status;
     t_trxframe   rerun_fr;
-    bool         isNotLastFrame =
-            read_first_frame(oenv_, &status, opt2fn("-rerun", nFile_, fnm_), &rerun_fr, TRX_NEED_X);
+    bool         isNotLastFrame = read_first_frame(
+            oenv_, &status, opt2fn("-rerun", nFile_, fnm_), &rerun_fr, nullptr, TRX_NEED_X);
     int frame = 0;
 
     if (rerun_fr.natoms - (insertIntoCavity ? gmx::ssize(massesDefiningCavity) : 0)
-        != mdatoms->nr - testAtomsRange.size())
+        != mdAtoms_->numHomeAtoms - testAtomsRange.size())
     {
         gmx_fatal(FARGS,
                   "Number of atoms in trajectory (%d)%s "
@@ -1122,14 +1119,14 @@ void LegacySimulator::do_tpi()
                   "minus the number of atoms to insert (%d)\n",
                   rerun_fr.natoms,
                   insertIntoCavity ? " minus one" : "",
-                  mdatoms->nr,
+                  mdAtoms_->numHomeAtoms,
                   testAtomsRange.size());
     }
 
     TestParticleInsertion tpi(*inputRec_,
                               topGlobal_,
                               *top_,
-                              *mdatoms,
+                              *mdAtoms_,
                               mdModulesNotifiers_,
                               fr_,
                               enerd_,
@@ -1190,7 +1187,7 @@ void LegacySimulator::do_tpi()
                                  xFrame,
                                  nullptr);
 
-        gmx_edsam* const ed = nullptr;
+        edsam* const ed = nullptr;
 
         // TPI does not support DD so we only call this once, on the first step
         GMX_ASSERT(runScheduleWork_->simulationWork.havePpDomainDecomposition == false,
@@ -1203,7 +1200,7 @@ void LegacySimulator::do_tpi()
         // so care needs to be taken that members of domainWork get correctly initialized
         // for the TPI use-case.
         runScheduleWork_->domainWork = setupDomainLifetimeWorkload(
-                *inputRec_, *fr_, pullWork_, ed, *mdatoms, runScheduleWork_->simulationWork);
+                *inputRec_, *fr_, pullWork_, ed, mdAtoms_->nPerturbed > 0, runScheduleWork_->simulationWork);
 
         const int64_t step = cr_->commMyGroup.rank() * tpi.stepBlockSize();
 
@@ -1260,6 +1257,7 @@ void LegacySimulator::do_tpi()
     walltime_accounting_end_time(wallTimeAccounting_);
 
     close_trx(status);
+    done_frame(&rerun_fr);
 
     if (fp_tpi != nullptr)
     {
@@ -1299,7 +1297,7 @@ void LegacySimulator::do_tpi()
                           "\\betaU - log(V/<V>)",
                           "count",
                           oenv_);
-        auto str = gmx::formatString("number \\betaU > %g: %9.3e", sc_bU_bin_limit, bins[0]);
+        auto str = formatString("number \\betaU > %g: %9.3e", sc_bU_bin_limit, bins[0]);
         xvgr_subtitle(fp_tpi, str.c_str(), oenv_);
         std::array<std::string, 2> tpid_leg = { "direct", "reweighted" };
         xvgrLegend(fp_tpi, tpid_leg, oenv_);

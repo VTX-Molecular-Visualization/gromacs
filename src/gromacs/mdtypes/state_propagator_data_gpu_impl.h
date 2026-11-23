@@ -52,6 +52,7 @@
 #include "gromacs/gpu_utils/gpueventsynchronizer.h"
 #include "gromacs/mdtypes/state_propagator_data_gpu.h"
 #include "gromacs/utility/enumerationhelpers.h"
+#include "gromacs/utility/gmxmpi.h"
 #include "gromacs/utility/vectypes.h"
 
 struct gmx_wallcycle;
@@ -86,6 +87,7 @@ public:
      *  \param[in] allocationBlockSizeDivisor  Determines the padding size for coordinates buffer.
      *  \param[in] useNvshmem                  Whether to use NVSHMEM for comm
      *  \param[in] useGpuFBufferOpsWhenAllowed Whether the simulation uses F-buffer ops on the GPU
+     *  \param[in] commMySim                   Communicator for the whole simulation
      *  \param[in] wcycle                      Wall cycle counter data.
      */
     Impl(const DeviceStreamManager& deviceStreamManager,
@@ -93,6 +95,7 @@ public:
          int                        allocationBlockSizeDivisor,
          bool                       useNvshmem,
          bool                       useGpuFBufferOpsWhenAllowed,
+         const MpiComm&             commMySim,
          gmx_wallcycle*             wcycle);
 
     /*! \brief Constructor to use in PME-only rank and in tests.
@@ -110,6 +113,7 @@ public:
      *  \param[in] transferKind    H2D/D2H transfer call behavior (synchronous or not).
      *  \param[in] allocationBlockSizeDivisor  Determines the padding size for coordinates buffer.
      *  \param[in] useNvshmem      Whether to use NVSHMEM for comm
+     *  \param[in] commMySim       Communicator for the whole simulation
      *  \param[in] wcycle          Wall cycle counter data.
      */
     Impl(const DeviceStream*  pmeStream,
@@ -117,6 +121,7 @@ public:
          GpuApiCallBehavior   transferKind,
          int                  allocationBlockSizeDivisor,
          bool                 useNvshmem,
+         const MpiComm&       commMySim,
          gmx_wallcycle*       wcycle);
 
     ~Impl();
@@ -138,9 +143,8 @@ public:
      *
      *  \param[in] numAtomsLocal  Number of atoms in local domain.
      *  \param[in] numAtomsAll    Total number of atoms to handle.
-     *  \param[in] mpiCommMySim   MPI communicator for the whole simulation
      */
-    void reinit(int numAtomsLocal, int numAtomsAll, MPI_Comm mpiCommMySim);
+    void reinit(int numAtomsLocal, int numAtomsAll);
 
     /*! \brief Returns the range of atoms to be copied based on the copy type (all, local or non-local).
      *
@@ -314,16 +318,14 @@ public:
      *
      *  Returns either of the event synchronizers, depending on the offload scenario
      *  for the current simulation timestep:
-     *  1. The forces are copied to the device (when GPU buffer ops are off)
-     *  2. The forces are reduced on the device (GPU buffer ops are on)
+     *  1. The forces are copied to the device (\c StepWorkload::copyFinalFToGpu)
+     *  2. The forces are reduced on the device and stay there
      *
      *  \param[in] stepWork        Step workload flags
-     *  \param[in] simulationWork  Simulation workload flags
      *
      *  \returns  The event to synchronize the stream that consumes forces on device.
      */
-    GpuEventSynchronizer* getLocalForcesReadyOnDeviceEvent(StepWorkload       stepWork,
-                                                           SimulationWorkload simulationWork);
+    GpuEventSynchronizer* getLocalForcesReadyOnDeviceEvent(const StepWorkload& stepWork);
 
     /*! \brief Getter for the event synchronizer for when forces are reduced on the GPU.
      *
@@ -459,6 +461,8 @@ private:
     bool useGpuFBufferOpsWhenAllowed_ = false;
     //! whether it is a PME rank
     bool isPmeRank = false;
+    //! MPI communicator, used with NVSHMEM
+    MPI_Comm commMySim_;
 
 
     /*! \brief Performs the copy of data from host to device buffer.

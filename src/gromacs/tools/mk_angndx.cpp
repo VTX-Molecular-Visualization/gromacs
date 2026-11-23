@@ -61,6 +61,9 @@
 
 struct gmx_output_env_t;
 
+namespace gmx
+{
+
 static int calc_ntype(int nft, const InteractionFunction* ft, const t_idef* idef)
 {
     int i, f, nf = 0;
@@ -246,9 +249,10 @@ static InteractionFunction* select_ftype(const char* opt, int* nft, int* mult)
     if (opt[0] == 'a')
     {
         *mult = 3;
-        for (const auto ftype : gmx::EnumerationWrapper<InteractionFunction>{})
+        for (const auto ftype : EnumerationWrapper<InteractionFunction>{})
         {
-            if ((interaction_function[ftype].flags & IF_ATYPE) || ftype == InteractionFunction::TabulatedAngles)
+            if ((interaction_function[ftype].categories & sc_ifcAngle)
+                || ftype == InteractionFunction::TabulatedAngles)
             {
                 (*nft)++;
                 srenew(ft, *nft);
@@ -280,18 +284,17 @@ int gmx_mk_angndx(int argc, char* argv[])
         "angle distributions etc. It uses a run input file ([REF].tpx[ref]) for the",
         "definitions of the angles, dihedrals etc."
     };
-    static const char* opt[] = { nullptr, "angle", "dihedral", "improper", "ryckaert-bellemans",
-                                 nullptr };
-    static gmx_bool    bH    = TRUE;
-    static real        hq    = -1;
-    t_pargs            pa[]  = { { "-type", FALSE, etENUM, { opt }, "Type of angle" },
-                                 { "-hyd", FALSE, etBOOL, { &bH }, "Include angles with atoms with mass < 1.5" },
-                                 { "-hq",
-                                   FALSE,
-                                   etREAL,
-                                   { &hq },
-                                   "Ignore angles with atoms with mass < 1.5 and magnitude of their charge "
-                                               "less than this value" } };
+    const char* opt[] = { nullptr, "angle", "dihedral", "improper", "ryckaert-bellemans", nullptr };
+    gmx_bool    bH    = TRUE;
+    real        hq    = -1;
+    t_pargs     pa[]  = { { "-type", FALSE, etENUM, { opt }, "Type of angle" },
+                          { "-hyd", FALSE, etBOOL, { &bH }, "Include angles with atoms with mass < 1.5" },
+                          { "-hq",
+                            FALSE,
+                            etREAL,
+                            { &hq },
+                            "Ignore angles with atoms with mass < 1.5 and magnitude of their charge "
+                                 "less than this value" } };
 
     gmx_output_env_t* oenv;
     FILE*             out;
@@ -305,7 +308,8 @@ int gmx_mk_angndx(int argc, char* argv[])
     t_filenm fnm[] = { { efTPR, nullptr, nullptr, ffREAD }, { efNDX, nullptr, "angle", ffWRITE } };
 #define NFILE asize(fnm)
 
-    if (!parse_common_args(&argc, argv, 0, NFILE, fnm, asize(pa), pa, asize(desc), desc, 0, nullptr, &oenv))
+    if (!parse_common_args(
+                &argc, argv, 0, NFILE, fnm, asize(pa), pa, asize(desc), desc, 0, nullptr, &oenv, nullptr))
     {
         return 0;
     }
@@ -346,3 +350,5 @@ int gmx_mk_angndx(int argc, char* argv[])
 
     return 0;
 }
+
+} // namespace gmx

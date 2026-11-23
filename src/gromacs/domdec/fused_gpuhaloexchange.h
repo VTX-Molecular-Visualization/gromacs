@@ -59,7 +59,6 @@
 
 struct gmx_wallcycle;
 // Forward decls for types used in signatures without including heavy headers
-struct t_commrec;
 class DeviceStream;
 struct gmx_domdec_t;
 struct gmx_wallcycle;
@@ -89,14 +88,14 @@ class FusedGpuHaloExchange
 public:
     /*! \brief Creates NVSHMEM-based fused GPU halo exchange object.
      *
+     * \param [in] haloStream           GPU device stream for halo exchange
      * \param [in] deviceContext        GPU device context
-     * \param [in] wcycle               Wallclock cycle accounting
-     * \param [in] mpi_comm_mysim       MPI communicator used for simulation
+     * \param [in] mpiCommPpGroup       MPI communicator used for PP group (null on PME ranks)
      * \param [in] mpi_comm_mysim_world MPI communicator involving PP + PME
      */
-    FusedGpuHaloExchange(const DeviceContext& deviceContext,
-                         gmx_wallcycle*       wcycle,
-                         MPI_Comm             mpi_comm_mysim,
+    FusedGpuHaloExchange(const DeviceStream&  haloStream,
+                         const DeviceContext& deviceContext,
+                         MPI_Comm             mpiCommPpGroup,
                          MPI_Comm             mpi_comm_mysim_world);
     /*! \brief Destructor. */
     ~FusedGpuHaloExchange();
@@ -116,15 +115,18 @@ public:
     GpuEventSynchronizer* launchAllForceExchanges(bool accumulateForces,
                                                   FixedCapacityVector<GpuEventSynchronizer*, 2>* dependencyEvents);
 
+    //! Finish the construction once \c wcycle is available
+    void addWallcycleCounters(gmx_wallcycle* wcycle);
+
     /*! \brief (Re-)initialize fused halo exchanges for all dimensions and pulses.
      * Builds per-pulse entries, sets shared buffers, NVSHMEM signals, and prepares metadata.
-     * \param [in] cr                  Communication record
+     * \param [in,out] dd              Domain-decomposition structure
      * \param [in] d_coordinatesBuffer Pointer to coordinates buffer in GPU memory
      * \param [in] d_forcesBuffer      Pointer to forces buffer in GPU memory
      * \param [in] d_syncBase          Base device pointer for NVSHMEM signal buffer
      * \param [in] totalNumPulses      Total number of pulses across all dimensions
      */
-    void reinitAllHaloExchanges(const t_commrec&       cr,
+    void reinitAllHaloExchanges(gmx_domdec_t*          dd,
                                 DeviceBuffer<RVec>     d_coordinatesBuffer,
                                 DeviceBuffer<RVec>     d_forcesBuffer,
                                 DeviceBuffer<uint64_t> d_syncBase,
@@ -143,10 +145,10 @@ public:
         int xRecvSize = 0;
         //! The atom offset for receive (x) or send (f) for this pulse
         int atomOffset = 0;
-        //! rank to send data to for X
-        int sendRankX = 0;
-        //! rank to recv data from for X
-        int recvRankX = 0;
+        //! NVSHMEM PE to send data to for X
+        int xSendPE = 0;
+        //! NVSHMEM PE to recv data from for X
+        int xRecvPE = 0;
         //! whether PBC applies for this pulse
         bool usePBC = false;
         //! true when forces should accumulate for this pulse
@@ -224,7 +226,7 @@ private:
      */
     static constexpr int c_haloEntryAlignBytes = 256;
     //! Device stream for this halo exchange
-    std::unique_ptr<DeviceStream> haloStream_;
+    const DeviceStream& haloStream_;
     //! GPU context object
     const DeviceContext& deviceContext_;
     //! Wallclock cycle accounting
@@ -240,7 +242,7 @@ private:
     // timestep.
     uint64_t signalReceiverRankFCounter_ = 0;
     //! Whether to insert a synchronization at the fused force kernel (debug/knob).
-    //! Toggle via env var: GMX_NVSHMEM_FUSED_FORCE_KERNEL_SYNC
+    //! Toggle via env var: GMX_ENABLE_NVSHMEM_FORCE_HALO_SYNC
     bool enableFusedForceKernelSync_ = false;
     //! Total number of pulses across all dimensions
     int totalNumPulses_ = 0;
@@ -276,10 +278,12 @@ private:
     //! Event triggered when force halo has been launched
     GpuEventSynchronizer forceHaloLaunched_;
     // MPI communicator used for symmetric allocations sizing (NVSHMEM path)
-    //! MPI communicator used for simulation
-    MPI_Comm mpi_comm_mysim_ = MPI_COMM_NULL;
-    //! MPI communicator involving PP + PME.
+    //! MPI communicator used for PP ranks
+    MPI_Comm mpiCommPpGroup_ = MPI_COMM_NULL;
+    //! MPI communicator used for initializing NVSHMEM
     MPI_Comm mpi_comm_mysim_world_ = MPI_COMM_NULL;
+    //! Mapping from rank in mpiCommPpGroup_ to rank in mpi_comm_mysim_world_ (same as NVSHMEM PE)
+    std::vector<int> groupRankToPE_;
 
     // Unified send/recv buffers across all dims/pulses (optional fused path)
     //! unified send buffer across all pulses
@@ -295,7 +299,6 @@ private:
     //! capacity for all pulses extent in unified recv buffer
     int unifiedRecvCapacity_ = -1;
 
-private:
     /*! \brief Backend-specific function for launching coordinate packing and send kernel. */
     void launchPackXKernel(const matrix box);
     /*! \brief Backend-specific function for launching force unpacking and recv kernel. */

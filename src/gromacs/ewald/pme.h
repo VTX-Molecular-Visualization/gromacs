@@ -46,11 +46,13 @@
 #define GMX_EWALD_PME_H
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "gromacs/gpu_utils/devicebuffer_datatype.h"
 #include "gromacs/gpu_utils/gpu_macros.h"
+#include "gromacs/timing/gpu_timing.h"
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/real.h"
 #include "gromacs/utility/vectypes.h"
@@ -83,6 +85,23 @@ class MDLogger;
 enum class PinningPolicy : int;
 class SimulationWorkload;
 class StepWorkload;
+
+/*! \libinternal \brief Describes the work PME performs during one simulation step. */
+class PmeStepWorkload
+{
+public:
+    PmeStepWorkload() = default;
+
+    //! Constructs the PME workload required by a regular MD step.
+    explicit PmeStepWorkload(const StepWorkload& stepWork);
+
+    //! Whether PME energy and virial need to be computed this step.
+    bool computeEnergyAndVirial = false;
+    //! Whether PME forces need to be computed this step.
+    bool computeForces = false;
+    //! Whether PME forces are reduced with other force contributions on the GPU this step.
+    bool useGpuPmeFReduction = false;
+};
 
 /*! \libinternal \brief Class for managing usage of separate PME-only ranks
  *
@@ -125,6 +144,28 @@ enum class PmeRunMode
     GPU,   //!< Whole PME computation is done on GPU
     Mixed, //!< Mixed mode: only spread and gather run on GPU; FFT and solving are done on CPU.
 };
+
+namespace gmx
+{
+/*! \libinternal \brief Describes simulation-wide work performed by a PME-only rank. */
+class PmeOnlySimulationWorkload
+{
+public:
+    //! Constructs the PME-only workload required by a simulation.
+    explicit PmeOnlySimulationWorkload(const SimulationWorkload& simulationWork);
+
+    //! Whether GPU is used for any part of PME work
+    bool useGpu = false;
+    //! Whether direct PP-PME GPU communication is used.
+    bool useGpuPmePpCommunication = false;
+    //! Whether NVSHMEM is used for GPU communication.
+    bool useNvshmem = false;
+    //! Whether GPU halo exchange is used.
+    bool useGpuHaloExchange = false;
+    //! Whether MD GPU graphs are used when supported by the current step.
+    bool useMdGpuGraph = false;
+};
+} // namespace gmx
 
 /*! \brief Return the smallest allowed PME grid size for \p pmeOrder */
 int minimalPmeGridSize(int pmeOrder);
@@ -190,47 +231,35 @@ bool gmx_pme_check_restrictions(int  pme_order,
  * related things whose lifetime can/should exceed that of a task (or
  * perhaps task manager). See Issue #2522.
  */
-gmx_pme_t* gmx_pme_init(const gmx_domdec_t*              dd,
-                        const NumPmeDomains&             numPmeDomains,
-                        const t_inputrec*                ir,
-                        const matrix                     box,
-                        real                             haloExtentForAtomDisplacement,
-                        gmx_bool                         bFreeEnergy_q,
-                        gmx_bool                         bFreeEnergy_lj,
-                        gmx_bool                         bReproducible,
-                        real                             ewaldcoeff_q,
-                        real                             ewaldcoeff_lj,
-                        int                              nthread,
-                        PmeRunMode                       runMode,
-                        PmeGpu*                          pmeGpu,
-                        const DeviceContext*             deviceContext,
-                        const DeviceStream*              deviceStream,
-                        const PmeGpuProgram*             pmeGpuProgram,
-                        const gmx::MDLogger&             mdlog,
-                        std::shared_ptr<PmeGridsStorage> pmeGridsStoragePtr);
+std::unique_ptr<gmx_pme_t> gmx_pme_init(const gmx_domdec_t*  dd,
+                                        const NumPmeDomains& numPmeDomains,
+                                        const t_inputrec*    ir,
+                                        const matrix         box,
+                                        real                 haloExtentForAtomDisplacement,
+                                        gmx_bool             bFreeEnergy_q,
+                                        gmx_bool             bFreeEnergy_lj,
+                                        gmx_bool             bReproducible,
+                                        real                 ewaldcoeff_q,
+                                        real                 ewaldcoeff_lj,
+                                        int                  nthread,
+                                        PmeRunMode           runMode,
+                                        const DeviceContext* deviceContext,
+                                        const DeviceStream*  deviceStream,
+                                        const PmeGpuProgram* pmeGpuProgram,
+                                        const gmx::MDLogger& mdlog);
 
 /*! \brief As gmx_pme_init, but takes most settings, except the grid/Ewald coefficients,
- * and the shared grid storage from pme_src.
- */
-void gmx_pme_reinit(gmx_pme_t**         pmedata,
-                    const gmx_domdec_t* dd,
-                    gmx_pme_t*          pme_src,
-                    const t_inputrec*   ir,
-                    const ivec          grid_size,
-                    real                ewaldcoeff_q,
-                    real                ewaldcoeff_lj);
-
-/*! \brief Destroys the PME data structure (including GPU data). */
-void gmx_pme_destroy(gmx_pme_t* pme);
-
-/*! \brief Destroys the PME data structure.
+ * and the shared grid storage from pmeSrc.
  *
- * \param pme             The data structure to destroy.
- * \param destroyGpuData  Set to \c false if \p pme is a copy created by \ref gmx_pme_reinit,
- * and only it should be destroyed, while shared GPU data should be preserved. If \c true,
- * the shared data will be destroyed, like in \c gmx_pme_destroy(gmx_pme_t* pme).
+ * When PME is ran on GPUs, the GPU data is moved from \p pmeGpu to the returned object
  */
-void gmx_pme_destroy(gmx_pme_t* pme, bool destroyGpuData);
+std::unique_ptr<gmx_pme_t> gmx_pme_reinit(const gmx_domdec_t*       dd,
+                                          const gmx_pme_t&          pmeSrc,
+                                          std::unique_ptr<PmeGpu>&& pmeGpu,
+                                          const t_inputrec*         ir,
+                                          const ivec                grid_size,
+                                          real                      ewaldcoeff_q,
+                                          real                      ewaldcoeff_lj);
 
 /*! \brief Do a PME calculation on a CPU for the long range electrostatics and/or LJ.
  *
@@ -265,7 +294,7 @@ int gmx_pme_do(struct gmx_pme_t*              pme,
                real                           lambda_lj,
                real*                          dvdlambda_q,
                real*                          dvdlambda_lj,
-               const gmx::StepWorkload&       stepWork);
+               const gmx::PmeStepWorkload&    stepWork);
 
 /*! \brief Calculate the PME grid energy V for n charges.
  *
@@ -294,17 +323,6 @@ void gmx_pme_reinit_atoms(gmx_pme_t*                pme,
                           gmx::ArrayRef<const real> chargesB);
 
 /* A block of PME GPU functions */
-
-/*! \brief Checks whether the GROMACS build allows to run PME on GPU.
- * TODO: this partly duplicates an internal PME assert function
- * pme_gpu_check_restrictions(), except that works with a
- * formed gmx_pme_t structure. Should that one go away/work with inputrec?
- *
- * \param[out] error   If non-null, the error message when PME is not supported on GPU.
- *
- * \returns true if PME can run on GPU on this build, false otherwise.
- */
-bool pme_gpu_supports_build(std::string* error);
 
 /*! \brief Checks whether the input system allows to run PME on GPU.
  * TODO: this partly duplicates an internal PME assert function
@@ -338,12 +356,6 @@ bool pme_gpu_mixed_mode_supports_input(const t_inputrec& ir, std::string* error)
  */
 PmeRunMode pme_run_mode(const gmx_pme_t* pme);
 
-/*! \libinternal \brief
- * Return the pinning policy appropriate for this build configuration
- * for relevant buffers used for PME task on this rank (e.g. running
- * on a GPU). */
-gmx::PinningPolicy pme_get_pinning_policy();
-
 /*! \brief
  * Tells if PME is enabled to run on GPU (not necessarily active at the moment).
  * \todo This is a rather static data that should be managed by the hardware assignment manager.
@@ -374,7 +386,7 @@ GPU_FUNC_QUALIFIER void pme_gpu_use_nvshmem(PmeGpu* GPU_FUNC_ARGUMENT(pmeGpu),
  *
  * \param[in]  pme  The PME data structure.
  */
-GPU_FUNC_QUALIFIER int pme_gpu_get_block_size(const gmx_pme_t* GPU_FUNC_ARGUMENT(pme))
+GPU_FUNC_QUALIFIER int pme_gpu_get_block_size(const gmx_pme_t& GPU_FUNC_ARGUMENT(pme))
         GPU_FUNC_TERM_WITH_RETURN(0);
 
 // The following functions are all the PME GPU entry points,
@@ -387,14 +399,15 @@ GPU_FUNC_QUALIFIER int pme_gpu_get_block_size(const gmx_pme_t* GPU_FUNC_ARGUMENT
  */
 GPU_FUNC_QUALIFIER void pme_gpu_reset_timings(const gmx_pme_t* GPU_FUNC_ARGUMENT(pme)) GPU_FUNC_TERM;
 
-/*! \brief
- * Copies the PME GPU timings to the gmx_wallclock_gpu_pme_t structure (for log output). To be called at the run end.
+/*! \brief When available, copies the PME GPU timings to the
+ * gmx_wallclock_gpu_pme_t structure (for log output). To be called at
+ * the run end.
  *
  * \param[in] pme               The PME structure.
- * \param[in] timings           The gmx_wallclock_gpu_pme_t structure.
+ * \returns                     The gmx_wallclock_gpu_pme_t structure.
  */
-GPU_FUNC_QUALIFIER void pme_gpu_get_timings(const gmx_pme_t* GPU_FUNC_ARGUMENT(pme),
-                                            gmx_wallclock_gpu_pme_t* GPU_FUNC_ARGUMENT(timings)) GPU_FUNC_TERM;
+GPU_FUNC_QUALIFIER std::optional<gmx_wallclock_gpu_pme_t>
+pme_gpu_get_timings(const gmx_pme_t& GPU_FUNC_ARGUMENT(pme)) GPU_FUNC_TERM_WITH_RETURN(std::nullopt);
 
 /* The main PME GPU functions */
 
@@ -408,7 +421,7 @@ GPU_FUNC_QUALIFIER void pme_gpu_get_timings(const gmx_pme_t* GPU_FUNC_ARGUMENT(p
 GPU_FUNC_QUALIFIER void pme_gpu_prepare_computation(gmx_pme_t*   GPU_FUNC_ARGUMENT(pme),
                                                     const matrix GPU_FUNC_ARGUMENT(box),
                                                     bool         GPU_FUNC_ARGUMENT(updateBox),
-                                                    const gmx::StepWorkload& GPU_FUNC_ARGUMENT(stepWork)) GPU_FUNC_TERM;
+                                                    const gmx::PmeStepWorkload& GPU_FUNC_ARGUMENT(stepWork)) GPU_FUNC_TERM;
 
 /*! \brief
  * Launches first stage of PME on GPU - spreading kernel.
@@ -443,7 +456,7 @@ GPU_FUNC_QUALIFIER void pme_gpu_launch_spread(gmx_pme_t* GPU_FUNC_ARGUMENT(pme),
 GPU_FUNC_QUALIFIER void
 pme_gpu_launch_complex_transforms(gmx_pme_t*     GPU_FUNC_ARGUMENT(pme),
                                   gmx_wallcycle* GPU_FUNC_ARGUMENT(wcycle),
-                                  const gmx::StepWorkload& GPU_FUNC_ARGUMENT(stepWork)) GPU_FUNC_TERM;
+                                  const gmx::PmeStepWorkload& GPU_FUNC_ARGUMENT(stepWork)) GPU_FUNC_TERM;
 
 /*! \brief
  * Launches last stage of PME on GPU - force gathering and D2H force transfer.
@@ -452,11 +465,13 @@ pme_gpu_launch_complex_transforms(gmx_pme_t*     GPU_FUNC_ARGUMENT(pme),
  * \param[in] wcycle            The wallclock counter.
  * \param[in] lambdaQ           The Coulomb lambda to use when calculating the results.
  * \param[in] computeVirial     Whether this is a virial step.
+ * \param[in] markFReadyEvent   Whether the f_ready_synchronizer should be marked after the kernel.
  */
 GPU_FUNC_QUALIFIER void pme_gpu_launch_gather(gmx_pme_t*     GPU_FUNC_ARGUMENT(pme),
                                               gmx_wallcycle* GPU_FUNC_ARGUMENT(wcycle),
                                               real           GPU_FUNC_ARGUMENT(lambdaQ),
-                                              bool GPU_FUNC_ARGUMENT(computeVirial)) GPU_FUNC_TERM;
+                                              bool           GPU_FUNC_ARGUMENT(computeVirial),
+                                              bool GPU_FUNC_ARGUMENT(markFReadyEvent) = true) GPU_FUNC_TERM;
 
 /*! \brief
  * Attempts to complete PME GPU tasks.
@@ -479,7 +494,7 @@ GPU_FUNC_QUALIFIER void pme_gpu_launch_gather(gmx_pme_t*     GPU_FUNC_ARGUMENT(p
  * \returns                    True if the PME GPU tasks have completed
  */
 GPU_FUNC_QUALIFIER bool pme_gpu_try_finish_task(gmx_pme_t* GPU_FUNC_ARGUMENT(pme),
-                                                const gmx::StepWorkload& GPU_FUNC_ARGUMENT(stepWork),
+                                                const gmx::PmeStepWorkload& GPU_FUNC_ARGUMENT(stepWork),
                                                 gmx_wallcycle* GPU_FUNC_ARGUMENT(wcycle),
                                                 gmx::ForceWithVirial* GPU_FUNC_ARGUMENT(forceWithVirial),
                                                 gmx_enerdata_t*   GPU_FUNC_ARGUMENT(enerd),
@@ -499,7 +514,7 @@ GPU_FUNC_QUALIFIER bool pme_gpu_try_finish_task(gmx_pme_t* GPU_FUNC_ARGUMENT(pme
  * \param[in]  lambdaQ         The Coulomb lambda to use when calculating the results.
  */
 GPU_FUNC_QUALIFIER void pme_gpu_wait_and_reduce(gmx_pme_t* GPU_FUNC_ARGUMENT(pme),
-                                                const gmx::StepWorkload& GPU_FUNC_ARGUMENT(stepWork),
+                                                const gmx::PmeStepWorkload& GPU_FUNC_ARGUMENT(stepWork),
                                                 gmx_wallcycle* GPU_FUNC_ARGUMENT(wcycle),
                                                 gmx::ForceWithVirial* GPU_FUNC_ARGUMENT(forceWithVirial),
                                                 gmx_enerdata_t* GPU_FUNC_ARGUMENT(enerd),
@@ -507,16 +522,19 @@ GPU_FUNC_QUALIFIER void pme_gpu_wait_and_reduce(gmx_pme_t* GPU_FUNC_ARGUMENT(pme
 
 /*! \brief Do house-keeping at the end of a PME GPU step.
  *
- * Clears the internal grid and energy/virial buffers; it is not safe to start
- * the PME computation without calling this.
- * Note that unlike in the nbnxn module, the force buffer does not need clearing.
+ * Clears the internal grid and, when used, the energy/virial buffers; it is not safe
+ * to start the PME computation without calling this.
+ * Note that unlike in the nbnxm module, the force buffer does not need clearing.
  *
- * \param[in] pme                            The PME data structure.
+ * \param[in,out] pmeGpu                     The PME GPU data structure.
  * \param[in] gpuGraphWithSeparatePmeRank    Whether MD GPU Graph with separate PME rank is in use.
+ * \param[in] computedEnergyAndVirial        Whether energy and virial were computed,
+ *                                           so their buffers need clearing.
  * \param[in] wcycle                         The wallclock counter.
  */
-GPU_FUNC_QUALIFIER void pme_gpu_finish_step(const gmx_pme_t* GPU_FUNC_ARGUMENT(pme),
-                                            bool GPU_FUNC_ARGUMENT(gpuGraphWithSeparatePmeRank),
+GPU_FUNC_QUALIFIER void pme_gpu_finish_step(PmeGpu* GPU_FUNC_ARGUMENT(pmeGpu),
+                                            bool    GPU_FUNC_ARGUMENT(gpuGraphWithSeparatePmeRank),
+                                            bool    GPU_FUNC_ARGUMENT(computedEnergyAndVirial),
                                             gmx_wallcycle* GPU_FUNC_ARGUMENT(wcycle)) GPU_FUNC_TERM;
 
 /*! \brief Set pointer to device copy of coordinate data.

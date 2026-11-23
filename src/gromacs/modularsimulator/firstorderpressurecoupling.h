@@ -52,6 +52,7 @@ enum class PressureCoupling;
 
 namespace gmx
 {
+class DeviceStreamManager;
 class EnergyData;
 class FreeEnergyPerturbationData;
 class GlobalCommunicationHelper;
@@ -78,7 +79,7 @@ public:
                                EnergyData*                       energyData,
                                FILE*                             fplog,
                                const t_inputrec*                 inputrec,
-                               const MDAtoms*                    mdAtoms,
+                               const MDAtoms&                    mdAtoms,
                                t_nrnb*                           nrnb,
                                ReportPreviousStepConservedEnergy reportPreviousStepConservedEnergy);
 
@@ -108,6 +109,7 @@ public:
      * \param freeEnergyPerturbationData  Pointer to the \c FreeEnergyPerturbationData object
      * \param globalCommunicationHelper   Pointer to the \c GlobalCommunicationHelper object
      * \param observablesReducer          Pointer to the \c ObservablesReducer object
+     * \param deviceStreamManager         Pointer to the device stream manager
      * \param offset  The step offset at which the barostat is applied
      * \param reportPreviousStepConservedEnergy  Report the previous or the current step conserved energy
      *
@@ -121,6 +123,7 @@ public:
                           FreeEnergyPerturbationData gmx_unused*  freeEnergyPerturbationData,
                           GlobalCommunicationHelper gmx_unused*   globalCommunicationHelper,
                           ObservablesReducer*                     observablesReducer,
+                          const DeviceStreamManager*              deviceStreamManager,
                           int                                     offset,
                           ReportPreviousStepConservedEnergy reportPreviousStepConservedEnergy);
 
@@ -168,7 +171,7 @@ private:
     //! Contains user input mdp options.
     const t_inputrec* inputrec_;
     //! Atom parameters for this domain.
-    const MDAtoms* mdAtoms_;
+    const MDAtoms& mdAtoms_;
     //! Manages flop accounting.
     t_nrnb* nrnb_;
 

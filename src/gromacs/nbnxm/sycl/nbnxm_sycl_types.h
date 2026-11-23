@@ -51,6 +51,7 @@
 #include "gromacs/gpu_utils/gputraits.h"
 #include "gromacs/nbnxm/gpu_types_common.h"
 #include "gromacs/nbnxm/nbnxm.h"
+#include "gromacs/nbnxm/nbnxm_gpu_buffer_ops_internal.h"
 #include "gromacs/nbnxm/pairlist.h"
 #include "gromacs/timing/gpu_timing.h"
 #include "gromacs/utility/enumerationhelpers.h"
@@ -59,17 +60,19 @@ class GpuEventSynchronizer;
 
 namespace gmx
 {
+class DeviceStreamManager;
 
+#ifndef DOXYGEN
 /*! \internal
  * \brief Main data structure for SYCL nonbonded force calculations.
  */
 struct NbnxmGpu
 {
-    /*! \brief GPU device context.
-     *
-     * \todo Make it constant reference, once NbnxmGpu is a proper class.
-     */
-    const DeviceContext* deviceContext_;
+    NbnxmGpu(const DeviceStreamManager& deviceStreamManager, std::optional<size_t> nLambda);
+    //! GPU device context.
+    const DeviceContext& deviceContext;
+    //! Host allocation policy for buffers for possible GPU transfers
+    const HostAllocationPolicy hostAllocationPolicy;
     /*! \brief true if doing both local/non-local NB work on GPU */
     bool bUseTwoStreams = false;
     /*! \brief true indicates that the nonlocal_done event was marked */
@@ -85,17 +88,17 @@ struct NbnxmGpu
     /*! \brief size of atom indices allocated in device buffer */
     int atomIndicesSize_alloc = 0;
     /*! \brief x buf ops num of atoms */
-    DeviceBuffer<int> cxy_na;
-    /*! \brief number of elements in cxy_na */
-    int ncxy_na = 0;
+    DeviceBuffer<int> numAtomsPerCell;
+    /*! \brief number of elements in numAtomsPerCell */
+    int numAtomsPerCellSize = 0;
     /*! \brief number of elements allocated in device buffer */
-    int ncxy_na_alloc = 0;
-    /*! \brief x buf ops cell index mapping */
-    DeviceBuffer<int> cxy_ind;
-    /*! \brief number of elements in cxy_ind */
-    int ncxy_ind = 0;
+    int numAtomsPerCellAlloc = 0;
+    /*! \brief x buf ops bin index mapping */
+    DeviceBuffer<int> cellToBin;
+    /*! \brief number of elements in cellToBin */
+    int cellToBinSize = 0;
     /*! \brief number of elements allocated in device buffer */
-    int ncxy_ind_alloc = 0;
+    int cellToBinAlloc = 0;
     /*! \brief parameters required for the non-bonded calc. */
     NBParamGpu* nbparam = nullptr;
     /*! \brief pair-list data structures (local and non-local) */
@@ -107,18 +110,18 @@ struct NbnxmGpu
     /*! \brief staging area where fshift/energies get downloaded. Will be removed in SYCL. */
     NBStagingData nbst;
     /*! \brief local and non-local GPU streams */
-    EnumerationArray<InteractionLocality, const DeviceStream*> deviceStreams;
+    EnumerationArray<InteractionLocality, const DeviceStream*> deviceStreams = { { nullptr } };
 
     /*! \brief True if event-based timing is enabled. Always false for SYCL. */
     bool bDoTime = false;
     /*! \brief Dummy timers. */
     GpuTimers* timers = nullptr;
     /*! \brief Dummy timing data. */
-    std::unique_ptr<gmx_wallclock_gpu_nbnxn_t> timings;
+    std::unique_ptr<gmx_wallclock_gpu_nbnxm_t> timings;
 
     //! true when a pair-list transfer has been done at this step
     EnumerationArray<InteractionLocality, bool> didPairlistH2D = { { false } };
-    //! true when we we did pruning on this step
+    //! true when we did pruning on this step
     EnumerationArray<InteractionLocality, bool> didPrune = { { false } };
     //! true when we did rolling pruning (at the previous step)
     EnumerationArray<InteractionLocality, bool> didRollingPrune = { { false } };
@@ -142,7 +145,10 @@ struct NbnxmGpu
      * local/nonlocal, if there is bonded GPU work, both flags
      * will be true. */
     EnumerationArray<InteractionLocality, bool> haveWork = { { false } };
+    /*! \brief Kernel launch parameters per interaction locality, computed once at pair-list setup. */
+    EnumerationArray<InteractionLocality, FusedXToXqLaunchParams> xToXqLaunchParams;
 };
+#endif
 
 } // namespace gmx
 

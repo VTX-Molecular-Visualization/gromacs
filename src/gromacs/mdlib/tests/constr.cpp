@@ -52,6 +52,7 @@
 #include <cassert>
 #include <cmath>
 
+#include <array>
 #include <memory>
 #include <ostream>
 #include <string>
@@ -63,22 +64,39 @@
 
 #include "gromacs/gpu_utils/capabilities.h"
 #include "gromacs/math/paddedvector.h"
+#include "gromacs/mdlib/gmx_omp_nthreads.h"
+#include "gromacs/mdlib/lincs.h"
+#include "gromacs/mdlib/shake.h"
+#include "gromacs/mdrunutility/multisim.h"
+#include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/pbcutil/pbc.h"
+#include "gromacs/topology/forcefieldparameters.h"
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/enumerationhelpers.h"
+#include "gromacs/utility/listoflists.h"
 #include "gromacs/utility/real.h"
 #include "gromacs/utility/stringutil.h"
 #include "gromacs/utility/vec.h"
 #include "gromacs/utility/vectypes.h"
 
+#include "testutils/hardware_test_fixture.h"
+#include "testutils/naming.h"
 #include "testutils/refdata.h"
 #include "testutils/test_device.h"
 #include "testutils/test_hardware_environment.h"
 #include "testutils/testasserts.h"
 
 #include "constrtestdata.h"
-#include "constrtestrunners.h"
+
+#if GMX_GPU && !GMX_GPU_OPENCL
+#    include "gromacs/gpu_utils/device_context.h"
+#    include "gromacs/gpu_utils/device_stream.h"
+#    include "gromacs/gpu_utils/devicebuffer.h"
+#    include "gromacs/gpu_utils/gputraits.h"
+#    include "gromacs/gpu_utils/hostallocator.h"
+#    include "gromacs/mdlib/lincs_gpu.h"
+#endif
 
 //! Helper function to convert t_pbc into string and make test failure messages readable
 static void PrintTo(const t_pbc& pbc, std::ostream* os)
@@ -94,6 +112,191 @@ namespace test
 {
 namespace
 {
+
+void applyShakeCpu(ConstraintsTestData* testData, t_pbc /* pbc */)
+{
+    shakedata shaked;
+    make_shake_sblock_serial(&shaked, testData->idef_.get(), testData->numAtoms_);
+    bool success = constrain_shake(nullptr,
+                                   &shaked,
+                                   testData->invmass_,
+                                   *testData->idef_,
+                                   testData->ir_,
+                                   testData->x_,
+                                   testData->xPrime_,
+                                   testData->xPrime2_,
+                                   nullptr,
+                                   &testData->nrnb_,
+                                   testData->lambda_,
+                                   &testData->dHdLambda_,
+                                   testData->invdt_,
+                                   testData->v_,
+                                   testData->computeVirial_,
+                                   testData->virialScaled_,
+                                   false,
+                                   gmx::ConstraintVariable::Positions);
+    EXPECT_TRUE(success) << "Test failed with a false return value in SHAKE.";
+}
+
+void applyLincsCpu(ConstraintsTestData* testData, t_pbc pbc)
+{
+    Lincs* lincsd;
+    int    maxwarn         = 100;
+    int    warncount_lincs = 0;
+    gmx_omp_nthreads_set(ModuleMultiThread::Lincs, 1);
+
+    gmx_domdec_t* dd = nullptr;
+
+    gmx_multisim_t ms{ 1, 0, MPI_COMM_NULL, MPI_COMM_NULL };
+
+    std::vector<ListOfLists<int>> at2con_mt;
+    at2con_mt.reserve(testData->mtop_.moltype.size());
+    for (const gmx_moltype_t& moltype : testData->mtop_.moltype)
+    {
+        at2con_mt.push_back(make_at2con(moltype,
+                                        testData->mtop_.ffparams.iparams,
+                                        flexibleConstraintTreatment(EI_DYNAMICS(testData->ir_.eI))));
+    }
+    lincsd = init_lincs(nullptr,
+                        testData->mtop_,
+                        testData->nflexcon_,
+                        at2con_mt,
+                        false,
+                        testData->hasMassPerturbed_,
+                        testData->ir_.nLincsIter,
+                        testData->ir_.nProjOrder,
+                        nullptr);
+    set_lincs(*testData->idef_,
+              testData->numAtoms_,
+              testData->invmass_,
+              testData->lambda_,
+              EI_DYNAMICS(testData->ir_.eI),
+              dd,
+              lincsd);
+
+    bool success = constrain_lincs(false,
+                                   testData->ir_,
+                                   0,
+                                   lincsd,
+                                   testData->invmass_,
+                                   dd,
+                                   &ms,
+                                   testData->x_.arrayRefWithPadding(),
+                                   testData->xPrime_.arrayRefWithPadding(),
+                                   testData->xPrime2_.arrayRefWithPadding().unpaddedArrayRef(),
+                                   pbc.box,
+                                   &pbc,
+                                   testData->lambda_,
+                                   &testData->dHdLambda_,
+                                   testData->invdt_,
+                                   testData->v_.arrayRefWithPadding().unpaddedArrayRef(),
+                                   testData->computeVirial_,
+                                   testData->virialScaled_,
+                                   gmx::ConstraintVariable::Positions,
+                                   &testData->nrnb_,
+                                   maxwarn,
+                                   &warncount_lincs,
+                                   nullptr);
+    EXPECT_TRUE(success) << "Test failed with a false return value in LINCS.";
+    EXPECT_EQ(warncount_lincs, 0) << "There were warnings in LINCS.";
+    done_lincs(lincsd);
+}
+
+#if GMX_GPU && !GMX_GPU_OPENCL
+
+void applyLincsGpu(const DeviceContext& deviceContext,
+                   const DeviceStream&  deviceStream,
+                   ConstraintsTestData* testData,
+                   t_pbc                pbc)
+{
+    deviceContext.activate();
+
+    const bool hasTriangles =
+            hasTriangleConstraints(testData->mtop_, FlexibleConstraintTreatment::Include);
+    auto lincsGpu = std::make_unique<LincsGpu>(
+            testData->ir_.nLincsIter, testData->ir_.nProjOrder, hasTriangles, deviceContext, deviceStream);
+
+    // Pin the invmass buffer now that we have a DeviceContext, so async H2D copies work.
+    testData->invmass_ = HostVector<real>(
+            testData->invmass_, HostAllocationPolicy{ deviceContext, PinningPolicy::PinnedIfSupported });
+    {
+        /* LincsGpu keeps its buffers across set() calls, and with domain decomposition the number
+         * of constraints on a rank changes at every repartitioning. So before the call under test,
+         * call set() with no constraints, which returns early, and then with one constraint more.
+         * The call under test then has fewer constraints, so the slots the previous call filled
+         * have to be reset to dummy constraints.
+         */
+        SCOPED_TRACE("Preliminary calls to set() to cover resizing edge cases");
+        {
+            SCOPED_TRACE("Call set() with no constraints");
+            InteractionDefinitions emptyIdef = *testData->idef_;
+            emptyIdef.il[InteractionFunction::Constraints].clear();
+            lincsGpu->set(emptyIdef, testData->numAtoms_, testData->invmass_);
+        }
+        {
+            SCOPED_TRACE("Call set() with one constraint more");
+            /* The extra constraint has a target length that no real constraint has, so a stale
+             * slot left from this call changes the result even in systems with a single
+             * constraint type. */
+            gmx_ffparams_t largerFfparams = testData->mtop_.ffparams;
+            const int firstType   = testData->idef_->il[InteractionFunction::Constraints].iatoms[0];
+            t_iparams extraParams = largerFfparams.iparams[firstType];
+            extraParams.constr.dA *= 1.5;
+            extraParams.constr.dB *= 1.5;
+            const int extraType = gmx::ssize(largerFfparams.iparams);
+            largerFfparams.iparams.push_back(extraParams);
+
+            InteractionDefinitions largerIdef(largerFfparams);
+            largerIdef.il                       = testData->idef_->il;
+            InteractionList&         largerList = largerIdef.il[InteractionFunction::Constraints];
+            const std::array<int, 2> atoms      = { largerList.iatoms[1], largerList.iatoms[2] };
+            largerList.push_back(extraType, atoms);
+            lincsGpu->set(largerIdef, testData->numAtoms_, testData->invmass_);
+            deviceStream.synchronize();
+        }
+    }
+
+    bool updateVelocities = true;
+    int  numAtoms         = testData->numAtoms_;
+
+    Float3* h_x  = gmx::asGenericFloat3Pointer(testData->x_);
+    Float3* h_xp = gmx::asGenericFloat3Pointer(testData->xPrime_);
+    Float3* h_v  = gmx::asGenericFloat3Pointer(testData->v_);
+
+    DeviceBuffer<Float3> d_x, d_xp, d_v;
+
+    lincsGpu->set(*testData->idef_, testData->numAtoms_, testData->invmass_);
+    PbcAiuc pbcAiuc;
+    setPbcAiuc(pbc.ndim_ePBC, pbc.box, &pbcAiuc);
+
+    allocateDeviceBuffer(&d_x, numAtoms, deviceContext);
+    allocateDeviceBuffer(&d_xp, numAtoms, deviceContext);
+    allocateDeviceBuffer(&d_v, numAtoms, deviceContext);
+
+    copyToDeviceBuffer(&d_x, h_x, 0, numAtoms, deviceStream, GpuApiCallBehavior::Sync, nullptr);
+    copyToDeviceBuffer(&d_xp, h_xp, 0, numAtoms, deviceStream, GpuApiCallBehavior::Sync, nullptr);
+    if (updateVelocities)
+    {
+        copyToDeviceBuffer(&d_v, h_v, 0, numAtoms, deviceStream, GpuApiCallBehavior::Sync, nullptr);
+    }
+    lincsGpu->apply(
+            d_x, d_xp, updateVelocities, d_v, testData->invdt_, testData->computeVirial_, testData->virialScaled_, pbcAiuc);
+
+    copyFromDeviceBuffer(h_xp, &d_xp, 0, numAtoms, deviceStream, GpuApiCallBehavior::Sync, nullptr);
+    if (updateVelocities)
+    {
+        copyFromDeviceBuffer(h_v, &d_v, 0, numAtoms, deviceStream, GpuApiCallBehavior::Sync, nullptr);
+    }
+
+    freeDeviceBuffer(&d_x);
+    freeDeviceBuffer(&d_xp);
+    freeDeviceBuffer(&d_v);
+}
+
+#endif // GMX_GPU && !GMX_GPU_OPENCL
+
+// Forward declaration for the test system structure
+struct ConstraintsTestSystem;
 
 // Define the set of PBCs to run the test for
 const std::vector<t_pbc> c_pbcs = []
@@ -291,24 +494,100 @@ const std::vector<ConstraintsTestSystem> c_constraintsTestSystemList = []
         constraintsTestSystemList.emplace_back(constraintsTestSystem);
     }
     {
-        ConstraintsTestSystem constraintsTestSystem;
+        ConstraintsTestSystem basicTriangle;
 
-        constraintsTestSystem.title       = "basic triangle (three atoms, connected to each other)";
-        constraintsTestSystem.numAtoms    = 3;
-        constraintsTestSystem.masses      = { 1.0, 1.0, 1.0 };
-        constraintsTestSystem.constraints = { 0, 0, 1, 2, 0, 2, 1, 1, 2 };
-        constraintsTestSystem.hasTriangle = true;
-        constraintsTestSystem.constraintsR0 = { 0.1, 0.1, 0.1 };
+        basicTriangle.title         = "basic triangle (three atoms, connected to each other)";
+        basicTriangle.numAtoms      = 3;
+        basicTriangle.masses        = { 1.0, 1.0, 1.0 };
+        basicTriangle.constraints   = { 0, 0, 1, 2, 0, 2, 1, 1, 2 };
+        basicTriangle.hasTriangle   = true;
+        basicTriangle.constraintsR0 = { 0.1, 0.1, 0.1 };
 
         real oneTenthOverSqrtTwo = 0.1_real / std::sqrt(2.0_real);
 
-        constraintsTestSystem.x = { { oneTenthOverSqrtTwo, 0.0, 0.0 },
-                                    { 0.0, oneTenthOverSqrtTwo, 0.0 },
-                                    { 0.0, 0.0, oneTenthOverSqrtTwo } };
+        basicTriangle.x = { { oneTenthOverSqrtTwo, 0.0, 0.0 },
+                            { 0.0, oneTenthOverSqrtTwo, 0.0 },
+                            { 0.0, 0.0, oneTenthOverSqrtTwo } };
 
-        constraintsTestSystem.xPrime = { { 0.09, -0.02, 0.01 }, { -0.02, 0.10, -0.02 }, { 0.03, -0.01, 0.07 } };
+        basicTriangle.xPrime = { { 0.09, -0.02, 0.01 }, { -0.02, 0.10, -0.02 }, { 0.03, -0.01, 0.07 } };
 
-        constraintsTestSystem.v = { { 1.0, 1.0, 1.0 }, { -2.0, -2.0, -2.0 }, { 1.0, 1.0, 1.0 } };
+        basicTriangle.v = { { 1.0, 1.0, 1.0 }, { -2.0, -2.0, -2.0 }, { 1.0, 1.0, 1.0 } };
+
+        constraintsTestSystemList.emplace_back(basicTriangle);
+
+        // in addition, we want to test the triangle path with a system that has many more triangles
+        ConstraintsTestSystem manyTriangles;
+        constexpr int         numMolecules =
+                100; // 300 constraints, which is larger than the thread block of 256 we are currently using
+        manyTriangles.title       = "system of many triangles";
+        manyTriangles.numAtoms    = numMolecules * basicTriangle.numAtoms;
+        manyTriangles.hasTriangle = true;
+
+        manyTriangles.masses.resize(numMolecules * basicTriangle.numAtoms);
+        manyTriangles.x.resize(numMolecules * basicTriangle.numAtoms);
+        manyTriangles.xPrime.resize(numMolecules * basicTriangle.numAtoms);
+        manyTriangles.v.resize(numMolecules * basicTriangle.numAtoms);
+
+        manyTriangles.constraints.resize(numMolecules * basicTriangle.constraints.size());
+
+        for (int mol = 0; mol < numMolecules; mol++)
+        {
+            int offsetAtoms = mol * basicTriangle.numAtoms;
+            for (int i = 0; i < basicTriangle.numAtoms; i++)
+            {
+                manyTriangles.masses[offsetAtoms + i] = basicTriangle.masses[i];
+                for (int d = 0; d < DIM; d++)
+                {
+                    manyTriangles.x[offsetAtoms + i][d]      = basicTriangle.x[i][d];
+                    manyTriangles.xPrime[offsetAtoms + i][d] = basicTriangle.xPrime[i][d];
+                    manyTriangles.v[offsetAtoms + i][d]      = basicTriangle.v[i][d];
+                }
+            }
+            int offsetConstraints = mol * basicTriangle.constraints.size();
+            for (size_t c = 0; c < basicTriangle.constraints.size(); c++)
+            {
+                manyTriangles.constraints[offsetConstraints + c] = basicTriangle.constraints[c];
+                if (c % 3 != 0)
+                {
+                    manyTriangles.constraints[offsetConstraints + c] += offsetAtoms;
+                }
+            }
+        }
+
+        manyTriangles.constraintsR0 = basicTriangle.constraintsR0;
+
+        constraintsTestSystemList.emplace_back(manyTriangles);
+    }
+    {
+        ConstraintsTestSystem constraintsTestSystem;
+
+        // Near-degenerate ("flat") triangle: the apex atom sits close to the base,
+        // so the three constraints are strongly coupled and the coupling matrix has
+        // a large eigenvalue. The plain coupled-constraint expansion then converges
+        // too slowly, and only the triangle-specific extra expansion iterations
+        // (mirroring the CPU LINCS triangle handling, see lincs.cpp) bring the GPU
+        // result to the reference solution within tolerance. This makes the system a
+        // genuine regression guard for the GPU triangle code path: it fails if those
+        // extra iterations are removed, whereas the equal-mass "basic triangle" above
+        // still passes without them.
+        constraintsTestSystem.title         = "flat triangle (stiff coupling)";
+        constraintsTestSystem.numAtoms      = 3;
+        constraintsTestSystem.masses        = { 1.0, 1.0, 1.0 };
+        constraintsTestSystem.constraints   = { 0, 0, 1, 1, 0, 2, 1, 1, 2 };
+        constraintsTestSystem.hasTriangle   = true;
+        constraintsTestSystem.constraintsR0 = { 0.2, 0.107703 };
+
+        // Atoms 0 and 1 form the long base; atom 2 sits just above its midpoint.
+        constraintsTestSystem.x = { { 0.0, 0.0, 0.0 }, { 0.2, 0.0, 0.0 }, { 0.1, 0.04, 0.0 } };
+
+        constraintsTestSystem.xPrime = { { 0.020, 0.015, -0.010 },
+                                         { 0.220, -0.012, 0.008 },
+                                         { 0.090, 0.060, 0.012 } };
+
+        constraintsTestSystem.v = { { 1.0, 0.5, -0.5 }, { -1.0, 0.5, 0.5 }, { 0.5, -1.0, 1.0 } };
+
+        constraintsTestSystem.lincsNIter               = 4;
+        constraintsTestSystem.lincslincsExpansionOrder = 4;
 
         constraintsTestSystemList.emplace_back(constraintsTestSystem);
     }
@@ -386,11 +665,59 @@ const std::vector<ConstraintsTestSystem> c_constraintsTestSystemList = []
     return constraintsTestSystemList;
 }();
 
+//! Input configuration for Constraints tests (defines the physical scenario: constraint topology, PBC)
+using ConstraintsInputConfig = std::tuple<ConstraintsTestSystem, t_pbc>;
+
+/*! \brief Hardware test helper for Constraints
+ *
+ * \todo There are no execution modes - tests don't vary constraint
+ * algorithm, but perhaps they should test LINCS vs SHAKE here rather
+ * than reset test data. They should test SIMD vs no SIMD here. */
+using ConstraintsTestHelper = HardwareAndExecutionTestHelper<ConstraintsInputConfig, std::tuple<>>;
+
+//! Format PBC type for test names
+std::string formatPbcType(const t_pbc& pbc)
+{
+    return c_pbcTypeNames[pbc.pbcType];
+}
+
+//! Format ConstraintsTestSystem for test names
+std::string formatConstraintSystem(const ConstraintsTestSystem& system)
+{
+    // Use a sanitized version of the title
+    std::string name = system.title;
+    // Replace spaces with underscores and remove special characters
+    std::replace(name.begin(), name.end(), ' ', '_');
+    std::replace(name.begin(), name.end(), '(', '_');
+    std::replace(name.begin(), name.end(), ')', '_');
+    std::replace(name.begin(), name.end(), '.', '_');
+    std::replace(name.begin(), name.end(), ',', '_');
+    // Remove consecutive underscores
+    name.erase(
+            std::unique(name.begin(), name.end(), [](char a, char b) { return a == '_' && b == '_'; }),
+            name.end());
+    // Remove trailing underscores
+    while (!name.empty() && name.back() == '_')
+    {
+        name.pop_back();
+    }
+    return formatString("%datoms_%s", system.numAtoms, name.c_str());
+}
+
+//! Formatters for parameters in the config info
+static const auto sc_configInfoFormatters = std::make_tuple(formatConstraintSystem, formatPbcType);
+//! Formatters for parameters in the execution mode (currently empty)
+static const auto sc_executionModeFormatters = std::make_tuple();
+
+//! Helper object to name tests using all parameters
+static const NameOfTestFromTuple<ConstraintsTestHelper::DynamicParameters> sc_testNamer =
+        ConstraintsTestHelper::testNamer(sc_configInfoFormatters, sc_executionModeFormatters);
+
 //! Helper class for checking constraints against reference data
 class ConstraintsVerifier
 {
 public:
-    ConstraintsVerifier() : checker_(refData_.rootChecker()) {}
+    explicit ConstraintsVerifier(TestReferenceChecker* checker) : checker_(checker) {}
 
 private:
     /*! \brief Test if the final position correspond to the reference data.
@@ -400,7 +727,7 @@ private:
     void checkFinalPositions(const ConstraintsTestData& testData)
     {
         TestReferenceChecker finalPositionsRef(
-                checker_.checkSequenceCompound("FinalPositions", testData.numAtoms_));
+                checker_->checkSequenceCompound("FinalPositions", testData.numAtoms_));
         for (int i = 0; i < testData.numAtoms_; i++)
         {
             TestReferenceChecker xPrimeRef(finalPositionsRef.checkCompound("Atom", nullptr));
@@ -418,7 +745,7 @@ private:
     void checkFinalVelocities(const ConstraintsTestData& testData)
     {
         TestReferenceChecker finalVelocitiesRef(
-                checker_.checkSequenceCompound("FinalVelocities", testData.numAtoms_));
+                checker_->checkSequenceCompound("FinalVelocities", testData.numAtoms_));
         for (int i = 0; i < testData.numAtoms_; i++)
         {
             TestReferenceChecker vRef(finalVelocitiesRef.checkCompound("Atom", nullptr));
@@ -588,7 +915,7 @@ private:
     void checkVirialTensor(const ConstraintsTestData& testData)
     {
         const tensor&        virialScaled = testData.virialScaled_;
-        TestReferenceChecker virialScaledRef(checker_.checkCompound("VirialScaled", nullptr));
+        TestReferenceChecker virialScaledRef(checker_->checkCompound("VirialScaled", nullptr));
 
         virialScaledRef.checkReal(virialScaled[XX][XX], "XX");
         virialScaledRef.checkReal(virialScaled[XX][YY], "XY");
@@ -602,16 +929,21 @@ private:
     }
 
 public:
-    //! The workflow for checking whether constraints have been satisfied
+    /*! \brief The workflow for checking whether constraints have been satisfied
+     *
+     * \param[in] testData   Test data to verify
+     * \param[in] algorithm  Constraint algorithm used (SHAKE or LINCS)
+     * \param[in] pbc        Periodic boundary conditions
+     */
     void check(const ConstraintsTestData& testData, const ConstraintAlgorithm algorithm, t_pbc pbc)
     {
         const FloatingPointTolerance positionsTolerance = absoluteTolerance(0.001F);
         const FloatingPointTolerance velocityTolerance  = absoluteTolerance(0.02F);
         const FloatingPointTolerance lengthTolerance = relativeToleranceAsFloatingPoint(0.1, 0.002F);
 
-        checker_.setDefaultTolerance(positionsTolerance);
+        checker_->setDefaultTolerance(positionsTolerance);
         checkFinalPositions(testData);
-        checker_.setDefaultTolerance(velocityTolerance);
+        checker_->setDefaultTolerance(velocityTolerance);
         checkFinalVelocities(testData);
 
         checkConstrainsLength(lengthTolerance, testData, pbc);
@@ -634,16 +966,15 @@ public:
         FloatingPointTolerance virialTolerance =
                 absoluteTolerance(fabs(virialTrace) / 3 * virialRelativeTolerance);
 
-        checker_.setDefaultTolerance(virialTolerance);
+        checker_->setDefaultTolerance(virialTolerance);
         checkVirialTensor(testData);
     }
 
 private:
-    //! Reference data
-    TestReferenceData refData_;
-    //! Checker for reference data
-    TestReferenceChecker checker_;
+    //! Reference data checker used for all verifications
+    TestReferenceChecker* checker_;
 };
+
 
 /*! \brief Test fixture for constraints.
  *
@@ -663,33 +994,15 @@ private:
  * For some systems, the value for scaled virial tensor is checked against
  * pre-computed data.
  */
-class ConstraintsTest : public ::testing::TestWithParam<std::tuple<ConstraintsTestSystem, t_pbc>>
+class ConstraintsTest : public HardwareTestFixture<ConstraintsTestHelper>
 {
-public:
-    //! Before any test is run, work out whether any compatible GPUs exist.
-    static std::vector<std::unique_ptr<IConstraintsTestRunner>> getRunners()
-    {
-        std::vector<std::unique_ptr<IConstraintsTestRunner>> runners;
-        // Add runners for CPU versions of SHAKE and LINCS
-        runners.emplace_back(std::make_unique<ShakeConstraintsRunner>());
-        runners.emplace_back(std::make_unique<LincsConstraintsRunner>());
-        // If supported, add runners for the GPU version of LINCS for each available GPU
-        if (GpuConfigurationCapabilities::Update)
-        {
-            for (const auto& testDevice : getTestHardwareEnvironment()->getTestDeviceList())
-            {
-                runners.emplace_back(std::make_unique<LincsDeviceConstraintsRunner>(*testDevice));
-            }
-        }
-        return runners;
-    }
+protected:
+    ConstraintsTest() : HardwareTestFixture(sc_configInfoFormatters) {}
 };
 
 TEST_P(ConstraintsTest, SatisfiesConstraints)
 {
-    auto                  params                = GetParam();
-    ConstraintsTestSystem constraintsTestSystem = std::get<0>(params);
-    t_pbc                 pbc                   = std::get<1>(params);
+    auto [constraintsTestSystem, pbc, _] = GetParam();
 
     ConstraintsTestData testData(constraintsTestSystem.title,
                                  constraintsTestSystem.numAtoms,
@@ -709,27 +1022,74 @@ TEST_P(ConstraintsTest, SatisfiesConstraints)
                                  constraintsTestSystem.lincslincsExpansionOrder,
                                  constraintsTestSystem.lincsWarnAngle);
 
-    ConstraintsVerifier verifier;
+    testData.reset();
 
-    // Cycle through all available runners
-    for (const auto& runner : getRunners())
+    // Apply constraints based on hardware context
+    if (isGpuTest())
     {
-        SCOPED_TRACE(formatString("Testing %s with %s PBC using %s.",
+#if GMX_GPU && !GMX_GPU_OPENCL
+        SCOPED_TRACE(formatString("Testing %s with %s PBC using %s (LINCS).",
                                   testData.title_.c_str(),
                                   c_pbcTypeNames[pbc.pbcType].c_str(),
-                                  runner->name().c_str()));
+                                  hardwareContext()->description().c_str()));
 
-        testData.reset();
+        activateHardware();
+        applyLincsGpu(*deviceContext(), *deviceStream(), &testData, pbc);
 
-        // Apply constraints
-        runner->applyConstraints(&testData, pbc);
-        verifier.check(testData, runner->algorithm(), pbc);
+        ConstraintsVerifier verifier(&checker());
+        verifier.check(testData, ConstraintAlgorithm::Lincs, pbc);
+#else
+        GMX_THROW(gmx::InternalError("GPU hardware context with no test code"));
+#endif
+    }
+    else
+    {
+        // Run both SHAKE and LINCS on CPU
+        {
+            SCOPED_TRACE(formatString("Testing %s with %s PBC using %s (SHAKE).",
+                                      testData.title_.c_str(),
+                                      c_pbcTypeNames[pbc.pbcType].c_str(),
+                                      hardwareContext()->description().c_str()));
+            testData.reset();
+            applyShakeCpu(&testData, pbc);
+
+            ConstraintsVerifier verifier(&checker());
+            verifier.check(testData, ConstraintAlgorithm::Shake, pbc);
+        }
+        {
+            SCOPED_TRACE(formatString("Testing %s with %s PBC using %s (LINCS).",
+                                      testData.title_.c_str(),
+                                      c_pbcTypeNames[pbc.pbcType].c_str(),
+                                      hardwareContext()->description().c_str()));
+            testData.reset();
+            applyLincsCpu(&testData, pbc);
+
+            ConstraintsVerifier verifier(&checker());
+            verifier.check(testData, ConstraintAlgorithm::Lincs, pbc);
+        }
     }
 }
 
-TEST_P(ConstraintsTest, TriangleDetectionWorks)
+INSTANTIATE_TEST_SUITE_P(AllHardware,
+                         ConstraintsTest,
+                         ::testing::Combine(::testing::ValuesIn(c_constraintsTestSystemList),
+                                            ::testing::ValuesIn(c_pbcs),
+                                            ::testing::ValuesIn(getHardwareContextsWithCapability(
+                                                    GpuConfigurationCapabilities::Constraints))),
+                         sc_testNamer);
+
+/*! \brief Test fixture for topology-based constraint tests.
+ *
+ * These tests check properties of the constraint topology without needing to
+ * run the constraint algorithm on different hardware contexts.
+ */
+class ConstraintsTopologyTest : public ::testing::TestWithParam<ConstraintsTestSystem>
 {
-    const ConstraintsTestSystem& constraintsTestSystem = std::get<0>(GetParam());
+};
+
+TEST_P(ConstraintsTopologyTest, TriangleDetectionWorks)
+{
+    const ConstraintsTestSystem& constraintsTestSystem = GetParam();
     const ConstraintsTestData    testData(constraintsTestSystem.title,
                                        constraintsTestSystem.numAtoms,
                                        constraintsTestSystem.masses,
@@ -752,10 +1112,11 @@ TEST_P(ConstraintsTest, TriangleDetectionWorks)
               hasTriangleConstraints(testData.mtop_, FlexibleConstraintTreatment::Include));
 }
 
-INSTANTIATE_TEST_SUITE_P(WithParameters,
-                         ConstraintsTest,
-                         ::testing::Combine(::testing::ValuesIn(c_constraintsTestSystemList),
-                                            ::testing::ValuesIn(c_pbcs)));
+INSTANTIATE_TEST_SUITE_P(TopologyTests,
+                         ConstraintsTopologyTest,
+                         ::testing::ValuesIn(c_constraintsTestSystemList),
+                         [](const ::testing::TestParamInfo<ConstraintsTestSystem>& i)
+                         { return formatConstraintSystem(i.param); });
 
 } // namespace
 } // namespace test

@@ -60,7 +60,6 @@
 #include "gromacs/fileio/tpxio.h"
 #include "gromacs/fileio/xvgr.h"
 #include "gromacs/gmxana/gmx_ana.h"
-#include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
@@ -77,6 +76,7 @@
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/futil.h"
 #include "gromacs/utility/gmxomp.h"
 #include "gromacs/utility/path.h"
@@ -1545,6 +1545,7 @@ static void read_wham_in(const char* fn, char*** filenamesRet, int* nfilesRet, t
         }
         nread++;
     }
+    gmx_ffclose(fp);
     *filenamesRet = filename;
     *nfilesRet    = nread;
 }
@@ -2110,8 +2111,12 @@ static void read_pull_xf(const char*        fn,
     }
 }
 
-//! read pullf-files.dat or pullx-files.dat and tpr-files.dat
-static void read_tpr_pullxf_files(char**             fnTprs,
+/*! \brief Read pullf-files.dat or pullx-files.dat and tpr-files.dat
+ *
+ * \returns false when only the boundaries were to be determined (-boundsonly),
+ * so the caller should stop, true otherwise.
+ */
+static bool read_tpr_pullxf_files(char**             fnTprs,
                                   char**             fnPull,
                                   int                nfiles,
                                   t_UmbrellaHeader*  header,
@@ -2163,7 +2168,7 @@ static void read_tpr_pullxf_files(char**             fnTprs,
         if (opt->bBoundsOnly)
         {
             printf("Found option -boundsonly, now exiting.\n");
-            std::exit(0);
+            return false;
         }
     }
     /* store stepsize in profile */
@@ -2213,6 +2218,8 @@ static void read_tpr_pullxf_files(char**             fnTprs,
     }
     sfree(fnTprs);
     sfree(fnPull);
+
+    return true;
 }
 
 /*! \brief Read integrated autocorrelation times from input file (option -iiact)
@@ -2319,7 +2326,7 @@ static void smoothIact(t_UmbrellaWindow* window, int nwins, t_UmbrellaOptions* o
 //! Stop integrating autoccorelation function when ACF drops under this value
 #define WHAM_AC_ZERO_LIMIT 0.05
 
-/*! \brief Try to compute the autocorrelation time for each umbrealla window
+/*! \brief Try to compute the autocorrelation time for each umbrella window
  */
 static void calcIntegratedAutocorrelationTimes(t_UmbrellaWindow*  window,
                                                int                nwins,
@@ -2327,10 +2334,11 @@ static void calcIntegratedAutocorrelationTimes(t_UmbrellaWindow*  window,
                                                const char*        fn,
                                                const char*        xlabel)
 {
-    int   i, ig, ncorr, ntot, j, k, *count, restart;
-    real *corr, c0, dt, tmp;
-    real *ztime, av, tausteps;
-    FILE *fp, *fpcorr = nullptr;
+    int i, ig, ncorr, ntot, j, k, restart;
+    /* Accumulators promoted to double to prevent catastrophic cancellation */
+    double c0, tmp, av, tausteps;
+    real*  ztime;
+    FILE * fp, *fpcorr = nullptr;
 
     if (opt->verbose)
     {
@@ -2359,10 +2367,7 @@ static void calcIntegratedAutocorrelationTimes(t_UmbrellaWindow*  window,
                       " points. Provide more pull data!",
                       ntot);
         }
-        snew(corr, ncorr);
-        /* snew(corrSq,ncorr); */
-        snew(count, ncorr);
-        dt = window[i].dt;
+        const double dt = window[i].dt;
         snew(window[i].tau, window[i].nPull);
         restart = gmx::roundToInt(opt->acTrestart / dt);
         if (restart == 0)
@@ -2382,17 +2387,15 @@ static void calcIntegratedAutocorrelationTimes(t_UmbrellaWindow*  window,
             }
             ztime = window[i].ztime[ig];
 
+            std::vector<double> corr(ncorr, 0);
+            std::vector<int>    count(ncorr, 0);
+
             /* calc autocorrelation function C(t) = < [z(tau)-<z>]*[z(tau+t)-<z>]> */
             for (j = 0, av = 0; (j < ntot); j++)
             {
                 av += ztime[j];
             }
             av /= ntot;
-            for (k = 0; (k < ncorr); k++)
-            {
-                corr[k]  = 0.;
-                count[k] = 0;
-            }
             for (j = 0; (j < ntot); j += restart)
             {
                 for (k = 0; (k < ncorr) && (j + k < ntot); k++)
@@ -2429,7 +2432,7 @@ static void calcIntegratedAutocorrelationTimes(t_UmbrellaWindow*  window,
                 fprintf(fpcorr, "%s\n", output_env_get_print_xvgr_codes(opt->oenv) ? "&" : "");
             }
 
-            /* esimate integrated correlation time, fitting is too unstable */
+            /* estimate integrated correlation time, fitting is too unstable */
             tausteps = 0.5 * corr[0];
             /* consider corr below WHAM_AC_ZERO_LIMIT as noise */
             for (j = 1; (j < ncorr) && (corr[j] > WHAM_AC_ZERO_LIMIT); j++)
@@ -2443,8 +2446,6 @@ static void calcIntegratedAutocorrelationTimes(t_UmbrellaWindow*  window,
             window[i].g[ig]   = 1 + 2 * tausteps;
             /* printf("win %d, group %d, estimated correlation time = %g ps\n",i,ig,window[i].tau[ig]); */
         } /* ig loop */
-        sfree(corr);
-        sfree(count);
     }
     printf(" done\n");
     if (fpcorr)
@@ -2829,6 +2830,7 @@ static void readPullCoordSelection(t_UmbrellaOptions* opt, char** fnTpr, int nTp
         }
         iline++;
     }
+    gmx_ffclose(fp);
     opt->nCoordsel = iline;
     if (nTpr != opt->nCoordsel)
     {
@@ -3174,7 +3176,7 @@ int gmx_wham(int argc, char* argv[])
     opt.stepUpdateContrib     = 100;
 
     if (!parse_common_args(
-                &argc, argv, 0, NFILE, fnm, asize(pa), pa, asize(desc), desc, 0, nullptr, &opt.oenv))
+                &argc, argv, 0, NFILE, fnm, asize(pa), pa, asize(desc), desc, 0, nullptr, &opt.oenv, nullptr))
     {
         return 0;
     }
@@ -3267,7 +3269,10 @@ int gmx_wham(int argc, char* argv[])
     }
 
     window = initUmbrellaWindows(nfiles);
-    read_tpr_pullxf_files(fninTpr, fninPull, nfiles, &header, window, &opt);
+    if (!read_tpr_pullxf_files(fninTpr, fninPull, nfiles, &header, window, &opt))
+    {
+        return 0;
+    }
 
     /* It is currently assumed that all pull coordinates have the same geometry, so they also have the same coordinate units.
        We can therefore get the units for the xlabel from the first coordinate. */

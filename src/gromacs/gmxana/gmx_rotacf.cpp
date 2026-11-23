@@ -45,6 +45,7 @@
 #include "gromacs/commandline/viewit.h"
 #include "gromacs/correlationfunctions/autocorr.h"
 #include "gromacs/fileio/filetypes.h"
+#include "gromacs/fileio/timecontrol.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/gmxana/gmx_ana.h"
 #include "gromacs/pbcutil/rmpbc.h"
@@ -82,7 +83,7 @@ int gmx_rotacf(int argc, char* argv[])
         "file. The correlation function will be fitted from 2.5 ps until 20.0 ps",
         "to a two-parameter exponential."
     };
-    static gmx_bool bVec = FALSE, bAver = TRUE;
+    gmx_bool bVec = FALSE, bAver = TRUE;
 
     t_pargs pa[] = {
         { "-d",
@@ -103,7 +104,7 @@ int gmx_rotacf(int argc, char* argv[])
     rvec          xij, xjk, n;
     int           i, m, teller, n_alloc, natoms, nvec, ai, aj, ak;
     unsigned long mode;
-    real          t, t0, t1, dt;
+    double        t, t0, t1, dt;
     gmx_rmpbc_t   gpbc = nullptr;
     t_topology*   top;
     PbcType       pbcType;
@@ -116,12 +117,13 @@ int gmx_rotacf(int argc, char* argv[])
     t_pargs* ppa;
 
     gmx_output_env_t* oenv;
+    gmx::TimeControl  timeControl;
 
     npargs = asize(pa);
     ppa    = add_acf_pargs(&npargs, pa);
 
     if (!parse_common_args(
-                &argc, argv, PCA_CAN_VIEW | PCA_CAN_TIME, NFILE, fnm, npargs, ppa, asize(desc), desc, 0, nullptr, &oenv))
+                &argc, argv, PCA_CAN_VIEW | PCA_CAN_TIME, NFILE, fnm, npargs, ppa, asize(desc), desc, 0, nullptr, &oenv, &timeControl))
     {
         sfree(ppa);
         return 0;
@@ -160,7 +162,7 @@ int gmx_rotacf(int argc, char* argv[])
     }
     n_alloc = 0;
 
-    natoms = read_first_x(oenv, &status, ftp2fn(efTRX, NFILE, fnm), &t, &x, box);
+    natoms = read_first_x(oenv, &status, ftp2fn(efTRX, NFILE, fnm), &t, &x, box, &timeControl);
     snew(x_s, natoms);
 
     gpbc = gmx_rmpbc_init(&(top->idef), pbcType, natoms);

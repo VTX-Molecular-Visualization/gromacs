@@ -44,11 +44,11 @@
 #include "gromacs/commandline/pargs.h"
 #include "gromacs/commandline/viewit.h"
 #include "gromacs/fileio/filetypes.h"
+#include "gromacs/fileio/timecontrol.h"
 #include "gromacs/fileio/tpxio.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/fileio/xvgr.h"
 #include "gromacs/gmxana/gmx_ana.h"
-#include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
@@ -62,6 +62,7 @@
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/vec.h"
@@ -166,7 +167,7 @@ int gmx_spol(int argc, char* argv[])
     t_atom*      atom;
     t_trxstatus* status;
     int          nrefat, natoms, nf, ntot;
-    real         t;
+    double       t;
     rvec *       x, xref, trial, dx = { 0 }, dip, dir;
     matrix       box;
 
@@ -204,9 +205,10 @@ int gmx_spol(int argc, char* argv[])
     };
 
     gmx_output_env_t* oenv;
-    static gmx_bool   bCom   = FALSE;
-    static int        srefat = 1;
-    static real       rmin = 0.0, rmax = 0.32, refdip = 0, bw = 0.01;
+    gmx::TimeControl  timeControl;
+    gmx_bool          bCom   = FALSE;
+    int               srefat = 1;
+    real              rmin = 0.0, rmax = 0.32, refdip = 0, bw = 0.01;
     t_pargs           pa[] = {
         { "-com", FALSE, etBOOL, { &bCom }, "Use the center of mass as the reference position" },
         { "-refat", FALSE, etINT, { &srefat }, "The reference atom of the solvent molecule" },
@@ -223,7 +225,7 @@ int gmx_spol(int argc, char* argv[])
 #define NFILE asize(fnm)
 
     if (!parse_common_args(
-                &argc, argv, PCA_CAN_TIME | PCA_CAN_VIEW, NFILE, fnm, asize(pa), pa, asize(desc), desc, 0, nullptr, &oenv))
+                &argc, argv, PCA_CAN_TIME | PCA_CAN_VIEW, NFILE, fnm, asize(pa), pa, asize(desc), desc, 0, nullptr, &oenv, &timeControl))
     {
         return 0;
     }
@@ -256,7 +258,7 @@ int gmx_spol(int argc, char* argv[])
     srefat--;
 
     /* initialize reading trajectory:                         */
-    natoms = read_first_x(oenv, &status, ftp2fn(efTRX, NFILE, fnm), &t, &x, box);
+    natoms = read_first_x(oenv, &status, ftp2fn(efTRX, NFILE, fnm), &t, &x, box, &timeControl);
 
     rcut = 0.99 * std::sqrt(max_cutoff2(ir->pbcType, box));
     if (rcut == 0)

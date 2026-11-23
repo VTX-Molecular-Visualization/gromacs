@@ -50,10 +50,10 @@
 #include "gromacs/fileio/confio.h"
 #include "gromacs/fileio/filetypes.h"
 #include "gromacs/fileio/oenv.h"
+#include "gromacs/fileio/timecontrol.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/fileio/xvgr.h"
 #include "gromacs/gmxana/gmx_ana.h"
-#include "gromacs/math/functions.h"
 #include "gromacs/math/nrjac.h"
 #include "gromacs/math/units.h"
 #include "gromacs/mdtypes/md_enums.h"
@@ -69,6 +69,7 @@
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/futil.h"
 #include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
@@ -639,18 +640,18 @@ int gmx_traj(int argc, char* argv[])
         "",
         "See [gmx-trajectory] for plotting similar data for selections."
     };
-    static gmx_bool bMol = FALSE, bCom = FALSE, bPBC = TRUE, bNoJump = FALSE;
-    static gmx_bool bX = TRUE, bY = TRUE, bZ = TRUE, bNorm = FALSE, bFP = FALSE;
-    static int      ngroups = 1;
-    static real     ctime = -1, scale = 0, binwidth = 1;
-    t_pargs         pa[] = {
+    gmx_bool bMol = FALSE, bCom = FALSE, bPBC = TRUE, bNoJump = FALSE;
+    gmx_bool bX = TRUE, bY = TRUE, bZ = TRUE, bNorm = FALSE, bFP = FALSE;
+    int      ngroups = 1;
+    real     ctime = -1, scale = 0, binwidth = 1;
+    t_pargs  pa[] = {
         { "-com", FALSE, etBOOL, { &bCom }, "Plot data for the com of each group" },
         { "-pbc", FALSE, etBOOL, { &bPBC }, "Make molecules whole for COM" },
         { "-mol",
-                  FALSE,
-                  etBOOL,
-                  { &bMol },
-                  "Index contains molecule numbers instead of atom numbers" },
+           FALSE,
+           etBOOL,
+           { &bMol },
+           "Index contains molecule numbers instead of atom numbers" },
         { "-nojump", FALSE, etBOOL, { &bNoJump }, "Remove jumps of atoms across the box" },
         { "-x", FALSE, etBOOL, { &bX }, "Plot X-component" },
         { "-y", FALSE, etBOOL, { &bY }, "Plot Y-component" },
@@ -660,15 +661,15 @@ int gmx_traj(int argc, char* argv[])
         { "-fp", FALSE, etBOOL, { &bFP }, "Full precision output" },
         { "-bin", FALSE, etREAL, { &binwidth }, "Binwidth for velocity histogram (nm/ps)" },
         { "-ctime",
-                  FALSE,
-                  etREAL,
-                  { &ctime },
-                  "Use frame at this time for x in [TT]-cv[tt] and [TT]-cf[tt] instead of the average x" },
+           FALSE,
+           etREAL,
+           { &ctime },
+           "Use frame at this time for x in [TT]-cv[tt] and [TT]-cf[tt] instead of the average x" },
         { "-scale",
-                  FALSE,
-                  etREAL,
-                  { &scale },
-                  "Scale factor for [REF].pdb[ref] output, 0 is autoscale" }
+           FALSE,
+           etREAL,
+           { &scale },
+           "Scale factor for [REF].pdb[ref] output, 0 is autoscale" }
     };
     FILE *       outx = nullptr, *outv = nullptr, *outf = nullptr, *outb = nullptr, *outt = nullptr;
     FILE *       outekt = nullptr, *outekr = nullptr;
@@ -695,6 +696,7 @@ int gmx_traj(int argc, char* argv[])
     char         sffmt[STRLEN];
     std::array<std::string, 6> box_leg = { "XX", "YY", "ZZ", "YX", "ZX", "ZY" };
     gmx_output_env_t*          oenv;
+    gmx::TimeControl           timeControl;
 
     t_filenm fnm[] = {
         { efTRX, "-f", nullptr, ffREAD },       { efTPS, nullptr, nullptr, ffREAD },
@@ -719,7 +721,8 @@ int gmx_traj(int argc, char* argv[])
                            desc,
                            0,
                            nullptr,
-                           &oenv))
+                           &oenv,
+                           &timeControl))
     {
         return 0;
     }
@@ -924,11 +927,10 @@ int gmx_traj(int argc, char* argv[])
     }
     if ((flags == 0) && !bOB)
     {
-        fprintf(stderr, "Please select one or more output file options\n");
-        std::exit(0);
+        gmx_fatal(FARGS, "Please select one or more output file options");
     }
 
-    read_first_frame(oenv, &status, ftp2fn(efTRX, NFILE, fnm), &fr, flags);
+    read_first_frame(oenv, &status, ftp2fn(efTRX, NFILE, fnm), &fr, &timeControl, flags);
 
 
     if ((bOV || bOF) && fn2ftp(ftp2fn(efTRX, NFILE, fnm)) == efXTC)
@@ -1207,7 +1209,7 @@ int gmx_traj(int argc, char* argv[])
     sfree(index0);
     sfree(isize0);
     sfree(grpname);
-    done_frame(&fr);
+    gmx::done_frame(&fr);
     output_env_done(oenv);
 
     return 0;

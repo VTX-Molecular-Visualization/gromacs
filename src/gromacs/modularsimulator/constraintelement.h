@@ -50,10 +50,12 @@
 namespace gmx
 {
 class Constraints;
+class DeviceStreamManager;
 class EnergyData;
 class FreeEnergyPerturbationData;
 class GlobalCommunicationHelper;
 class LegacySimulatorData;
+class MDAtoms;
 class ModularSimulatorAlgorithmBuilderHelper;
 class ObservablesReducer;
 class StatePropagatorData;
@@ -85,7 +87,7 @@ public:
                        bool                        isMain,
                        FILE*                       fplog,
                        const t_inputrec*           inputrec,
-                       const t_mdatoms*            mdAtoms);
+                       const MDAtoms&              mdAtoms);
 
     /*! \brief Register constraining function for step / time
      *
@@ -117,6 +119,7 @@ public:
      * \param freeEnergyPerturbationData  Pointer to the \c FreeEnergyPerturbationData object
      * \param globalCommunicationHelper   Pointer to the \c GlobalCommunicationHelper object
      * \param observablesReducer          Pointer to the \c ObservablesReducer object
+     * \param deviceStreamManager         Pointer to the device stream manager
      *
      * \return  Pointer to the element to be added. Element needs to have been stored using \c storeElement
      */
@@ -126,7 +129,8 @@ public:
                                                     EnergyData*          energyData,
                                                     FreeEnergyPerturbationData* freeEnergyPerturbationData,
                                                     GlobalCommunicationHelper* globalCommunicationHelper,
-                                                    ObservablesReducer* observablesReducer);
+                                                    ObservablesReducer*        observablesReducer,
+                                                    const DeviceStreamManager* deviceStreamManager);
 
 private:
     //! The actual constraining computation
@@ -165,7 +169,7 @@ private:
     //! Contains user input mdp options.
     const t_inputrec* inputrec_;
     //! Atom parameters for this domain.
-    const t_mdatoms* mdAtoms_;
+    const MDAtoms& mdAtoms_;
 };
 
 } // namespace gmx

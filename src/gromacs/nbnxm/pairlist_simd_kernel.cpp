@@ -50,12 +50,12 @@
 #include <memory>
 #include <type_traits>
 
-#include "gromacs/math/functions.h"
 #include "gromacs/nbnxm/boundingbox.h"
 #include "gromacs/nbnxm/pairlist.h"
 #include "gromacs/simd/simd.h"
 #include "gromacs/simd/vector_operations.h"
 #include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/vec.h"
 
@@ -105,7 +105,7 @@ gmx_unused static constexpr int sc_xStride()
     return std::max(sc_iClusterSizeSimd<kernelType>(), sc_jClusterSizeSimd<kernelType>());
 }
 
-//! Returns the nbnxn coordinate data index given the i-cluster index
+//! Returns the nbnxm coordinate data index given the i-cluster index
 template<ClusterDistanceKernelType kernelType>
 gmx_unused static inline int xIndexFromCi(int ci)
 {
@@ -131,7 +131,7 @@ gmx_unused static inline int xIndexFromCi(int ci)
     }
 }
 
-//! Returns the nbnxn coordinate data index given the j-cluster index
+//! Returns the nbnxm coordinate data index given the j-cluster index
 template<ClusterDistanceKernelType kernelType>
 gmx_unused static inline int xIndexFromCj(int cj)
 {
@@ -307,8 +307,8 @@ static inline SimdReal loadJData(const real* x)
  * \param[in]     jGrid               The j-grid
  * \param[in,out] nbl                 The pair-list to store the cluster pairs in
  * \param[in]     icluster            The index of the i-cluster
- * \param[in]     firstCell           The first cluster in the j-range, using i-cluster size indexing
- * \param[in]     lastCell            The last cluster in the j-range, using i-cluster size indexing
+ * \param[in]     firstBin            The first cluster in the j-range, using i-cluster size indexing
+ * \param[in]     lastBin             The last cluster in the j-range, using i-cluster size indexing
  * \param[in]     excludeSubDiagonal  Exclude atom pairs with i-index > j-index
  * \param[in]     x_j                 Coordinates for the j-atom, in SIMD packed format
  * \param[in]     rlist2              The squared list cut-off
@@ -317,10 +317,10 @@ static inline SimdReal loadJData(const real* x)
  */
 template<ClusterDistanceKernelType kernelType>
 static inline void makeClusterListSimd(const Grid&              jGrid,
-                                       NbnxnPairlistCpu*        nbl,
+                                       NbnxmPairlistCpu*        nbl,
                                        int                      icluster,
-                                       int                      firstCell,
-                                       int                      lastCell,
+                                       int                      firstBin,
+                                       int                      lastBin,
                                        bool                     excludeSubDiagonal,
                                        const real* gmx_restrict x_j,
                                        real                     rlist2,
@@ -338,11 +338,11 @@ static inline void makeClusterListSimd(const Grid&              jGrid,
     const BoundingBox* gmx_restrict bb_ci     = nbl->work->iClusterData.bb.data();
 
     /* Convert the j-range from i-cluster size indexing to j-cluster indexing */
-    int jclusterFirst = cjFromCi<kernelType, 0>(firstCell);
-    int jclusterLast  = cjFromCi<kernelType, 1>(lastCell);
+    int jclusterFirst = cjFromCi<kernelType, 0>(firstBin);
+    int jclusterLast  = cjFromCi<kernelType, 1>(lastBin);
     GMX_ASSERT(jclusterLast >= jclusterFirst,
                "We should have a non-empty j-cluster range, since the calling code should have "
-               "ensured a non-empty cell range");
+               "ensured a non-empty bin range");
 
     const SimdReal rc2_S = SimdReal(rlist2);
 
@@ -364,7 +364,7 @@ static inline void makeClusterListSimd(const Grid&              jGrid,
         else if (d2 < rlist2)
         {
             const int xind_f =
-                    xIndexFromCj<kernelType>(cjFromCi<kernelType, 0>(jGrid.cellOffset()) + jclusterFirst);
+                    xIndexFromCj<kernelType>(cjFromCi<kernelType, 0>(jGrid.binOffset()) + jclusterFirst);
 
             const SimdReal jx_S = loadJData<kernelType>(x_j + xind_f + 0 * sc_xStride<kernelType>());
             const SimdReal jy_S = loadJData<kernelType>(x_j + xind_f + 1 * sc_xStride<kernelType>());
@@ -435,7 +435,7 @@ static inline void makeClusterListSimd(const Grid&              jGrid,
         else if (d2 < rlist2)
         {
             const int xind_l =
-                    xIndexFromCj<kernelType>(cjFromCi<kernelType, 0>(jGrid.cellOffset()) + jclusterLast);
+                    xIndexFromCj<kernelType>(cjFromCi<kernelType, 0>(jGrid.binOffset()) + jclusterLast);
 
             const SimdReal jx_S = loadJData<kernelType>(x_j + xind_l + 0 * sc_xStride<kernelType>());
             const SimdReal jy_S = loadJData<kernelType>(x_j + xind_l + 1 * sc_xStride<kernelType>());
@@ -488,8 +488,8 @@ static inline void makeClusterListSimd(const Grid&              jGrid,
         for (int jcluster = jclusterFirst; jcluster <= jclusterLast; jcluster++)
         {
             /* Store cj and the interaction mask */
-            nbnxn_cj_t cjEntry;
-            cjEntry.cj = cjFromCi<kernelType, 0>(jGrid.cellOffset()) + jcluster;
+            nbnxm_cj_t cjEntry;
+            cjEntry.cj = cjFromCi<kernelType, 0>(jGrid.binOffset()) + jcluster;
             cjEntry.excl =
                     getImask<c_iClusterSize, c_jClusterSize>(excludeSubDiagonal, icluster, jcluster);
             nbl->cj.push_back(cjEntry);
@@ -502,10 +502,10 @@ static inline void makeClusterListSimd(const Grid&              jGrid,
 #endif // GMX_SIMD && GMX_USE_SIMD_KERNELS
 
 void makeClusterListSimd4xM(const Grid gmx_unused&              jGrid,
-                            NbnxnPairlistCpu gmx_unused*        nbl,
+                            NbnxmPairlistCpu gmx_unused*        nbl,
                             int gmx_unused                      icluster,
-                            int gmx_unused                      firstCell,
-                            int gmx_unused                      lastCell,
+                            int gmx_unused                      firstBin,
+                            int gmx_unused                      lastBin,
                             bool gmx_unused                     excludeSubDiagonal,
                             const real gmx_unused* gmx_restrict x_j,
                             real gmx_unused                     rlist2,
@@ -514,17 +514,17 @@ void makeClusterListSimd4xM(const Grid gmx_unused&              jGrid,
 {
 #if GMX_HAVE_NBNXM_SIMD_4XM
     makeClusterListSimd<ClusterDistanceKernelType::CpuSimd_4xM>(
-            jGrid, nbl, icluster, firstCell, lastCell, excludeSubDiagonal, x_j, rlist2, rbb2, numDistanceChecks);
+            jGrid, nbl, icluster, firstBin, lastBin, excludeSubDiagonal, x_j, rlist2, rbb2, numDistanceChecks);
 #else
     GMX_RELEASE_ASSERT(false, "Function called that is not supported in this build");
 #endif
 }
 
 void makeClusterListSimd2xMM(const Grid gmx_unused&              jGrid,
-                             NbnxnPairlistCpu gmx_unused*        nbl,
+                             NbnxmPairlistCpu gmx_unused*        nbl,
                              int gmx_unused                      icluster,
-                             int gmx_unused                      firstCell,
-                             int gmx_unused                      lastCell,
+                             int gmx_unused                      firstBin,
+                             int gmx_unused                      lastBin,
                              bool gmx_unused                     excludeSubDiagonal,
                              const real gmx_unused* gmx_restrict x_j,
                              real gmx_unused                     rlist2,
@@ -533,7 +533,7 @@ void makeClusterListSimd2xMM(const Grid gmx_unused&              jGrid,
 {
 #if GMX_HAVE_NBNXM_SIMD_2XMM
     makeClusterListSimd<ClusterDistanceKernelType::CpuSimd_2xMM>(
-            jGrid, nbl, icluster, firstCell, lastCell, excludeSubDiagonal, x_j, rlist2, rbb2, numDistanceChecks);
+            jGrid, nbl, icluster, firstBin, lastBin, excludeSubDiagonal, x_j, rlist2, rbb2, numDistanceChecks);
 #else
     GMX_RELEASE_ASSERT(false, "Function called that is not supported in this build");
 #endif

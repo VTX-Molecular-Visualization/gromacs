@@ -49,9 +49,11 @@
 #include <type_traits>
 #include <vector>
 
+#include "gromacs/fileio/h5md/exceptions.h"
 #include "gromacs/fileio/h5md/h5md_attribute.h"
+#include "gromacs/fileio/h5md/h5md_compound_type.h"
+#include "gromacs/fileio/h5md/h5md_compression.h"
 #include "gromacs/fileio/h5md/h5md_datasetbase.h"
-#include "gromacs/fileio/h5md/h5md_error.h"
 #include "gromacs/fileio/h5md/h5md_guard.h"
 #include "gromacs/fileio/h5md/h5md_type.h"
 #include "gromacs/fileio/h5md/h5md_util.h"
@@ -61,17 +63,6 @@
 
 namespace gmx
 {
-
-//! \brief Data set compression options
-enum class H5mdCompression : int
-{
-    Uncompressed,      //!< No compression
-    LosslessNoShuffle, //!< Lossless, only gzip (deflate)
-    LosslessShuffle    //!< Lossless, byte shuffle followed by gzip (deflate)
-};
-
-// gzip (deflate) compression level: 1 = fastest, 9 = highest compression
-constexpr int c_h5mdDeflateCompressionLevel = 1;
 
 /*! \brief Builder class for H5md data sets.
  *
@@ -93,45 +84,41 @@ class H5mdDataSetBuilder
 public:
     //! \brief Construct a builder for a data set with \p name in \p container.
     //
-    // \throws gmx::FileIOError if an object with \p name already exists in \p container.
+    // \throws H5mdError if an object with \p name already exists in \p container.
     H5mdDataSetBuilder(const hid_t container, const std::string& name) :
         container_(container), name_(name)
     {
         GMX_H5MD_THROW_UPON_ERROR(
                 objectExists(container, name.c_str()),
                 "Cannot create data set: object with given name already exists in the container");
-        accessPropertyList_   = H5Pcreate(H5P_DATASET_ACCESS);
-        creationPropertyList_ = H5Pcreate(H5P_DATASET_CREATE);
-    }
-
-    ~H5mdDataSetBuilder() noexcept
-    {
-        if (handleIsValid(accessPropertyList_))
-        {
-            H5Pclose(accessPropertyList_);
-        }
-        if (handleIsValid(creationPropertyList_))
-        {
-            H5Pclose(creationPropertyList_);
-        }
     }
 
     GMX_DISALLOW_COPY_MOVE_AND_ASSIGN(H5mdDataSetBuilder);
 
-    //! \brief Set \p compression for data set.
-    H5mdDataSetBuilder& withCompression(const H5mdCompression compression)
+    /*! \brief Set \p compression for data set.
+     *
+     * If \p compression is a lossy compression scheme an \p absoluteError
+     * bound must also be given, such that a compressedValue lies within
+     * inputValue +/- absoluteError. For lossless compression schemes,
+     * \p absoluteError is ignored.
+     *
+     * \param[in] compression   Compression scheme.
+     * \param[in] absoluteError Absolute error for lossy compression scheme.
+     *
+     * \throws H5mdError if a lossy \p compression scheme is used
+     * and \p absoluteError is not positive, or if the \p compression
+     * algorithm is incompatible with the compiled \c ValueType.
+     */
+    H5mdDataSetBuilder& withCompression(const H5mdCompression compression, const double absoluteError = 0.0)
     {
-        switch (compression)
-        {
-            case H5mdCompression::Uncompressed: break;
-            case H5mdCompression::LosslessShuffle:
-                H5Pset_shuffle(creationPropertyList_);
-                [[fallthrough]];
-            case H5mdCompression::LosslessNoShuffle:
-                H5Pset_deflate(creationPropertyList_, c_h5mdDeflateCompressionLevel);
-                break;
-        }
-
+        GMX_H5MD_THROW_UPON_ERROR(compression == H5mdCompression::LossySz3BioMD
+                                          && !(std::is_same_v<ValueType, BasicVector<float>>
+                                               || std::is_same_v<ValueType, BasicVector<double>>),
+                                  "SZ3 compression can only be applied to RVec-like data");
+        GMX_H5MD_THROW_UPON_ERROR(compression == H5mdCompression::LossySz3BioMD && absoluteError <= 0.0,
+                                  "SZ3 compression requires a positive absolute error bound");
+        compression_   = compression;
+        absoluteError_ = absoluteError;
         return *this;
     }
 
@@ -178,17 +165,19 @@ public:
         return withChunkDimension(ArrayRef<const hsize_t>(chunkDims.begin(), chunkDims.end()));
     }
 
-    //! \brief Set the data set to use a fixed size string with maximum length \p maxLength.
+    //! \brief Set the data set to use a fixed-length string with maximum length \p maxLength.
     //
     // \note The max length must be positive and count the null-terminator character.
     // If neither withMaxStringLength() nor withVariableStringLength() is called,
     // the default is variable-length strings for string data sets.
+    // For a compound type with fixed-length string members (see valueTypeHasSizedStrings()),
+    // \p maxLength is the size in which those members are stored.
     H5mdDataSetBuilder& withMaxStringLength(const int maxLength)
     {
         // Use int to prevent the integer overflow if passed a negative value
         GMX_H5MD_THROW_UPON_ERROR(
                 maxLength <= 0,
-                "Cannot create fixed-size string data set with non-positive maximum length");
+                "Cannot create fixed-length string data set with non-positive maximum length");
         maxStringLength_ = static_cast<size_t>(maxLength);
         return *this;
     }
@@ -209,7 +198,10 @@ public:
 
     //! \brief Finalize all set options, then build and return the data set.
     //
-    // \throws gmx::FileIOError if any set options are incorrect or incompatible with other
+    // For a compound \c ValueType that declares \c sc_units, these are written as the
+    // \c units attribute of the data set (see h5md_compound_type.h).
+    //
+    // \throws H5mdError if any set options are incorrect or incompatible with other
     // options, or if an error occurred when creating the data set.
     H5mdDataSetBase<ValueType> build()
     {
@@ -244,12 +236,25 @@ public:
                                   "Inconsistent input when creating data set: "
                                   "chunkDims must be of same dimension as data set dims.");
 
+        // To create HDF5 data sets we need non-default property lists
+        // for data access and data creation.
+        const auto [accessPropertyList, accessPropertyListGuard] =
+                makeH5mdPropertyListGuard(H5Pcreate(H5P_DATASET_ACCESS));
+        const auto [creationPropertyList, creationPropertyListGuard] =
+                makeH5mdPropertyListGuard(H5Pcreate(H5P_DATASET_CREATE));
+
         GMX_H5MD_THROW_UPON_ERROR(
-                H5Pset_chunk(creationPropertyList_, chunkDims_.size(), chunkDims_.data()) < 0,
+                H5Pset_chunk(creationPropertyList, chunkDims_.size(), chunkDims_.data()) < 0,
                 "Cannot set chunk dimensions when creating data set.");
         GMX_H5MD_THROW_UPON_ERROR(
-                H5Pset_chunk_opts(creationPropertyList_, H5D_CHUNK_DONT_FILTER_PARTIAL_CHUNKS) < 0,
+                H5Pset_chunk_opts(creationPropertyList, H5D_CHUNK_DONT_FILTER_PARTIAL_CHUNKS) < 0,
                 "Cannot set chunk options when creating data set.");
+
+        // If we add a checksum filter to data (e.g. Fletcher32), it must
+        // come after we set the compression filter to the property list
+        GMX_H5MD_THROW_UPON_ERROR(compression_ == H5mdCompression::LossySz3BioMD && dims_.size() != 3,
+                                  "SZ3 compression requires input data to be 3-dimensional");
+        setCompressionFilters(creationPropertyList, compression_, absoluteError_);
 
         size_t cacheSize = H5Tget_size(dataType);
         for (const hsize_t d : chunkDims_)
@@ -257,7 +262,7 @@ public:
             cacheSize *= d;
         }
         GMX_H5MD_THROW_UPON_ERROR(
-                H5Pset_chunk_cache(accessPropertyList_, H5D_CHUNK_CACHE_NSLOTS_DEFAULT, cacheSize, H5D_CHUNK_CACHE_W0_DEFAULT)
+                H5Pset_chunk_cache(accessPropertyList, H5D_CHUNK_CACHE_NSLOTS_DEFAULT, cacheSize, H5D_CHUNK_CACHE_W0_DEFAULT)
                         < 0,
                 "Cannot set chunk cache size when creating data set.");
 
@@ -266,12 +271,20 @@ public:
         GMX_H5MD_THROW_UPON_INVALID_HID(dataSpace, "Cannot create data space for data set.");
 
         const hid_t dataSetHandle = H5Dcreate(
-                container_, name_.c_str(), dataType, dataSpace, H5P_DEFAULT, creationPropertyList_, accessPropertyList_);
+                container_, name_.c_str(), dataType, dataSpace, H5P_DEFAULT, creationPropertyList, accessPropertyList);
         GMX_H5MD_THROW_UPON_INVALID_HID(dataSetHandle, "Cannot create data set.");
 
         if (!unit_.empty())
         {
             setAttribute(dataSetHandle, c_unitAttributeKey, unit_.c_str());
+        }
+        if constexpr (valueTypeHasUnits<ValueType>())
+        {
+            static_assert(ValueType::sc_units.size() == ValueType::sc_names.size(),
+                          "A compound type must give one unit for each member");
+            // Written whenever the type declares units, even if all members are dimensionless
+            setAttributeVector(
+                    dataSetHandle, c_unitsAttributeKey, ArrayRef<const char* const>(ValueType::sc_units));
         }
 
         // Responsibility for closing `dataSetHandle` is taken by the `H5mdDataSetBase<ValueType>`
@@ -286,12 +299,12 @@ private:
     // dimension arrays here.
     hid_t finalizeDataType()
     {
-        if constexpr (std::is_same_v<ValueType, gmx::BasicVector<float>>)
+        if constexpr (std::is_same_v<ValueType, BasicVector<float>>)
         {
             appendDimension(DIM);
             return hdf5DataTypeFor<float>();
         }
-        else if constexpr (std::is_same_v<ValueType, gmx::BasicVector<double>>)
+        else if constexpr (std::is_same_v<ValueType, BasicVector<double>>)
         {
             appendDimension(DIM);
             return hdf5DataTypeFor<double>();
@@ -300,12 +313,23 @@ private:
         {
             if (maxStringLength_.has_value())
             {
-                return hdf5DataTypeForFixedSizeString(maxStringLength_.value());
+                return hdf5DataTypeForFixedLengthString(maxStringLength_.value());
             }
             else
             {
-                return hdf5DataTypeForVariableSizeString();
+                return hdf5DataTypeForVariableLengthString();
             }
+        }
+        else if constexpr (valueTypeIsHdf5CompoundType<ValueType>())
+        {
+            if constexpr (valueTypeHasSizedStrings<ValueType>())
+            {
+                if (maxStringLength_.has_value())
+                {
+                    return ValueType::constructHdf5DataType(maxStringLength_.value());
+                }
+            }
+            return ValueType::constructHdf5DataType();
         }
         else
         {
@@ -328,10 +352,10 @@ private:
     }
 
     //!< Container in which to create the data set.
-    hid_t container_;
+    const hid_t container_;
 
     //!< Name of data set.
-    std::string name_;
+    const std::string name_;
 
     //!< When set, the maximum length of a string data set (default: variable-length string)
     std::optional<size_t> maxStringLength_ = std::nullopt;
@@ -345,14 +369,14 @@ private:
     //!< Chunk dimensions of data set storage.
     std::vector<hsize_t> chunkDims_;
 
-    //!< Property list for access options to create data set with.
-    hid_t accessPropertyList_;
-
-    //!< Property list for creation options to create data set with.
-    hid_t creationPropertyList_;
-
     //!< Unit for values in data set.
     std::string unit_;
+
+    //! Compression scheme for data set.
+    H5mdCompression compression_ = H5mdCompression::Uncompressed;
+
+    //! Absolute error for lossy compression.
+    double absoluteError_ = 0.0;
 };
 
 } // namespace gmx

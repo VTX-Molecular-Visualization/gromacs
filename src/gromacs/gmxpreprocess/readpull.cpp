@@ -52,10 +52,9 @@
 #include "gromacs/fileio/readinp.h"
 #include "gromacs/fileio/warninp.h"
 #include "gromacs/gmxpreprocess/readir.h"
-#include "gromacs/mdlib/mdatoms.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
-#include "gromacs/mdtypes/mdatom.h"
+#include "gromacs/mdtypes/mdatoms.h"
 #include "gromacs/mdtypes/pull_params.h"
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/pulling/pull.h"
@@ -77,8 +76,13 @@
 
 struct pull_t;
 
+namespace gmx
+{
 
-static void string2dvec(const char buf[], dvec nums)
+namespace
+{
+
+void string2dvec(const char buf[], dvec nums)
 {
     double dum;
 
@@ -88,7 +92,7 @@ static void string2dvec(const char buf[], dvec nums)
     }
 }
 
-static std::vector<real> setupPullGroupWeights(const char* wbuf)
+std::vector<real> setupPullGroupWeights(const char* wbuf)
 {
     double d;
     int    n;
@@ -102,7 +106,7 @@ static std::vector<real> setupPullGroupWeights(const char* wbuf)
     return weight;
 }
 
-static void process_pull_dim(char* dim_buf, ivec dim, const t_pull_coord* pcrd)
+void process_pull_dim(char* dim_buf, ivec dim, const t_pull_coord* pcrd)
 {
     char* ptr  = dim_buf;
     int   ndim = 0;
@@ -115,11 +119,11 @@ static void process_pull_dim(char* dim_buf, ivec dim, const t_pull_coord* pcrd)
             gmx_fatal(FARGS, "Less than 3 pull dimensions given in pull_dim: '%s'", dim_buf);
         }
 
-        if (gmx::equalCaseInsensitive(pulldim1, "N", 1))
+        if (equalCaseInsensitive(pulldim1, "N", 1))
         {
             dim[d] = 0;
         }
-        else if (gmx::equalCaseInsensitive(pulldim1, "Y", 1))
+        else if (equalCaseInsensitive(pulldim1, "Y", 1))
         {
             dim[d] = 1;
             ndim++;
@@ -147,14 +151,14 @@ static void process_pull_dim(char* dim_buf, ivec dim, const t_pull_coord* pcrd)
     }
 }
 
-static void initTransformationPullCoord(t_pull_coord* pcrd, const pull_params_t& pull, WarningHandler* wi)
+void initTransformationPullCoord(t_pull_coord* pcrd, const pull_params_t& pull, WarningHandler* wi)
 {
     const int coord_index_for_output = pull.coord.size() + 1;
     if (pcrd->eType == PullingAlgorithm::Constraint)
     {
         wi->addError(
 
-                gmx::formatString(
+                formatString(
                         "pull-coord%d cannot have type 'constraint' and geometry 'transformation'",
                         coord_index_for_output));
     }
@@ -176,7 +180,7 @@ static void initTransformationPullCoord(t_pull_coord* pcrd, const pull_params_t&
     {
         wi->addError(
 
-                gmx::formatString(
+                formatString(
                         "pull-coord%d-dx cannot be set to zero for pull coordinate of geometry "
                         "'transformation'",
                         coord_index_for_output));
@@ -204,34 +208,34 @@ static void initTransformationPullCoord(t_pull_coord* pcrd, const pull_params_t&
         if (previousPcrd.eType == PullingAlgorithm::Constraint)
         {
             wi->addError(
-                    gmx::formatString("pull-coord%d can not use pull-coord%d in the "
-                                      "transformation since this is a "
-                                      "constraint",
-                                      coord_index_for_output,
-                                      previousCoordOutputIndex));
+                    formatString("pull-coord%d can not use pull-coord%d in the "
+                                 "transformation since this is a "
+                                 "constraint",
+                                 coord_index_for_output,
+                                 previousCoordOutputIndex));
         }
         else if (previousPcrd.k != 0 && pcrd->k != 0)
         {
             wi->addNote(
 
-                    gmx::formatString("pull-coord%d has a non-zero force constant and is also "
-                                      "referenced in pull-coord%d-expression. "
-                                      "Make sure that this is intended. "
-                                      "In most use cases, the pull coordinates referenced by a "
-                                      "transformation coordinate should have their force constant "
-                                      "set to zero.",
-                                      coord_index_for_output,
-                                      previousCoordOutputIndex));
+                    formatString("pull-coord%d has a non-zero force constant and is also "
+                                 "referenced in pull-coord%d-expression. "
+                                 "Make sure that this is intended. "
+                                 "In most use cases, the pull coordinates referenced by a "
+                                 "transformation coordinate should have their force constant "
+                                 "set to zero.",
+                                 coord_index_for_output,
+                                 previousCoordOutputIndex));
         }
     }
 }
 
-static void init_pull_coord(t_pull_coord*        pcrd,
-                            char*                dim_buf,
-                            const char*          origin_buf,
-                            const char*          vec_buf,
-                            const pull_params_t& pull,
-                            WarningHandler*      wi)
+void init_pull_coord(t_pull_coord*        pcrd,
+                     char*                dim_buf,
+                     const char*          origin_buf,
+                     const char*          vec_buf,
+                     const pull_params_t& pull,
+                     WarningHandler*      wi)
 {
     const int coord_index_for_output = pull.coord.size() + 1;
 
@@ -405,6 +409,8 @@ static void init_pull_coord(t_pull_coord*        pcrd,
     }
 }
 
+} // namespace
+
 std::vector<std::string> read_pullparams(std::vector<t_inpfile>* inp, pull_params_t* pull, WarningHandler* wi)
 {
     int  nscan, idum;
@@ -563,9 +569,9 @@ std::vector<std::string> read_pullparams(std::vector<t_inpfile>* inp, pull_param
     return pullGroups;
 }
 
-void process_pull_groups(gmx::ArrayRef<t_pull_group>      pullGroups,
-                         gmx::ArrayRef<const std::string> pullGroupNames,
-                         gmx::ArrayRef<const IndexGroup>  indexGroups)
+void process_pull_groups(ArrayRef<t_pull_group>      pullGroups,
+                         ArrayRef<const std::string> pullGroupNames,
+                         ArrayRef<const IndexGroup>  indexGroups)
 {
     /* Absolute reference group (might not be used) is special */
     pullGroups.front().pbcatom       = -1;
@@ -632,7 +638,7 @@ void process_pull_groups(gmx::ArrayRef<t_pull_group>      pullGroups,
     }
 }
 
-void checkPullCoords(gmx::ArrayRef<const t_pull_group> pullGroups, gmx::ArrayRef<const t_pull_coord> pullCoords)
+void checkPullCoords(ArrayRef<const t_pull_group> pullGroups, ArrayRef<const t_pull_coord> pullCoords)
 {
     for (int c = 0; c < pullCoords.ssize(); ++c)
     {
@@ -676,12 +682,12 @@ void checkPullCoords(gmx::ArrayRef<const t_pull_group> pullGroups, gmx::ArrayRef
     }
 }
 
-pull_t* set_pull_init(t_inputrec*                    ir,
-                      const gmx_mtop_t&              mtop,
-                      gmx::ArrayRef<const gmx::RVec> x,
-                      matrix                         box,
-                      real                           lambda,
-                      WarningHandler*                wi)
+pull_t* set_pull_init(t_inputrec*               ir,
+                      const gmx_mtop_t&         mtop,
+                      ArrayRef<const gmx::RVec> x,
+                      matrix                    box,
+                      const real                massLambda,
+                      WarningHandler*           wi)
 {
     pull_t* pull_work;
     t_pbc   pbc;
@@ -689,14 +695,11 @@ pull_t* set_pull_init(t_inputrec*                    ir,
     pull_params_t*           pull = ir->pull.get();
     const gmx::MpiComm       mpiComm(gmx::MpiComm(gmx::MpiComm::SingleRank{}));
     gmx::LocalAtomSetManager atomSets;
-    pull_work     = init_pull(nullptr, pull, ir, mtop, mpiComm, nullptr, &atomSets, lambda);
-    auto  mdAtoms = gmx::makeMDAtoms(nullptr, mtop, *ir, false);
-    auto* md      = mdAtoms->mdatoms();
-    atoms2md(mtop, *ir, -1, {}, mtop.natoms, mdAtoms.get());
-    if (ir->efep != FreeEnergyPerturbationType::No)
-    {
-        update_mdatoms(md, lambda);
-    }
+    pull_work = init_pull(nullptr, pull, ir, mtop, mpiComm, nullptr, &atomSets, massLambda);
+    gmx::MDAtoms mdAtoms(mtop, *ir, false, false, nullptr);
+    // This is a pretty expensive way to get the vector of (possibly
+    // perturbed) masses (and nothing else).
+    mdAtoms.updateAfterPartition(mtop.natoms, {}, mtop.natoms, massLambda);
 
     set_pbc(&pbc, ir->pbcType, box);
 
@@ -704,9 +707,9 @@ pull_t* set_pull_init(t_inputrec*                    ir,
 
     if (pull->bSetPbcRefToPrevStepCOM)
     {
-        initPullComFromPrevStep(mpiComm, pull_work, md->massT, pbc, x);
+        initPullComFromPrevStep(mpiComm, pull_work, mdAtoms.massT, pbc, x);
     }
-    pull_calc_coms(mpiComm, pull_work, md->massT, pbc, t_start, x, {});
+    pull_calc_coms(mpiComm, pull_work, mdAtoms.massT, pbc, t_start, x, {});
 
     for (int g = 0; g < pull->ngroup; g++)
     {
@@ -840,3 +843,5 @@ pull_t* set_pull_init(t_inputrec*                    ir,
 
     return pull_work;
 }
+
+} // namespace gmx

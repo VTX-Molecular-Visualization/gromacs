@@ -119,9 +119,17 @@ void list_tpr(const char* fn,
     t_inputrec    ir;
 
     read_tpx_state(fn, tpx.bIr ? &ir : nullptr, &state, tpx.bTop ? &mtop : nullptr);
-    if (tpx.bIr && !bOriginalInputrec)
+
+    // Set up MDModules and OutputControl before any module operations
+    MDModules mdModules;
+    if (tpx.bIr)
     {
-        MDModules().adjustInputrecBasedOnModules(&ir);
+        if (!bOriginalInputrec)
+        {
+            mdModules.adjustInputrecBasedOnModules(&ir);
+        }
+
+        mdModules.assignOptionsToModules(*ir.params, nullptr, &ir);
     }
 
     if (mdpfn && tpx.bIr)
@@ -171,7 +179,7 @@ void list_tpr(const char* fn,
 
         const SimulationGroups& groups = mtop.groups;
 
-        gmx::EnumerationArray<SimulationAtomGroupType, std::vector<int>> gcount;
+        EnumerationArray<SimulationAtomGroupType, std::vector<int>> gcount;
         for (auto group : keysOf(gcount))
         {
             gcount[group].resize(groups.groups[group].size());
@@ -204,9 +212,9 @@ void list_top(const char* fn)
 {
     int status, done;
     // Legacy string length macro
-    char      buf[STRLEN];
-    gmx_cpp_t handle;
-    char*     cppopts[] = { nullptr };
+    char            buf[STRLEN];
+    CPreProcessor_t handle;
+    char*           cppopts[] = { nullptr };
 
     status = cpp_open_file(fn, &handle, cppopts);
     if (status != 0)
@@ -454,22 +462,21 @@ void list_trx(const char* fn)
 //! Dump an energy file
 void list_ene(const char* fn)
 {
-    ener_file_t  in;
-    gmx_bool     bCont;
-    gmx_enxnm_t* enm = nullptr;
-    t_enxframe*  fr;
-    int          i, j, nre, b;
-    char         buf[22];
+    ener_file_t in;
+    gmx_bool    bCont;
+    t_enxframe* fr;
+    int         i, j, b;
+    char        buf[22];
 
     printf("gmx dump: %s\n", fn);
-    in = open_enx(fn, "r");
-    do_enxnms(in, &nre, &enm);
-    assert(enm);
+    in                                 = open_enx(fn, "r");
+    const std::vector<gmx_enxnm_t> enm = readEnxNames(in);
+    const int                      nre = gmx::ssize(enm);
 
     printf("energy components:\n");
     for (i = 0; (i < nre); i++)
     {
-        printf("%5d  %-24s (%s)\n", i, enm[i].name, enm[i].unit);
+        printf("%5d  %-24s (%s)\n", i, enm[i].name.c_str(), enm[i].unit.c_str());
     }
 
     snew(fr, 1);
@@ -487,16 +494,16 @@ void list_ene(const char* fn)
                 printf("%24s  %12s  %12s  %12s\n",
                        "Component",
                        "Energy",
-                       "Av. Energy",
+                       "Sum sq. dev.",
                        "Sum Energy");
                 if (fr->nsum > 0)
                 {
                     for (i = 0; (i < nre); i++)
                     {
                         printf("%24s  %12.5e  %12.5e  %12.5e\n",
-                               enm[i].name,
+                               enm[i].name.c_str(),
                                fr->ener[i].e,
-                               fr->ener[i].eav,
+                               fr->ener[i].sumSqDev,
                                fr->ener[i].esum);
                     }
                 }
@@ -504,7 +511,7 @@ void list_ene(const char* fn)
                 {
                     for (i = 0; (i < nre); i++)
                     {
-                        printf("%24s  %12.5e\n", enm[i].name, fr->ener[i].e);
+                        printf("%24s  %12.5e\n", enm[i].name.c_str(), fr->ener[i].e);
                     }
                 }
             }
@@ -573,11 +580,10 @@ void list_ene(const char* fn)
         }
     } while (bCont);
 
-    close_enx(in);
+    done_ener_file(in);
 
     free_enxframe(fr);
     sfree(fr);
-    sfree(enm);
 }
 
 //! Dump a (Hessian) matrix file

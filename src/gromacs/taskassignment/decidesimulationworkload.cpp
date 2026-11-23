@@ -56,11 +56,11 @@
 #include "gromacs/listed_forces/listed_forces.h"
 #include "gromacs/listed_forces/listed_forces_gpu.h"
 #include "gromacs/mdlib/force_flags.h"
+#include "gromacs/mdlib/stat.h"
 #include "gromacs/mdtypes/forcerec.h"
 #include "gromacs/mdtypes/iforceprovider.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
-#include "gromacs/mdtypes/mdatom.h"
 #include "gromacs/mdtypes/multipletimestepping.h"
 #include "gromacs/mdtypes/simulation_workload.h"
 #include "gromacs/pulling/pull.h"
@@ -71,7 +71,10 @@
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/logger.h"
 
-struct gmx_edsam;
+namespace gmx
+{
+struct edsam;
+}
 struct pull_t;
 
 namespace gmx
@@ -86,6 +89,7 @@ SimulationWorkload createSimulationWorkload(const gmx::MDLogger& mdlog,
                                             bool       haveFillerParticlesInLocalState,
                                             bool       havePpDomainDecomposition,
                                             bool       haveSeparatePmeRank,
+                                            bool       haveVirtualSites,
                                             bool       useGpuForNonbonded,
                                             bool       useGpuForNonbondedFE,
                                             PmeRunMode pmeRunMode,
@@ -97,6 +101,7 @@ SimulationWorkload createSimulationWorkload(const gmx::MDLogger& mdlog,
 {
     SimulationWorkload simulationWorkload;
     simulationWorkload.computeNonbonded = !disableNonbondedCalculation;
+    simulationWorkload.haveVirtualSites = haveVirtualSites;
     simulationWorkload.computeNonbondedAtMtsLevel1 =
             simulationWorkload.computeNonbonded && inputrec.useMts
             && inputrec.mtsLevels.back().forceGroups[static_cast<int>(MtsForceGroups::Nonbonded)];
@@ -104,12 +109,10 @@ SimulationWorkload createSimulationWorkload(const gmx::MDLogger& mdlog,
     simulationWorkload.haveDynamicBox    = haveDynamicBox;
     simulationWorkload.useCpuNonbonded   = !useGpuForNonbonded;
     simulationWorkload.useGpuNonbonded   = useGpuForNonbonded;
-    simulationWorkload.useCpuNonbondedFE = !useGpuForNonbondedFE;
     simulationWorkload.useGpuNonbondedFE = useGpuForNonbondedFE;
+    simulationWorkload.useCpuNonbondedFE = !useGpuForNonbondedFE;
     simulationWorkload.useGpuForeignNonbondedFE =
-            useGpuForNonbondedFE && inputrec.fepvals->n_lambda > 0
-            && inputrec.fepvals->softcoreFunction == SoftcoreType::Beutler
-            && inputrec.fepvals->sc_alpha != 0;
+            useGpuForNonbondedFE && inputrec.fepvals->n_lambda > 0 && inputrec.fepvals->sc_alpha != 0;
     simulationWorkload.useCpuPme = (pmeRunMode == PmeRunMode::CPU);
     simulationWorkload.useGpuPme = (pmeRunMode == PmeRunMode::GPU || pmeRunMode == PmeRunMode::Mixed);
     simulationWorkload.useGpuPmeFft                    = (pmeRunMode == PmeRunMode::GPU);
@@ -165,14 +168,34 @@ SimulationWorkload createSimulationWorkload(const gmx::MDLogger& mdlog,
     // Disallow use of native FFT libraries until ext_codeplay_enqueue_native_command is used.
     constexpr bool haveSyclWithGraphIncompatibleGpuFftLibrary =
             GMX_GPU_SYCL && !(GMX_GPU_FFT_BBFFT || GMX_GPU_FFT_MKL || GMX_GPU_FFT_ONEMATH);
+    // The SD update kernel takes the step number by value to seed its random noise,
+    // so the noise would repeat when Graphs are used.
+    const bool sdIntegratorPreventsMdGpuGraph = inputrec.eI == IntegrationAlgorithm::SD1;
     simulationWorkload.useMdGpuGraph =
             devFlags.enableCudaGraphs && useGpuForUpdate
             && (simulationWorkload.haveSeparatePmeRank ? simulationWorkload.useGpuPmePpCommunication : true)
             && (havePpDomainDecomposition ? simulationWorkload.useGpuHaloExchange : true)
             && (havePpDomainDecomposition ? (GMX_THREAD_MPI > 0) : true)
-            && !(haveSyclWithGraphIncompatibleGpuFftLibrary && simulationWorkload.useGpuPmeFft);
+            && !(haveSyclWithGraphIncompatibleGpuFftLibrary && simulationWorkload.useGpuPmeFft)
+            && !sdIntegratorPreventsMdGpuGraph;
 
-    simulationWorkload.useNvshmem = devFlags.enableNvshmem && simulationWorkload.useGpuDirectCommunication;
+    // When PME on a seperate rank is on a CPU, the
+    // DeviceStreamManager does not have a PME stream and thus none of
+    // the infrastructure needed to work alongside GPU-halo-exchange
+    // symmetric allocation can be constructed without changes that
+    // are not worthwhile for supporting this run configuration.
+    const bool separatePmeRankWithCpuPme =
+            simulationWorkload.haveSeparatePmeRank && simulationWorkload.useCpuPme;
+    if (devFlags.enableNvshmem && separatePmeRankWithCpuPme)
+    {
+        GMX_LOG(mdlog.warning)
+                .asParagraph()
+                .appendTextFormatted(
+                        "Separate PME rank with PME on CPU is not supported with NVSHMEM runs");
+    }
+    simulationWorkload.useNvshmem = devFlags.enableNvshmem && simulationWorkload.useGpuDirectCommunication
+                                    && !separatePmeRankWithCpuPme;
+
     return simulationWorkload;
 }
 
@@ -184,7 +207,7 @@ SimulationWorkload createSimulationWorkload(const gmx::MDLogger& mdlog,
 static bool haveSpecialForces(const t_inputrec&          inputrec,
                               const gmx::ForceProviders& forceProviders,
                               const pull_t*              pull_work,
-                              const gmx_edsam*           ed)
+                              const edsam*               ed)
 {
 
     return ((forceProviders.hasForceProvider()) ||                 // forceProviders
@@ -198,8 +221,8 @@ static bool haveSpecialForces(const t_inputrec&          inputrec,
 DomainLifetimeWorkload setupDomainLifetimeWorkload(const t_inputrec&         inputrec,
                                                    const t_forcerec&         fr,
                                                    const pull_t*             pull_work,
-                                                   const gmx_edsam*          ed,
-                                                   const t_mdatoms&          mdatoms,
+                                                   const edsam*              ed,
+                                                   const bool                hasPerturbedParticles,
                                                    const SimulationWorkload& simulationWork)
 {
     DomainLifetimeWorkload domainWork;
@@ -221,16 +244,12 @@ DomainLifetimeWorkload setupDomainLifetimeWorkload(const t_inputrec&         inp
     domainWork.haveGpuBondedWork =
             ((fr.listedForcesGpu != nullptr) && fr.listedForcesGpu->haveInteractions());
     domainWork.haveNonbondedFreeEnergyWork =
-            (fr.efep != FreeEnergyPerturbationType::No && mdatoms.nPerturbed != 0);
+            (fr.efep != FreeEnergyPerturbationType::No && hasPerturbedParticles);
     domainWork.haveCpuNonbondedFreeEnergyWork =
-            domainWork.haveNonbondedFreeEnergyWork
-            && (simulationWork.useCpuNonbondedFE || fr.efep == FreeEnergyPerturbationType::Expanded
-                || inputrec.fepvals->softcoreFunction == SoftcoreType::Gapsys);
+            domainWork.haveNonbondedFreeEnergyWork && simulationWork.useCpuNonbondedFE;
     // Currently no GPU support for gapsys softcore type and expanded ensemble free energy calculations
     domainWork.haveGpuNonbondedFreeEnergyWork =
-            domainWork.haveNonbondedFreeEnergyWork
-            && (simulationWork.useGpuNonbondedFE && fr.efep != FreeEnergyPerturbationType::Expanded
-                && inputrec.fepvals->softcoreFunction != SoftcoreType::Gapsys);
+            domainWork.haveNonbondedFreeEnergyWork && simulationWork.useGpuNonbondedFE;
     // We assume we have local force work if there are CPU
     // force tasks including PME or nonbondeds.
     domainWork.haveCpuLocalForceWork = domainWork.haveSpecialForces || domainWork.haveCpuListedForceWork
@@ -246,21 +265,71 @@ DomainLifetimeWorkload setupDomainLifetimeWorkload(const t_inputrec&         inp
     return domainWork;
 }
 
-/*! \brief Set up force flag struct from the force bitmask.
- *
- * \param[in]      legacyFlags          Force bitmask flags used to construct the new flags
- * \param[in]      mtsLevels            The multiple time-stepping levels, either empty or 2 levels
- * \param[in]      step                 The current MD step
- * \param[in]      domainWork           Domain lifetime workload description.
- * \param[in]      simulationWork       Simulation workload description.
- *
- * \returns New Stepworkload description.
- */
+// Run release assertions that StepWorkload is internally consistent
+static void validateStepWorkload(const SimulationWorkload& simulationWork,
+                                 const StepWorkload&       stepWork,
+                                 int64_t                   step,
+                                 const OutputControl&      outputControl)
+{
+    if (!stepWork.computeSlowForces)
+    {
+        GMX_RELEASE_ASSERT(!(stepWork.computeEnergy || stepWork.computeVirial || stepWork.computeDhdl),
+                           "Energies, virial or dH/dlambda were requested on "
+                           "a fast MTS step, where they would lack the slow components");
+    }
+    GMX_RELEASE_ASSERT(
+            !(stepWork.copyReducedFFromGpu && stepWork.copyFinalFFromGpu),
+            "The final forces copied from the GPU would overwrite the forces modified on the host");
+    GMX_RELEASE_ASSERT(!(stepWork.copyFinalFToGpu && stepWork.copyFinalFFromGpu),
+                       "The final forces should be either on the host or on the GPU");
+    GMX_RELEASE_ASSERT(!(stepWork.copyReducedFFromGpu && simulationWork.useGpuUpdate) || stepWork.copyFinalFToGpu,
+                       "Forces modified on the host should be copied back for the GPU update");
+
+    // Keep the new force-copy flags equivalent to the conditions they replace.
+    GMX_RELEASE_ASSERT(
+            stepWork.copyFinalFFromGpu
+                    == (stepWork.useGpuFBufferOps && simulationWork.useGpuUpdate
+                        && !stepWork.spreadVsiteForcesOnHost && !simulationWork.useCpuPmePpCommunication
+                        && do_per_step(step, outputControl.nstfout)),
+            "Force output needs a GPU download only when forces are not already on the host");
+    // Virtual-site forces must be spread exactly once, either on the host or on the GPU
+    GMX_RELEASE_ASSERT(!(stepWork.spreadVsiteForcesOnHost && stepWork.spreadVsiteForcesOnGpu),
+                       "Virtual-site forces must not be spread both on the host and on the GPU");
+    GMX_RELEASE_ASSERT(
+            (stepWork.spreadVsiteForcesOnHost || stepWork.spreadVsiteForcesOnGpu)
+                    == (simulationWork.haveVirtualSites && stepWork.computeForces),
+            "Virtual-site forces must be spread when there are virtual sites and forces");
+    GMX_RELEASE_ASSERT(!stepWork.spreadVsiteForcesOnGpu || simulationWork.useGpuUpdate,
+                       "Virtual-site forces can only be spread on the GPU within the GPU update");
+    if (simulationWork.useGpuUpdate)
+    {
+        // GPU update currently excludes separate CPU PME ranks (see decideWhetherToUseGpuForUpdate).
+        // Thus any staged PME forces are from GPU PME. Virtual sites are spread on the GPU during
+        // update, unless they are spread on the host (see setupStepWorkload()).
+        GMX_RELEASE_ASSERT(
+                stepWork.copyFinalFToGpu
+                        == ((simulationWork.useGpuPme && simulationWork.useCpuPmePpCommunication)
+                            || !stepWork.useGpuFBufferOps || stepWork.spreadVsiteForcesOnHost),
+                "GPU update needs a force upload after CPU reduction, staged GPU PME communication "
+                "or host-side VSite spreading");
+        GMX_RELEASE_ASSERT(!stepWork.copyFinalFToGpu
+                                   == (stepWork.useGpuFBufferOps && !simulationWork.useCpuPmePpCommunication
+                                       && !stepWork.spreadVsiteForcesOnHost),
+                           "GPU update must wait for the force upload when GPU reduction does not "
+                           "produce the final forces");
+        GMX_RELEASE_ASSERT(!stepWork.spreadVsiteForcesOnHost || stepWork.copyFinalFToGpu,
+                           "Virtual-site forces spread on the host must be uploaded for the GPU "
+                           "update");
+    }
+}
+
 StepWorkload setupStepWorkload(const int                     legacyFlags,
                                ArrayRef<const gmx::MtsLevel> mtsLevels,
                                const int64_t                 step,
+                               const std::optional<bool>     writeCheckpoint,
                                const DomainLifetimeWorkload& domainWork,
-                               const SimulationWorkload&     simulationWork)
+                               const SimulationWorkload&     simulationWork,
+                               const t_inputrec&             inputrec)
 {
     GMX_ASSERT(mtsLevels.empty() || mtsLevels.size() == 2, "Expect 0 or 2 MTS levels");
     const bool computeSlowForces = (mtsLevels.empty() || step % mtsLevels[1].stepFactor == 0);
@@ -281,8 +350,9 @@ StepWorkload setupStepWorkload(const int                     legacyFlags,
 
     if (simulationWork.useGpuXBufferOpsWhenAllowed || simulationWork.useGpuFBufferOpsWhenAllowed)
     {
-        GMX_ASSERT(simulationWork.useGpuNonbonded,
-                   "Can only offload buffer ops if nonbonded computation is also offloaded");
+        GMX_RELEASE_ASSERT(
+                simulationWork.useGpuNonbonded,
+                "Can only offload buffer ops if nonbonded computation is also offloaded");
     }
     flags.useGpuXBufferOps = simulationWork.useGpuXBufferOpsWhenAllowed && !flags.doNeighborSearch;
     // on virial steps the CPU reduction path is taken
@@ -302,6 +372,39 @@ StepWorkload setupStepWorkload(const int                     legacyFlags,
     flags.clearGpuFBufferEarly =
             flags.useGpuFHalo && !domainWork.haveCpuLocalForceWork && !flags.doNeighborSearch;
 
+    GMX_ASSERT(!simulationWork.useGpuUpdate || writeCheckpoint.has_value(),
+               "Need a writeCheckpoint value when update is on GPU");
+    const OutputControl& outputControl = inputrec.outputControl;
+    flags.copyXFromGpuForIO =
+            simulationWork.useGpuUpdate
+            && (do_per_step(step, outputControl.nstxout)
+                || do_per_step(step, outputControl.nstxout_compressed) || writeCheckpoint.value());
+    flags.copyVFromGpuForIO = simulationWork.useGpuUpdate
+                              && (do_per_step(step, outputControl.nstvout)
+                                  || (writeCheckpoint.value() && EI_STATE_VELOCITY(inputrec.eI)));
+    // Virtual-site forces are spread on the host with CPU update, and with GPU update on virial
+    // steps (for the shift-force virial) and on force-output steps. Otherwise, with GPU update,
+    // they are spread on the GPU within the update, also when the forces were uploaded from
+    // the host before the update.
+    // NOTE: With GPU update, the virial and force output are the only host-side consumers of
+    // spread vsite forces. Any new consumer needs to be added to the condition below.
+    // NOTE: The GPU vsite spreading in UpdateConstrainGpu::integrate() is controlled by
+    // spreadVsiteForcesOnGpu, so the two flags must stay mutually exclusive.
+    const bool haveVsiteForceWork = simulationWork.haveVirtualSites && flags.computeForces;
+    flags.spreadVsiteForcesOnHost = haveVsiteForceWork
+                                    && (!simulationWork.useGpuUpdate || flags.computeVirial
+                                        || do_per_step(step, outputControl.nstfout));
+    flags.spreadVsiteForcesOnGpu =
+            haveVsiteForceWork && simulationWork.useGpuUpdate && !flags.spreadVsiteForcesOnHost;
+    // CPU VSite spreading and staged PME-PP comms modify forces on host after reduction and before integration
+    flags.copyReducedFFromGpu = flags.useGpuFBufferOps
+                                && (!simulationWork.useGpuUpdate || simulationWork.useCpuPmePpCommunication
+                                    || flags.spreadVsiteForcesOnHost);
+    flags.copyFinalFToGpu =
+            simulationWork.useGpuUpdate && (!flags.useGpuFBufferOps || flags.copyReducedFFromGpu);
+    flags.copyFinalFFromGpu = flags.useGpuFBufferOps && simulationWork.useGpuUpdate
+                              && !flags.copyReducedFFromGpu && do_per_step(step, outputControl.nstfout);
+    validateStepWorkload(simulationWork, flags, step, outputControl);
     return flags;
 }
 

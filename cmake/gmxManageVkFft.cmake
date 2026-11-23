@@ -39,7 +39,7 @@ function(gmx_manage_vkfft BACKEND_NAME)
 
     if (NOT GMX_EXTERNAL_VKFFT)
         set(vkfft_DIR ${PROJECT_SOURCE_DIR}/src/external/vkfft)
-        set(vkfft_VERSION "internal (1.3.1) with ${BACKEND_NAME} backend" PARENT_SCOPE)
+        set(vkfft_VERSION "internal (1.3.4) with ${BACKEND_NAME} backend" PARENT_SCOPE)
     else()
         find_path(vkfft_DIR
             NAMES vkFFT.h
@@ -55,7 +55,6 @@ function(gmx_manage_vkfft BACKEND_NAME)
     add_library(VkFFT INTERFACE)
     target_include_directories(VkFFT INTERFACE ${vkfft_DIR})
 
-    # The "-Wcast-qual" warning appears when compiling VkFFT for OpenCL, but not for HIP. It cannot be suppressed.
     gmx_target_interface_warning_suppression(VkFFT "-Wno-unused-parameter" HAS_WARNING_NO_UNUSED_PARAMETER)
     gmx_target_interface_warning_suppression(VkFFT "-Wno-unused-variable" HAS_WARNING_NO_UNUSED_VARIABLE)
     gmx_target_interface_warning_suppression(VkFFT "-Wno-newline-eof" HAS_WARNING_NO_NEWLINE_EOF)
@@ -63,10 +62,15 @@ function(gmx_manage_vkfft BACKEND_NAME)
     gmx_target_interface_warning_suppression(VkFFT "-Wno-zero-as-null-pointer-constant" HAS_WARNING_NO_ZERO_AS_NULL_POINTER_CONSTANT)
     gmx_target_interface_warning_suppression(VkFFT "-Wno-unused-but-set-variable" HAS_WARNING_NO_UNUSED_BUT_SET_VARIABLE)
     gmx_target_interface_warning_suppression(VkFFT "-Wno-sign-compare" HAS_WARNING_NO_SIGN_COMPARE)
+    gmx_target_interface_warning_suppression(VkFFT "-Wno-nan-infinity-disabled" HAS_WARNING_NO_NAN_INFINITY_DISABLED)
 
     if (APPLE)
         # macOS Ventura because `sprintf` was deprecated in favor of `snprintf`.
         gmx_target_interface_warning_suppression(VkFFT "-Wno-deprecated-declarations" HAS_WARNING_NO_DEPRECATED_DECLARATIONS)
+        # Newer macOS SDKs (e.g. the macOS 26 CoreFoundation headers, pulled in transitively by
+        # metal-cpp) use enum syntax that non-Apple Clang builds (e.g. Homebrew LLVM, needed for
+        # AdaptiveCpp) reject as an error by default.
+        gmx_target_interface_warning_suppression(VkFFT "-Wno-elaborated-enum-base" HAS_WARNING_NO_ELABORATED_ENUM_BASE)
     endif()
 
     # Backend-specific settings and workarounds
@@ -97,12 +101,47 @@ function(gmx_manage_vkfft BACKEND_NAME)
         gmx_target_interface_warning_suppression(VkFFT "-Wno-unused-result" HAS_WARNING_NO_UNUSED_RESULT)
         # ... and since Clang 20 this warning is called -Wunused-value
         gmx_target_interface_warning_suppression(VkFFT "-Wno-unused-value" HAS_WARNING_NO_UNUSED_VALUE)
+        # Needed with ROCm < 7, see https://github.com/ROCm/HIP/issues/3426
+        gmx_target_interface_warning_suppression(VkFFT "-Wno-cast-qual" HAS_WARNING_NO_CAST_QUAL)
     elseif(BACKEND_NAME STREQUAL "OpenCL")
         target_compile_definitions(VkFFT INTERFACE VKFFT_BACKEND=3)
-        # The "-Wcast-qual" warning appears when compiling VkFFT for OpenCL, but not for HIP.
+        # The "-Wcast-qual" warning appears when compiling VkFFT for OpenCL
         gmx_target_interface_warning_suppression(VkFFT "-Wno-cast-qual" HAS_WARNING_NO_CAST_QUAL)
     elseif(BACKEND_NAME STREQUAL "LevelZero")
         target_compile_definitions(VkFFT INTERFACE VKFFT_BACKEND=4)
+    elseif(BACKEND_NAME STREQUAL "Metal")
+        target_compile_definitions(VkFFT INTERFACE VKFFT_BACKEND=5)
+        # VkFFT's Metal backend uses Apple's header-only metal-cpp bindings. Use the same
+        # cache variable as AdaptiveCpp so one path can be supplied to both projects.
+        find_path(METAL_INCLUDE_DIR
+            NAMES Metal/Metal.hpp
+            PATHS
+                $ENV{METAL_INCLUDE_DIR}
+                ${METAL_INCLUDE_DIR}
+                /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks/Metal.framework/Headers
+                /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks/Metal.framework/Headers
+                /System/Library/Frameworks/Metal.framework/Headers
+            PATH_SUFFIXES include
+            DOC "Path to Apple's metal-cpp headers"
+        )
+        if(NOT METAL_INCLUDE_DIR)
+            message(FATAL_ERROR "VkFFT's Metal backend requires Apple's metal-cpp headers. Please set METAL_INCLUDE_DIR to the directory containing Metal/Metal.hpp")
+        endif()
+        target_include_directories(VkFFT INTERFACE ${METAL_INCLUDE_DIR})
+        find_library(METAL_LIBRARY Metal REQUIRED)
+        find_library(FOUNDATION_LIBRARY Foundation REQUIRED)
+        find_library(QUARTZCORE_LIBRARY QuartzCore REQUIRED)
+        target_link_libraries(VkFFT INTERFACE ${METAL_LIBRARY} ${FOUNDATION_LIBRARY} ${QUARTZCORE_LIBRARY})
+        # backend_interop<sycl::backend::metal>::get_native_device() (used by the SYCL FFT
+        # binding) calls into AdaptiveCpp's Metal runtime backend directly, so unlike other
+        # AdaptiveCpp backends -- which are only ever dlopen'd as plugins -- this one must also
+        # be a normal link-time dependency here.
+        find_library(ACPP_RT_BACKEND_METAL_LIBRARY
+            NAMES rt-backend-metal
+            HINTS "${adaptivecpp_DIR}/../../hipSYCL" "${adaptivecpp_DIR}/../.."
+            PATH_SUFFIXES hipSYCL
+            REQUIRED)
+        target_link_libraries(VkFFT INTERFACE ${ACPP_RT_BACKEND_METAL_LIBRARY})
     else()
         message(FATAL_ERROR "Unknown VkFFT backend name ${BACKEND_NAME}")
     endif()
@@ -119,7 +158,8 @@ elseif((GMX_SYCL_ACPP AND GMX_ACPP_HAVE_CUDA_TARGET) OR (GMX_SYCL_DPCPP AND GMX_
     gmx_manage_vkfft("CUDA")
 elseif((GMX_SYCL_ACPP AND GMX_ACPP_HAVE_HIP_TARGET) OR (GMX_SYCL_DPCPP AND GMX_DPCPP_HAVE_HIP_TARGET))
     gmx_manage_vkfft("HIP")
+elseif(GMX_SYCL_ACPP AND GMX_ACPP_HAVE_GENERIC_TARGET AND APPLE)
+    gmx_manage_vkfft("Metal")
 else()
-     message(FATAL_ERROR "VkFFT can only be used with GMX_GPU=SYCL, HIP, or OpenCL; with SYCL, it only supports NVIDIA (CUDA) and AMD (HIP) targets")
+     message(FATAL_ERROR "VkFFT can only be used with GMX_GPU=SYCL, HIP, or OpenCL; with SYCL, it only supports NVIDIA (CUDA), AMD (HIP), and (on Apple, through the generic/SSCP target) Metal")
 endif()
-

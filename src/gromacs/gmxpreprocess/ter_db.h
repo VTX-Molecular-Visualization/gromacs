@@ -38,25 +38,28 @@
 #include <filesystem>
 #include <vector>
 
-class PreprocessingAtomTypes;
-struct MoleculePatchDatabase;
-
 namespace gmx
 {
 template<typename>
 class ArrayRef;
-}
+class ExtendableForceField;
+class PreprocessingAtomTypes;
+struct MoleculePatchDatabase;
+} // namespace gmx
+
+namespace gmx
+{
 
 /*! \brief
  * Read database for N&C terminal modifications.
  *
- * \param[in] ffdir Directory for files.
+ * \param[in] forceField Force field directories to search for *.tdb files.
  * \param[in] ter Which terminal side to read.
  * \param[inout] tbptr Database for terminii entry to populate.
  * \param[in] atype Database for atomtype information.
  * \returns Number of entries entered into database.
  */
-int read_ter_db(const std::filesystem::path&        ffdir,
+int read_ter_db(const ExtendableForceField&         forceField,
                 char                                ter,
                 std::vector<MoleculePatchDatabase>* tbptr,
                 PreprocessingAtomTypes*             atype);
@@ -78,5 +81,7 @@ std::vector<MoleculePatchDatabase*> filter_ter(gmx::ArrayRef<MoleculePatchDataba
  * \returns The modification block selected.
  */
 MoleculePatchDatabase* choose_ter(gmx::ArrayRef<MoleculePatchDatabase*> tb, const char* title);
+
+} // namespace gmx
 
 #endif

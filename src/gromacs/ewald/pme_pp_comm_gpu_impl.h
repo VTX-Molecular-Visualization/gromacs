@@ -48,6 +48,7 @@
 #include "gromacs/ewald/pme_pp_comm_gpu.h"
 #include "gromacs/gpu_utils/gpueventsynchronizer.h"
 #include "gromacs/gpu_utils/gputraits.h"
+#include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/gmxmpi.h"
 #include "gromacs/utility/vectypes.h"
 
@@ -64,57 +65,37 @@ public:
      *
      * \param[in] comm              Communicator used for simulation
      * \param[in] pmeRank           Rank of PME task
-     * \param[in] pmeCpuForceBuffer Buffer for PME force in CPU memory
      * \param[in] deviceContext     GPU context.
      * \param[in] deviceStream      Device stream.
      * \param[in] useNvshmem        NVSHMEM enable/disable for GPU comm.
      */
-    Impl(MPI_Comm                    comm,
-         int                         pmeRank,
-         gmx::HostVector<gmx::RVec>* pmeCpuForceBuffer,
-         const DeviceContext&        deviceContext,
-         const DeviceStream&         deviceStream,
-         bool                        useNvshmem);
+    Impl(MPI_Comm             comm,
+         int                  pmeRank,
+         const DeviceContext& deviceContext,
+         const DeviceStream&  deviceStream,
+         bool                 useNvshmem);
     ~Impl();
 
     /*! \brief Perform steps required when buffer size changes
-     * \param[in]  size   Number of elements in buffer
+     *
+     * \param[in] pmeCpuForceReceiveBuffer  CPU buffer to potentially receive PME force data
      */
-    void reinit(int size);
+    void reinit(ArrayRef<RVec> pmeCpuForceReceiveBuffer);
 
     /*! \brief Pull force buffer directly from GPU memory on PME
      * rank to either GPU or CPU memory on PP task using GPU
      * Memory copy or GPU-aware MPI.
      *
-     * recvPtr should be in GPU or CPU memory if recvPmeForceToGpu
-     * is true or false, respectively. If receiving to GPU, this
+     * If receiving to GPU, this
      * method should be called before the local GPU buffer
      * operations. If receiving to CPU it should be called
      * before forces are reduced with the other force
      * contributions on the CPU. It will automatically wait for
      * remote PME force data to be ready.
      *
-     * \param[out] recvPtr CPU or GPU buffer to receive PME force data
-     * \param[in] recvSize Number of elements to receive
-     * \param[in] receivePmeForceToGpu Whether receive is to GPU, otherwise CPU
+     * \param[in]  recvPmeForceToGpu         Whether receive is to GPU, otherwise CPU
      */
-    void receiveForceFromPme(Float3* recvPtr, int recvSize, bool receivePmeForceToGpu);
-
-    /*! \brief Push coordinates buffer directly to GPU memory on PME
-     * task, from either GPU or CPU memory on PP task using GPU
-     * Memory copy or GPU-aware MPI. If sending from GPU, this method should
-     * be called after the local GPU coordinate buffer operations.
-     * The remote PME task will automatically wait for data to be copied
-     * before commencing PME force calculations.
-     * \param[in] sendPtr Buffer with coordinate data
-     * \param[in] sendSize Number of elements to send
-     * \param[in] coordinatesReadyOnDeviceEvent Event recorded when coords available on device
-     * \param[in] receiveForcesToGpu Whether PME forces will be received to GPU
-     */
-    void sendCoordinatesToPme(const Float3*         sendPtr,
-                              int                   sendSize,
-                              GpuEventSynchronizer* coordinatesReadyOnDeviceEvent,
-                              bool                  receiveForcesToGpu);
+    void receiveForceFromPme(bool recvPmeForceToGpu);
 
     /*! \brief When this PP rank has particles with PME force
      * contributions expected from its PME-only rank, return pointer
@@ -137,29 +118,33 @@ private:
      * sender object using GPU memory copy functionality, and this
      * method performs the necessary synchronization on that
      * communication. This method is used with thread-MPI.
+     *
      * \param[in] receivePmeForceToGpu Whether receive is to GPU, otherwise CPU
      */
-    void receiveForceFromPmePeerToPeer(bool receivePmeForceToGpu);
+    void receiveForceFromPmeDirectGpu(bool receivePmeForceToGpu);
 
     /*! \brief Receive buffer from GPU memory on PME rank to either
      * GPU or CPU memory on PP rank using GPU-aware MPI. This method
      * is used with process-MPI.
-     * \param[out] recvPtr CPU or GPU buffer to receive PME force data into
-     * \param[in] recvSize Number of elements to receive
-     * \param[in] receivePmeForceToGpu Whether receive is to GPU, otherwise CPU
+     *
+     * \param[in] recvPmeForceToGpu  Whether receive is to GPU, otherwise CPU
      */
-    void receiveForceFromPmeGpuAwareMpi(Float3* recvPtr, int recvSize, bool receivePmeForceToGpu);
+    void receiveForceFromPmeGpuAwareMpi(bool recvPmeForceToGpu);
 
+public:
     /*! \brief Push coordinates buffer directly to GPU memory on PME
      * task, from either GPU or CPU memory on PP task using GPU Memory copy.
      * This method is used with Thread-MPI.
-     * \param[in] sendPtr Buffer with coordinate data
-     * \param[in] sendSize Number of elements to send
+     *
+     * \param[in] sendPtr                       Buffer with coordinate data
+     * \param[in] sendSize                      Number of elements to send
+     * \param[in] sendCoordinatesFromGpu        Describes the location of \c sendPtr
      * \param[in] coordinatesReadyOnDeviceEvent Event recorded when coords available on device
      */
-    void sendCoordinatesToPmePeerToPeer(const Float3*         sendPtr,
-                                        int                   sendSize,
-                                        GpuEventSynchronizer* coordinatesReadyOnDeviceEvent);
+    void sendCoordinatesToPmeDirectGpu(const Float3*         sendPtr,
+                                       int                   sendSize,
+                                       bool                  sendCoordinatesFromGpu,
+                                       GpuEventSynchronizer* coordinatesReadyOnDeviceEvent);
 
     /*! \brief Push coordinates buffer directly to GPU memory on PME
      * task, from either GPU or CPU memory on PP task using GPU-aware MPI.
@@ -177,20 +162,21 @@ private:
                                          GpuEventSynchronizer* coordinatesReadyOnDeviceEvent,
                                          bool                  receivePmeForceToGpu);
 
+private:
     //! Device context handle
     const DeviceContext& deviceContext_;
     //! Handle for the device stream used for the communication operations in this class
     const DeviceStream& pmePpCommStream_;
-    //! Remote location of PME coordinate data buffer
+    //! Remote location on PME-only rank used to store coordinates for it to use
     Float3* remotePmeXBuffer_ = nullptr;
     //! communicator for simulation
     MPI_Comm comm_;
     //! Rank of PME task
     int pmeRank_ = -1;
-    //! Buffer for PME force on CPU
-    gmx::HostVector<gmx::RVec>* pmeCpuForceBuffer_;
+    //! Buffer for receiving PME force on CPU
+    ArrayRef<RVec> pmeCpuForceReceiveBuffer_;
     //! Buffer for staging PME force on GPU
-    DeviceBuffer<gmx::RVec> d_pmeForces_;
+    DeviceBuffer<RVec> d_pmeForces_;
     //! number of atoms in PME force staging array
     int d_pmeForcesSize_ = -1;
     //! number of atoms allocated in recvbuf array
@@ -219,6 +205,7 @@ private:
     //! small atom counts where latency is more important than
     //! bandwidth.
     bool stageLibMpiGpuCpuComm_ = true;
+#if GMX_LIB_MPI
     // MPI Request associated with non-blocking coordinate send
     MPI_Request coordinateSendRequest_;
     // MPI Request associated with non-blocking force receive
@@ -227,6 +214,7 @@ private:
     bool coordinateSendRequestIsActive_ = false;
     // Flag on whether a non-blocking force receive is active
     bool forceRecvRequestIsActive_ = false;
+#endif
     // Flag on whether to use NVSHMEM for GPU communication
     bool useNvshmem_ = false;
 };

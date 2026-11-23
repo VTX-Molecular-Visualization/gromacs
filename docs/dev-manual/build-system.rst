@@ -139,6 +139,8 @@ Standard CMake mechanism for specifying the compiler flags is to use
 ``CMAKE_C_FLAGS``/``CMAKE_CXX_FLAGS`` for flags that affect all build types,
 and :samp:`CMAKE_C_FLAGS_{buildtype}`/:samp:`CMAKE_CXX_FLAGS_{buildtype}` for
 flags that only affect a specific build type.  CMake provides some default flags.
+The C++ flags are not used when compiling CUDA or HIP sources; use
+``CMAKE_CUDA_FLAGS``/``CMAKE_HIP_FLAGS`` and their per-build-type variants for those.
 
 |Gromacs| determines its own set of default flags, grouped into two categories:
 
@@ -393,7 +395,7 @@ Variables affecting the ``all`` target
 .. cmake:: GMX_DEVELOPER_BUILD
 
    If set ``ON``, the ``all`` target will include also the test binaries using
-   Google Test (if :cmake:`GMX_BUILD_UNITTESTS` is ``ON``), while ``webpage``
+   Google Test (if :cmake:`BUILD_TESTING` is ``ON``), while ``webpage``
    target will also include Reference manual in PDF format.
    Also, :cmake:`GMX_COMPILER_WARNINGS` and
    `CMAKE_EXPORT_COMPILE_COMMANDS <https://cmake.org/cmake/help/latest/variable/CMAKE_EXPORT_COMPILE_COMMANDS.html>`__
@@ -470,15 +472,6 @@ Variables affecting special targets
    web page and/or in the source distribution package).
    Defaults to ``OFF``.
 
-.. cmake:: GMX_BUILD_UNITTESTS
-
-   If ``ON``, test binaries using Google Test are built (either as the separate
-   ``tests`` target, or also as part of the ``all`` target, depending on
-   :cmake:`GMX_DEVELOPER_BUILD`).  All dependencies required for building the
-   tests (Google Test and Google Mock frameworks, and tinyxml2) are
-   included in :file:`src/external/`.
-   Defaults to ``ON`` if :cmake:`BUILD_TESTING` is ``ON``.
-
 .. cmake:: GMX_COMPACT_DOXYGEN
 
    If set ``ON``, Doxygen configuration is changed to avoid generating large
@@ -512,6 +505,28 @@ Variables affecting special targets
 
 External libraries
 ------------------
+
+|Gromacs| bundles several external libraries for use. An incomplete list
+of these and their associated CMake variables is provided here.
+
+SZ3
+   A modular error-bounded lossy compression framework for scientific 
+   datasets. Used as a lossy compression filter for HDF5 trajectory data.
+
+   .. cmake:: GMX_USE_SZ3
+
+      Set to ``EXTERNAL``, ``INTERNAL`` or ``NONE``` to build |Gromacs| against
+      an external, internal or disabled SZ3 library, respectively. Defaults
+      to ``AUTO`` which uses an external library if one is found and otherwise
+      uses the internal library.
+
+   |Gromacs| distributes the package with the following attribution:
+
+   This product includes software produced by UChicago Argonne, LLC under
+   Contract No. DE-AC02-06CH11357 with the Department of Energy.
+
+   See the license in :file:`src/external/sz3/copyright-and-BSD-license.txt`
+   for more details.
 
 .. todo::
 
@@ -611,10 +626,6 @@ The build system uses a few different mechanisms to influence the compilation:
 * Some options are passed on the compiler command line using ``-D`` or
   equivalent, such that they are available in every compilation unit.  This
   should be used with care to keep the compiler command lines manageable.
-  You can find the current set of such defines with ::
-
-    git grep add_definitions
-
 * A few header files are generated using CMake ``configure_file()`` and
   included in the desired source files.  These files must exist for the
   compilation to pass.  Only a few files use an ``#ifdef HAVE_CONFIG_H`` to

@@ -31,13 +31,18 @@
 # To help us fund GROMACS development, we humbly ask that you cite
 # the research papers on the package. Check out https://www.gromacs.org.
 
-gmx_add_unit_test(ListedForcesTest listed_forces-test
+gmx_add_unit_test(ListedForcesTest listed_forces-test HARDWARE_DETECTION
     CPP_SOURCE_FILES
-        bonded.cpp
+        bondedtestdata.cpp
+        cmap_fep.cpp
         pairs.cpp
+        perturbed_interactions.cpp
         position_restraints.cpp
-        )
+    GPU_CPP_SOURCE_FILES
+        bonded.cpp
+    )
 target_link_libraries(listed_forces-test PRIVATE
         math
         pbcutil
+        topology
         )

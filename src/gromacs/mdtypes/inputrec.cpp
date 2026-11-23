@@ -88,10 +88,12 @@ const int c_minimumStepsPerTauFirstOrderTemperatureCoupling = 5;
  */
 const int c_minimumStepsPerTauFirstOrderPressureCoupling = 25;
 
-/* The minimum number of integration steps per period
- * for reasonably accurate integration of second order coupling algorithms.
+/* The minimum number of integration steps per period for accurate integration
+ * of the Nose-Hoover thermostat.
+ * At 100 integration steps per period the standard deviation of the kinetic energy
+ * is too high by 3%, which we consider as just acceptible.
  */
-const int c_minimumStepsPerPeriodNoseHoover = 20;
+const int c_minimumStepsPerPeriodNoseHoover = 100;
 
 /* The minimum number of integration steps per period
  * for reasonably accurate integration of the Parrinello-Rahman barostat.
@@ -677,6 +679,8 @@ static void pr_awh_bias(FILE* fp, int indent, const gmx::AwhBiasParams& awhBiasP
     PI(opt, awhBiasParams.shareGroup());
     sprintf(opt, "%s-equilibrate-histogram", prefix);
     PS(opt, EBOOL(awhBiasParams.equilibrateHistogram()));
+    sprintf(opt, "%s-histogram-tolerance", prefix);
+    PR(opt, awhBiasParams.histogramTolerance());
     sprintf(opt, "%s-ndim", prefix);
     PI(opt, awhBiasParams.ndim());
 
@@ -829,6 +833,8 @@ void pr_inputrec(FILE* fp, int indent, const char* title, const t_inputrec* ir, 
          * options are written in the default mdout.mdp, and with
          * the same user-exposed names to facilitate debugging.
          */
+        const gmx::OutputControl& outputControl = ir->outputControl;
+
         PS("integrator", enumValueToString(ir->eI));
         PR("tinit", ir->init_t);
         PR("dt", ir->delta_t);
@@ -879,14 +885,14 @@ void pr_inputrec(FILE* fp, int indent, const char* title, const t_inputrec* ir, 
         PR("rtpi", ir->rtpi);
 
         /* Output control */
-        PI("nstxout", ir->nstxout);
-        PI("nstvout", ir->nstvout);
-        PI("nstfout", ir->nstfout);
-        PI("nstlog", ir->nstlog);
-        PI("nstcalcenergy", ir->nstcalcenergy);
-        PI("nstenergy", ir->nstenergy);
-        PI("nstxout-compressed", ir->nstxout_compressed);
-        PR("compressed-x-precision", ir->x_compression_precision);
+        PI("nstxout", outputControl.nstxout);
+        PI("nstvout", outputControl.nstvout);
+        PI("nstfout", outputControl.nstfout);
+        PI("nstlog", outputControl.nstlog);
+        PI("nstcalcenergy", outputControl.nstcalcenergy);
+        PI("nstenergy", outputControl.nstenergy);
+        PI("nstxout-compressed", outputControl.nstxout_compressed);
+        PR("compressed-x-precision", outputControl.x_compression_precision);
 
         /* Neighborsearching parameters */
         PS("cutoff-scheme", enumValueToString(ir->cutoff_scheme));
@@ -1472,20 +1478,28 @@ void cmp_inputrec(FILE* fp, const t_inputrec* ir1, const t_inputrec* ir2, real f
     cmp_int(fp, "inputrec->nstlist", -1, ir1->nstlist, ir2->nstlist);
     cmp_int(fp, "inputrec->nstcomm", -1, ir1->nstcomm, ir2->nstcomm);
     cmpEnum(fp, "inputrec->comm_mode", ir1->comm_mode, ir2->comm_mode);
-    cmp_int(fp, "inputrec->nstlog", -1, ir1->nstlog, ir2->nstlog);
-    cmp_int(fp, "inputrec->nstxout", -1, ir1->nstxout, ir2->nstxout);
-    cmp_int(fp, "inputrec->nstvout", -1, ir1->nstvout, ir2->nstvout);
-    cmp_int(fp, "inputrec->nstfout", -1, ir1->nstfout, ir2->nstfout);
-    cmp_int(fp, "inputrec->nstcalcenergy", -1, ir1->nstcalcenergy, ir2->nstcalcenergy);
-    cmp_int(fp, "inputrec->nstenergy", -1, ir1->nstenergy, ir2->nstenergy);
-    cmp_int(fp, "inputrec->nstxout_compressed", -1, ir1->nstxout_compressed, ir2->nstxout_compressed);
+    cmp_int(fp, "outputControl.nstlog", -1, ir1->outputControl.nstlog, ir2->outputControl.nstlog);
+    cmp_int(fp, "outputControl.nstxout", -1, ir1->outputControl.nstxout, ir2->outputControl.nstxout);
+    cmp_int(fp, "outputControl.nstvout", -1, ir1->outputControl.nstvout, ir2->outputControl.nstvout);
+    cmp_int(fp, "outputControl.nstfout", -1, ir1->outputControl.nstfout, ir2->outputControl.nstfout);
+    cmp_int(fp,
+            "outputControl.nstcalcenergy",
+            -1,
+            ir1->outputControl.nstcalcenergy,
+            ir2->outputControl.nstcalcenergy);
+    cmp_int(fp, "outputControl.nstenergy", -1, ir1->outputControl.nstenergy, ir2->outputControl.nstenergy);
+    cmp_int(fp,
+            "outputControl.nstxout_compressed",
+            -1,
+            ir1->outputControl.nstxout_compressed,
+            ir2->outputControl.nstxout_compressed);
     cmp_double(fp, "inputrec->init_t", -1, ir1->init_t, ir2->init_t, ftol, abstol);
     cmp_double(fp, "inputrec->delta_t", -1, ir1->delta_t, ir2->delta_t, ftol, abstol);
     cmp_real(fp,
-             "inputrec->x_compression_precision",
+             "outputControl.x_compression_precision",
              -1,
-             ir1->x_compression_precision,
-             ir2->x_compression_precision,
+             ir1->outputControl.x_compression_precision,
+             ir2->outputControl.x_compression_precision,
              ftol,
              abstol);
     cmp_real(fp, "inputrec->fourierspacing", -1, ir1->fourier_spacing, ir2->fourier_spacing, ftol, abstol);
@@ -1748,7 +1762,7 @@ bool haveEnsembleTemperature(const t_inputrec& ir)
 bool integratorHasConservedEnergyQuantity(const t_inputrec* ir)
 {
     if (!EI_MD(ir->eI))
-    { // NOLINT bugprone-branch-clone
+    { // NOLINT(bugprone-branch-clone)
         // Energy minimization or stochastic integrator: no conservation
         return false;
     }

@@ -429,9 +429,9 @@ const int defaultFramesPerFrameSet = 100;
  * set according to output intervals.
  * The default is that 100 frames are written of the data
  * that is written most often. */
-static void tng_set_frames_per_frame_set(gmx_tng_trajectory_t gmx_tng,
-                                         const gmx_bool       bUseLossyCompression,
-                                         const t_inputrec*    ir)
+static void tng_set_frames_per_frame_set(gmx_tng_trajectory_t      gmx_tng,
+                                         const gmx_bool            bUseLossyCompression,
+                                         const gmx::OutputControl& outputControl)
 {
     int              gcd = -1;
     tng_trajectory_t tng = gmx_tng->tng;
@@ -442,12 +442,12 @@ static void tng_set_frames_per_frame_set(gmx_tng_trajectory_t gmx_tng,
     /* FIXME after 5.0: consider nstenergy also? */
     if (bUseLossyCompression)
     {
-        gcd = ir->nstxout_compressed;
+        gcd = outputControl.nstxout_compressed;
     }
     else
     {
-        gcd = greatest_common_divisor_if_positive(ir->nstxout, ir->nstvout);
-        gcd = greatest_common_divisor_if_positive(gcd, ir->nstfout);
+        gcd = greatest_common_divisor_if_positive(outputControl.nstxout, outputControl.nstvout);
+        gcd = greatest_common_divisor_if_positive(gcd, outputControl.nstfout);
     }
     if (0 >= gcd)
     {
@@ -459,9 +459,9 @@ static void tng_set_frames_per_frame_set(gmx_tng_trajectory_t gmx_tng,
 
 /*! \libinternal \brief Set the data-writing intervals, and number of
  * frames per frame set */
-static void set_writing_intervals(gmx_tng_trajectory_t gmx_tng,
-                                  const gmx_bool       bUseLossyCompression,
-                                  const t_inputrec*    ir)
+static void set_writing_intervals(gmx_tng_trajectory_t      gmx_tng,
+                                  const gmx_bool            bUseLossyCompression,
+                                  const gmx::OutputControl& outputControl)
 {
     tng_trajectory_t tng = gmx_tng->tng;
 
@@ -478,31 +478,31 @@ static void set_writing_intervals(gmx_tng_trajectory_t gmx_tng,
     int  gcd = -1, lowest = -1;
     char compression;
 
-    tng_set_frames_per_frame_set(gmx_tng, bUseLossyCompression, ir);
+    tng_set_frames_per_frame_set(gmx_tng, bUseLossyCompression, outputControl);
 
     if (bUseLossyCompression)
     {
-        xout = ir->nstxout_compressed;
+        xout = outputControl.nstxout_compressed;
 
         /* If there is no uncompressed coordinate output write forces
            and velocities to the compressed tng file. */
-        if (ir->nstxout)
+        if (outputControl.nstxout)
         {
             vout = 0;
             fout = 0;
         }
         else
         {
-            vout = ir->nstvout;
-            fout = ir->nstfout;
+            vout = outputControl.nstvout;
+            fout = outputControl.nstfout;
         }
         compression = TNG_TNG_COMPRESSION;
     }
     else
     {
-        xout        = ir->nstxout;
-        vout        = ir->nstvout;
-        fout        = ir->nstfout;
+        xout        = outputControl.nstxout;
+        vout        = outputControl.nstvout;
+        fout        = outputControl.nstfout;
         compression = TNG_GZIP_COMPRESSION;
     }
     if (xout)
@@ -571,7 +571,7 @@ void gmx_tng_prepare_md_writing(gmx_tng_trajectory_t gmx_tng, const gmx_mtop_t* 
 {
 #if GMX_USE_TNG
     gmx_tng_add_mtop(gmx_tng, mtop);
-    set_writing_intervals(gmx_tng, FALSE, ir);
+    set_writing_intervals(gmx_tng, FALSE, ir->outputControl);
     tng_time_per_frame_set(gmx_tng->tng, ir->delta_t * gmx::c_pico);
     gmx_tng->timePerFrameIsSet = true;
 #else
@@ -785,12 +785,13 @@ void gmx_tng_set_compression_precision(gmx_tng_trajectory_t gmx_tng, real prec)
 void gmx_tng_prepare_low_prec_writing(gmx_tng_trajectory_t gmx_tng, const gmx_mtop_t* mtop, const t_inputrec* ir)
 {
 #if GMX_USE_TNG
+    const gmx::OutputControl& outputControl = ir->outputControl;
     gmx_tng_add_mtop(gmx_tng, mtop);
     add_selection_groups(gmx_tng, mtop);
-    set_writing_intervals(gmx_tng, TRUE, ir);
+    set_writing_intervals(gmx_tng, TRUE, outputControl);
     tng_time_per_frame_set(gmx_tng->tng, ir->delta_t * gmx::c_pico);
     gmx_tng->timePerFrameIsSet = true;
-    gmx_tng_set_compression_precision(gmx_tng, ir->x_compression_precision);
+    gmx_tng_set_compression_precision(gmx_tng, outputControl.x_compression_precision);
 #else
     GMX_UNUSED_VALUE(gmx_tng);
     GMX_UNUSED_VALUE(mtop);
@@ -1507,6 +1508,7 @@ gmx_bool gmx_read_next_tng_frame(gmx_tng_trajectory_t gmx_tng_input,
         }
         else if (stat == TNG_FAILURE)
         {
+            // TODO This could mean frameTime never gets a valid value
             continue;
         }
         switch (blockId)
@@ -1595,9 +1597,18 @@ gmx_bool gmx_read_next_tng_frame(gmx_tng_trajectory_t gmx_tng_input,
     fr->step  = frameNumber;
     fr->bStep = TRUE;
 
-    // Convert the time to ps
-    fr->time  = frameTime / gmx::c_pico;
-    fr->bTime = (frameTime > 0);
+    // Convert the time to ps.
+    //
+    // Note that tng_util_particle_data_next_frame_read might have
+    // returned TNG_FAILURE, which was silently swallowed above and
+    // frameTime could still be -1. Otherwise, that function always a
+    // value, which might legitimately be -1 when the user has done
+    // something creative, or 0 legitimately, or 0 when time values
+    // were somehow unavailable. So we pass on that time and hope the
+    // user can make sense of the situation.
+    fr->time         = frameTime / gmx::c_pico;
+    fr->bTime        = true;
+    fr->timeIsDouble = true;
 
     /* Update the data in the wrapper */
     gmx_tng_input->lastStepDataIsValid = true;

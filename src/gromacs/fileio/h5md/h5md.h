@@ -130,6 +130,8 @@ private:
          * \param[out] hasBox      Whether or not simulation box data exist for the next frame.
          * \param[out] hasStep     Whether or not step data exist for the next frame.
          * \param[out] hasTime     Whether or not time data exist for the next frame.
+         * \param[out] hasCompressedPosition Whether or not the next frame has compressed position data.
+         * \param[out] positionPrecision     Precision of position data of the next frame.
          *
          * \returns True if a next frame exists to read, otherwise false.
          */
@@ -139,7 +141,9 @@ private:
                                bool* hasForce,
                                bool* hasBox,
                                bool* hasStep,
-                               bool* hasTime);
+                               bool* hasTime,
+                               bool* hasCompressedPosition,
+                               real* positionPrecision);
 
         /*! \brief Read the next frame into given data buffers.
          *
@@ -158,7 +162,7 @@ private:
          *
          * \returns True if a frame was read, otherwise false.
          *
-         * \throws gmx::FileIOError if \p position, \p velocity or \p force data is given
+         * \throws H5mdError if \p position, \p velocity or \p force data is given
          *     but the corresponding data set has not been created, or if the size of
          *     the data buffers do not match the number of atoms of the system.
          */
@@ -187,7 +191,7 @@ public:
      *
      * \param[in] fileName    Name of the file to open. The same as the file path.
      * \param[in] mode        The mode to open the file.
-     * \throws FileIOError if fileName is specified and the file cannot be opened.
+     * \throws H5mdError if fileName is specified and the file cannot be opened.
      */
     H5md(const std::filesystem::path& fileName, H5mdFileMode mode);
 
@@ -208,18 +212,69 @@ public:
     hid_t fileid() const;
 
     /*! \brief Write all unwritten data to the file.
-     * \param[in] throwExceptionUponError Whether to throw an exception if an error occurs.
+     * \tparam throwExceptionUponError Whether to throw an exception if an error occurs.
      * Assumes a valid file_ identifier.
-     * \throws FileIOError If there were errors during flushing (and throwExceptionUponError is true).
+     * \throws H5mdError If there were errors during flushing (and throwExceptionUponError is true).
      */
-    void flush(bool throwExceptionUponError = true);
+    template<bool throwExceptionUponError = true>
+    void flush();
 
     /*! \brief Set up the file from input data.
      *
-     * \param[in] topology    Topology data of system.
-     * \param[in] inputRecord Simulation parameters.
+     * Creates a particle block for the entire system defined in the \p topology.
+     *
+     * \param[in] topology     Topology data of system.
+     * \param[in] inputRecord  Simulation parameters.
      */
     void setupFileFromInput(const gmx_mtop_t& topology, const t_inputrec& inputRecord);
+
+    /*! \brief Set up the file from input data.
+     *
+     * Creates a particle block for the given selection.
+     *
+     * \param[in] topology       Topology data of system.
+     * \param[in] inputRecord    Simulation parameters.
+     * \param[in] selectionInds  Global particle indices for selection to setup
+     *                           particle block for.
+     * \param[in] selectionName  Name of selection to setup particle block for.
+     */
+    void setupFileFromInput(const gmx_mtop_t&   topology,
+                            const t_inputrec&   inputRecord,
+                            ArrayRef<const int> selectionInds,
+                            const char*         selectionName);
+
+    /*! \brief Write the MD parameters of the simulation to the group `/parameters`.
+     *
+     * The parameters follow the MD parameters of the H5MD biophysics specification
+     * (https://gromacs.gitlab.io/h5md-biophysics/md_parameter.html), as described by
+     * buildMdParameterTree().
+     *
+     * \param[in] inputRecord Simulation parameters.
+     * \param[in] topology    Topology of the simulated system, which gives the names of the
+     *                        simulation groups and whether any bond is constrained.
+     * \param[in] isRerun     Whether the energies of an existing trajectory are recomputed.
+     *
+     * \throws H5mdError if the group exists already or cannot be written.
+     */
+    void setupMDParameters(const t_inputrec& inputRecord, const gmx_mtop_t& topology, bool isRerun);
+
+    /*! \brief Set up the current file based on and copy metadata from another file.
+     *
+     * If \p selectionInds is not empty its size will be used to set up
+     * the particle blocks. If it is empty, the number of particles is
+     * read from \p other.
+     *
+     * Copies metadata from the \p other file. Will also copy its topology
+     * data if its number of particles matches that of the new file.
+     *
+     * \param[in] other          File to use as base for the current file.
+     * \param[in] selectionInds  Global particle indices to set up particle block for.
+     * \param[in] selectionName  Name of selection to set up particle block for.
+     *
+     * \throws H5mdError if the PbcType of or number of particles in \p other
+     * cannot be determined.
+     */
+    void setupFromOtherFile(const H5md& other, ArrayRef<const int> selectionInds, const char* selectionName);
 
     /*! \brief Set up from an existing file.
      *
@@ -242,7 +297,7 @@ public:
      * \param[in] restartingFromStep Step which we are restarting the simulation from
      * \param[in] numParticles       Number of particles in system
      *
-     * \throws gmx::FileIOError if the existing file contents are not
+     * \throws H5mdError if the existing file contents are not
      * for a system of \p numParticles.
      */
     void setupFromExistingFileForAppending(int64_t restartingFromStep, int64_t numParticles);
@@ -258,31 +313,59 @@ public:
 
     /*! \brief Write input data as the next frame of the trajectory.
      *
+     * \note Position data is only compressed if \p positionPrecision
+     * is not nullopt. Since this is set once-only, during data set
+     * creation, only the first call to writeNextFrame uses this parameter
+     * (and only if the data sets do not already exist, e.g. when resuming
+     * a simulation by appending to an old trajectory).
+     *
      * \param[in] positions     Position data to write (or empty if not to write).
      * \param[in] velocities    Velocity data to write (or empty if not to write).
      * \param[in] forces        Force data to write (or empty if not to write).
      * \param[in] box           Simulation box for frame.
      * \param[in] step          Simulation step for frame.
      * \param[in] time          Simulation time for frame.
+     * \param[in] positionPrecision  Precision for lossy compression of \p position.
      *
-     * \throws gmx::FileIOError if \p position, \p velocity or \p force data is given
-     *     but the corresponding data set has not been created, or if the size of
-     *     the data buffers do not match the number of atoms of the system.
+     * \throws H5mdError if the size of the data buffers do not match
+     * the number of atoms of the system, or if \p positionPrecision
+     * has a non-positive value.
+     *
+     * \throws NotImplementedError if \p positionPrecision is not nullopt
+     * and GROMACS is not built with SZ3 support.
      */
     void writeNextFrame(ArrayRef<const RVec> positions,
                         ArrayRef<const RVec> velocities,
                         ArrayRef<const RVec> forces,
                         const matrix         box,
                         int64_t              step,
-                        double               time);
+                        double               time,
+                        std::optional<real>  positionPrecision);
 
 private:
+    /*! \brief Copy simulation metadata from \p other to the current file.
+     *
+     * Copies a selection of metadata for the /h5md group, including
+     * known groups in /h5md/modules.
+     *
+     * Entries in /h5md/author and /h5md/creator are unchanged, i.e.
+     * will represent the current user instead of the original.
+     *
+     * If \p copyTopology is true any known topology data groups will
+     * also be copied over. The MD parameters in /parameters are copied
+     * whatever \p copyTopology.
+     *
+     * \param[in] other         File to copy metadata from.
+     * \param[in] copyTopology  Whether to also copy topology data.
+     */
+    void copyMetaDataFromFile(const H5md& other, bool copyTopology);
+
     /*! \brief Set up particle blocks for trajectory writing according to the H5md specification.
      *
      * \param[in] topology         Molecular topology for the simulated system.
      * \param[in] selectionIndices Global indices for all atoms in the group.
      * \param[in] selectionName    Name of group.
-     * \param[in] inputRecord      Simulation input record.
+     * \param[in] inputRecord      Simulation input record (includes output control).
      */
     void setupParticleBlockForGroup(const gmx_mtop_t&   topology,
                                     ArrayRef<const int> selectionIndices,
@@ -294,79 +377,59 @@ private:
      * \param[in] selectionName        Name of group to set up particle block for
      * \param[in] restartingFromStep   (Optional) If restarting simulation, the step that we are
      *                                 restarting from.
-     * \param[in] expectedNumParticles (Optional) Expected number of particles of block in file.
-     *
-     * \throws gmx::FileIOError if \p expectedNumParticles is given and the contents of the existing
-     * particle block does not match it.
+     * \param[in] numParticles         Number of particles of block in file.
      */
     void setupParticleBlockForGroupFromExistingFile(const std::string&     selectionName,
                                                     std::optional<int64_t> restartingFromStep,
-                                                    std::optional<int64_t> expectedNumParticles);
+                                                    int64_t                numParticles);
 
-    /*! \brief Set up the H5MD metadata group according to the H5md specification.
+    /*! \brief Set up the H5MD module group and add our used modules.
      *
-     * \note Also sets up the modules group with GROMACS and units modules. This
-     * method must be called before adding any other H5MD module information.
+     * Sets up the modules group with GROMACS, units and biophysics modules. This
+     * must be called before adding any other H5MD module information.
      *
      * Creates the following groups and attributes (relative to the HDF5 root):
      *
-     * /h5md                (H5md metadata group)
-     * \++ version          (H5md specification version attribute)
-     * \-- /author          (author group)
-     *     \++ name         (current username, or a dummy name if we cannot get it)
-     * \-- /creator         (creator group)
-     *     \++ name         (GROMACS)
-     *     \++ version      (GROMACS version)
-     * \-- /modules         (modules group)
-     *     \-- /gromacs     (GROMACS module group)
-     *         \++ version  (GROMACS module version)
-     *     \-- /units       (units module group)
-     *         \++ version  (units module version)
-     *         \++ system   (unit system string)
-     *
-     * These groups and attributes are required by the H5MD specification to exist
-     * in the file. After setting these up we can proceed with the rest of the file.
+     * /h5md               (H5md metadata group)
+     * \-- modules         (modules group)
+     *     \-- gromacs     (GROMACS module group)
+     *         \++ version (GROMACS module version)
+     *     \-- units       (units module group)
+     *         \++ version (units module version)
+     *         \++ system  (unit system string)
+     *     \-- biophysics  (H5MD biophysics module group)
+     *         \++ version (biophysics module version)
      */
-    void setupMetadataGroup();
+    void setupModules();
 
-    /*! \brief Set up the module for GROMACS molecular topology
+    /*! \brief Write the topology of the system to the group `/topology`.
      *
-     * This module store the GROMACS molecular topology for internal use.
-     * The version of this module is determined by the h5md_topologyutils module.
+     * Follows the system topology of the H5MD biophysics specification
+     * (https://gromacs.gitlab.io/h5md-biophysics/system_topology.html): each molecule
+     * type is stored once, and the molecule blocks give the order and the number of
+     * copies of the molecule types in the system.
      *
      * Create the following hierarchy (relative to the HDF5 root):
      *
-     * /h5md/modules/gromacs_topology  (group for H5md GROMACS topology module)
-     * \++ version                     (attribute for the version of GROMACS topology)
-     * \++ molecule_names              (attribute for the names of molecules in the system)
-     * \++ system_name                 (attribute for the name of the system)
-     * \-- molecule1                   (group for molecule 1, same group name as molecule_names[0])
-     *     \++ nr_particles            (attribute for the number of particles in molecule 1)
-     *     \++ nr_residues             (attribute for the number of residues in molecule 1)
-     *     \++ nr_blocks               (attribute for the number of blocks for molecule 1)
-     *     \-- id                      (dataset for the atomic identifier in molecule 1)
-     *     \-- mass                    (dataset for the atomic masses in molecule 1)
-     *     \-- charge                  (dataset for the atomic charges in molecule 1)
-     *     \-- species                 (dataset for the atomic species in molecule 1)
-     *     \-- particle_name           (dataset for the atomic names (indices into particle name table) in molecule 1)
-     *     \-- particle_name_table     (dataset for the atomic name lookup table in molecule 1)
-     *     \-- residue_id              (dataset for the residue identifier in molecule 1)
-     *     \-- sequence                (dataset for the residue sequence (indices into residue name table) in molecule 1)
-     *     \-- residue_name            (dataset for the residue names (indices into residue name table) in molecule 1)
-     *     \-- residue_name_table      (dataset for the residue name lookup table in molecule 1)
-     *     \-- posres_xA               (dataset for the position restraint for topology A values in molecule 1)
-     *     \-- posres_xB               (dataset for the position restraint for topology B values in molecule 1)
+     * /topology                  (group for the system topology)
+     * \++ system_name            (attribute for the name of the system)
+     * \++ total_particle_count   (attribute for the number of particles in the system)
+     * \++ total_residue_count    (attribute for the number of residues in the system)
+     * \-- molecule_blocks        (compound data set of the name and count of each block)
+     * \-- \<molecule_type\>      (group for each molecule type, see writeMoleculeTypeAsCompound())
+     *
+     * Nothing is written for a topology without molecule types.
      *
      * \param[in] topology Molecular topology for the simulated system.
      */
-    void setupGromacsTopology(const gmx_mtop_t& topology);
+    void setupSystemTopology(const gmx_mtop_t& topology);
 
     /*! \brief Set up the H5MD metadata group for connectivity information.
      *
      * Create the following hierarchy (relative to the HDF5 root):
      *
      * /connectivity          (group for connectivity information)
-     * \++ nr_bonds           (attribute for the number of bonds in the system)
+     * \++ bond_count           (attribute for the number of bonds in the system)
      *     \-- bonds          (dataset for the bonds (shaped [numBond, 2]) in the system)
      *
      * \param[in] topology Molecular topology for the simulated system.

@@ -43,20 +43,17 @@ function(GMX_TEST_GPU_AWARE_MPI BACKEND)
   string(TOUPPER "${BACKEND}" BACKEND_UPPER)
   string(TOLOWER "${BACKEND}" BACKEND_LOWER)
 
-  list(JOIN MPI_CXX_COMPILE_OPTIONS " " CMAKE_REQUIRED_FLAGS)
-  list(JOIN MPI_CXX_COMPILE_DEFINITIONS " " CMAKE_REQUIRED_DEFINITIONS)
-  set(CMAKE_REQUIRED_INCLUDES ${MPI_INCLUDE_PATH})
-  set(CMAKE_REQUIRED_LIBRARIES ${MPI_LIBRARIES})
+  set(CMAKE_REQUIRED_LIBRARIES MPI::MPI_CXX)
 
   if (NOT DEFINED HAVE_MPI_EXT)
     message(STATUS "Checking for mpi-ext.h header")
     # cannot use check_include_file here as mpi.h needs to be included
-    # before mpi-ext.h for compilation, check_include_file doesn't support 
+    # before mpi-ext.h for compilation, check_include_file doesn't support
     # this use-case
     check_cxx_source_compiles(
       "#include <mpi.h>
       #include <mpi-ext.h>
-      int main(void) 
+      int main(void)
       {
         return 0;
       }" HAVE_MPI_EXT)
@@ -74,18 +71,18 @@ function(GMX_TEST_GPU_AWARE_MPI BACKEND)
     #if HAVE_MPI_EXT
     #include <mpi-ext.h>
     #endif
-    int main(void) 
+    int main(void)
     {
       return MPIX_Query_${BACKEND_LOWER}_support();
     }" ${OUTPUT_VAR})
-    list(REMOVE_ITEM CMAKE_REQUIRED_DEFINITIONS -DHAVE_MPI_EXT)
+    list(REMOVE_ITEM CMAKE_REQUIRED_DEFINITIONS -DHAVE_MPI_EXT=${HAVE_MPI_EXT})
 
     if(${OUTPUT_VAR})
       message(STATUS "Checking for ${OUTPUT_VAR} - yes")
     else()
       message(STATUS "Checking for ${OUTPUT_VAR} - no")
       if (GMX_GPU_CUDA AND ("${BACKEND_UPPER}" STREQUAL "CUDA"))
-        message(WARNING "GROMACS cannot determine if underlying MPI is ${BACKEND_UPPER}-aware, " 
+        message(WARNING "GROMACS cannot determine if underlying MPI is ${BACKEND_UPPER}-aware, "
         "for better multi-GPU performance consider using a more recent CUDA-aware MPI.")
       endif()
     endif()

@@ -57,31 +57,41 @@
 #include <ostream>
 #include <string>
 #include <tuple>
-#include <unordered_map>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include "gromacs/gpu_utils/capabilities.h"
 #include "gromacs/listed_forces/listed_forces.h"
+#include "gromacs/listed_forces/listed_forces_gpu.h"
 #include "gromacs/math/paddedvector.h"
-#include "gromacs/math/units.h"
 #include "gromacs/mdtypes/md_enums.h"
-#include "gromacs/mdtypes/mdatom.h"
 #include "gromacs/pbcutil/ishift.h"
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/topology/idef.h"
 #include "gromacs/topology/ifunc.h"
 #include "gromacs/utility/arrayref.h"
-#include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/real.h"
 #include "gromacs/utility/strconvert.h"
-#include "gromacs/utility/stringstream.h"
-#include "gromacs/utility/textwriter.h"
 #include "gromacs/utility/vec.h"
 #include "gromacs/utility/vectypes.h"
 
+#include "testutils/hardware_test_fixture.h"
+#include "testutils/naming.h"
 #include "testutils/refdata.h"
+#include "testutils/test_device.h"
+#include "testutils/test_hardware_environment.h"
 #include "testutils/testasserts.h"
+
+#include "bondedtestdata.h"
+
+#if GMX_GPU && !GMX_GPU_OPENCL
+#    include "gromacs/gpu_utils/devicebuffer.h"
+#    include "gromacs/mdtypes/enerdata.h"
+#    include "gromacs/mdtypes/simulation_workload.h"
+#    include "gromacs/nbnxm/gpu_types_common.h"
+#    include "gromacs/topology/forcefieldparameters.h"
+#endif
 
 namespace gmx
 {
@@ -90,479 +100,264 @@ namespace test
 namespace
 {
 
-//! Number of atoms used in these tests.
-constexpr int c_numAtoms = 4;
+//! Input configuration (the physical scenario: bonds, coordinates, PBC, FEP lambda)
+using ListedForcesInputConfig = std::tuple<iListInput, PaddedVector<RVec>, PbcType, real>;
 
-/*! \brief Output from bonded kernels
+/*! \brief Execution modes for listed forces tests
  *
- * \todo Later this might turn into the actual output struct. */
-struct OutputQuantities
+ * These control how values are computed: forces only vs
+ * forces+virial+energy, SIMD vs not, etc. */
+using ListedForcesExecutionModes = std::tuple<BondedKernelFlavor>;
+
+//! Hardware and execution test helper for listed forces
+using ListedForcesTestHelper =
+        HardwareAndExecutionTestHelper<ListedForcesInputConfig, ListedForcesExecutionModes>;
+
+void runBondedCpu(const iListInput&           input,
+                  const std::vector<t_iatom>& iatoms,
+                  const PaddedVector<RVec>&   x,
+                  const t_pbc*                pbc,
+                  real                        lambda,
+                  BondedKernelFlavor          flavor,
+                  OutputQuantities*           output)
 {
-    //! Energy of this interaction
-    real energy = 0;
-    //! Derivative with respect to lambda
-    real dvdlambda = 0;
-    //! Shift vectors
-    rvec fshift[c_numShiftVectors] = { { 0 } };
-    //! Forces
-    alignas(GMX_REAL_MAX_SIMD_WIDTH * sizeof(real)) rvec4 f[c_numAtoms] = { { 0 } };
+    std::array<int, 4> ddgatindex = { 0, 1, 2, 3 };
+
+    output->energy = calculateSimpleBond(input.ftype.value(),
+                                         iatoms.size(),
+                                         iatoms.data(),
+                                         &input.iparams,
+                                         as_rvec_array(x.data()),
+                                         output->f,
+                                         output->fshift,
+                                         pbc,
+                                         lambda,
+                                         &output->dvdlambda,
+                                         c_bondedTestCharges,
+                                         nullptr,
+                                         nullptr,
+                                         nullptr,
+                                         ddgatindex.data(),
+                                         flavor);
+}
+
+#if GMX_GPU && !GMX_GPU_OPENCL
+
+void runBondedGpu(const DeviceContext&        deviceContext,
+                  const DeviceStream&         deviceStream,
+                  const iListInput&           input,
+                  const std::vector<t_iatom>& iatoms,
+                  const PaddedVector<RVec>&   x,
+                  const t_pbc&                pbc,
+                  BondedKernelFlavor          flavor,
+                  OutputQuantities*           output)
+{
+    GMX_RELEASE_ASSERT(flavor == BondedKernelFlavor::ForcesAndVirialAndEnergy,
+                       "GPU runner only supports ForcesAndVirialAndEnergy flavor");
+
+    deviceContext.activate();
+
+    const int  ftype    = static_cast<int>(input.ftype.value());
+    const int  numAtoms = c_numAtomsBondedTest;
+    const real scaleFac = 1.0f;
+
+    // Build minimal force-field parameters (single type)
+    gmx_ffparams_t ffparams;
+    ffparams.functype = { input.ftype.value() };
+    ffparams.iparams  = { input.iparams };
+
+    // Build minimal interaction definitions
+    InteractionDefinitions idef(ffparams);
+    idef.il[ftype].iatoms                   = iatoms;
+    idef.ilsort                             = ilsortNO_FE;
+    idef.numNonperturbedInteractions[ftype] = static_cast<int>(iatoms.size());
+
+    // Identity atom order (same as input coordinates)
+    std::vector<int> nbnxmAtomOrder(numAtoms);
+    for (int i = 0; i < numAtoms; i++)
+    {
+        nbnxmAtomOrder[i] = i;
+    }
+
+    // Host-side xq (x, y, z, q) for upload
+    std::vector<real> h_xq;
+    h_xq.reserve(numAtoms * 4);
+    for (int i = 0; i < numAtoms; i++)
+    {
+        h_xq.emplace_back(x[i][XX]);
+        h_xq.emplace_back(x[i][YY]);
+        h_xq.emplace_back(x[i][ZZ]);
+        h_xq.emplace_back(c_bondedTestCharges[i]);
+    }
+
+    // Allocate device buffers for NBAtomDataGpu (only xq, f, fShift used by bonded)
+    NBAtomDataGpu nbAtomDataGpu = {};
+    nbAtomDataGpu.numAtoms      = numAtoms;
+    nbAtomDataGpu.numAtomsLocal = numAtoms;
+    nbAtomDataGpu.numAtomsAlloc = numAtoms;
+
+    allocateDeviceBuffer(&nbAtomDataGpu.xq, numAtoms, deviceContext);
+    allocateDeviceBuffer(&nbAtomDataGpu.f, numAtoms, deviceContext);
+    allocateDeviceBuffer(&nbAtomDataGpu.fShift, c_numShiftVectors, deviceContext);
+
+    copyToDeviceBuffer(&nbAtomDataGpu.xq,
+                       reinterpret_cast<Float4*>(h_xq.data()),
+                       0,
+                       numAtoms,
+                       deviceStream,
+                       GpuApiCallBehavior::Sync,
+                       nullptr);
+    clearDeviceBufferAsync(&nbAtomDataGpu.f, 0, numAtoms, deviceStream);
+    clearDeviceBufferAsync(&nbAtomDataGpu.fShift, 0, c_numShiftVectors, deviceStream);
+
+    // ListedForcesGpu (wallcycle can be nullptr – start/stop check for null)
+    ListedForcesGpu listedForcesGpu(ffparams, scaleFac, 1, deviceContext, deviceStream, nullptr);
+
+    listedForcesGpu.updateHaveInteractions(idef);
+    listedForcesGpu.updateInteractionListsAndDeviceBuffers(nbnxmAtomOrder, idef, &nbAtomDataGpu);
+
+    if (!listedForcesGpu.haveInteractions())
+    {
+        freeDeviceBuffer(&nbAtomDataGpu.xq);
+        freeDeviceBuffer(&nbAtomDataGpu.f);
+        freeDeviceBuffer(&nbAtomDataGpu.fShift);
+        GMX_THROW(InternalError(formatString("ListedForcesGpu reported no interactions for type %d", ftype)));
+    }
+
+    listedForcesGpu.setPbc(pbc.pbcType, pbc.box, false);
+
+    StepWorkload stepWork;
+    stepWork.computeVirial = true;
+    stepWork.computeEnergy = true;
+    listedForcesGpu.launchKernel(stepWork);
+    listedForcesGpu.launchEnergyTransfer();
+
+    gmx_enerdata_t enerd(1, nullptr);
+    listedForcesGpu.waitAccumulateEnergyTerms(&enerd);
+
+    // Copy forces and shift forces back
+    std::vector<Float3> h_f(numAtoms);
+    std::vector<Float3> h_fShift(c_numShiftVectors);
+    copyFromDeviceBuffer(
+            h_f.data(), &nbAtomDataGpu.f, 0, numAtoms, deviceStream, GpuApiCallBehavior::Sync, nullptr);
+    copyFromDeviceBuffer(h_fShift.data(),
+                         &nbAtomDataGpu.fShift,
+                         0,
+                         c_numShiftVectors,
+                         deviceStream,
+                         GpuApiCallBehavior::Sync,
+                         nullptr);
+
+    // Fill test output (Float3 is RVec on HIP, uses [0],[1],[2])
+    output->energy    = enerd.term[ftype];
+    output->dvdlambda = 0.0;
+    for (int i = 0; i < numAtoms; i++)
+    {
+        output->f[i][XX] = h_f[i][XX];
+        output->f[i][YY] = h_f[i][YY];
+        output->f[i][ZZ] = h_f[i][ZZ];
+        output->f[i][3]  = 0.0;
+    }
+    for (int s = 0; s < c_numShiftVectors; s++)
+    {
+        output->fshift[s][XX] = h_fShift[s][XX];
+        output->fshift[s][YY] = h_fShift[s][YY];
+        output->fshift[s][ZZ] = h_fShift[s][ZZ];
+    }
+
+    freeDeviceBuffer(&nbAtomDataGpu.xq);
+    freeDeviceBuffer(&nbAtomDataGpu.f);
+    freeDeviceBuffer(&nbAtomDataGpu.fShift);
+}
+
+#endif // GMX_GPU && !GMX_GPU_OPENCL
+
+//! Formatter for iListInput - use function type and FEP status
+// NOLINTNEXTLINE(cppcoreguidelines-interfaces-global-init)
+auto formatIListInput = [](const iListInput& input)
+{
+    if (!input.ftype.has_value())
+    {
+        return std::string("NoFtype");
+    }
+    // Safe from global-init ordering problems because interaction_function
+    // will be defined before this lambda is called.
+    std::string name = interaction_function[input.ftype.value()].name;
+    if (input.hasFepParameters())
+    {
+        name.append("_FEP");
+    }
+    return name;
 };
 
-/*! \brief Utility to check the output from bonded tests
- *
- * \param[in] checker Reference checker
- * \param[in] output  The output from the test to check
- * \param[in] bondedKernelFlavor  Flavor for determining what output to check
- */
-void checkOutput(TestReferenceChecker*    checker,
-                 const OutputQuantities&  output,
-                 const BondedKernelFlavor bondedKernelFlavor)
+//! Formatter for coordinates - use atom count
+auto formatCoordinates = [](const PaddedVector<RVec>& coords)
+{ return formatString("%datoms", static_cast<int>(coords.size())); };
+
+//! Formatter for PbcType
+// NOLINTNEXTLINE(cppcoreguidelines-interfaces-global-init)
+auto formatPbcType = [](PbcType pbc)
 {
-    if (computeEnergy(bondedKernelFlavor))
-    {
-        checker->checkReal(output.energy, "Epot ");
-        // Should still be zero when not doing FEP, so may as well test it.
-        checker->checkReal(output.dvdlambda, "dVdlambda ");
-    }
-    checker->checkSequence(std::begin(output.f), std::end(output.f), "Forces");
-}
-
-/*! \brief Input structure for listed forces tests
- */
-struct iListInput
-{
-public:
-    //! Function type
-    std::optional<InteractionFunction> ftype;
-    //! Tolerance for float evaluation
-    float ftoler = 1e-6;
-    //! Tolerance for double evaluation
-    double dtoler = 1e-8;
-    //! Do free energy perturbation?
-    bool fep = false;
-    //! Interaction parameters
-    t_iparams iparams = { { 0 } };
-
-    friend std::ostream& operator<<(std::ostream& out, const iListInput& input);
-
-    //! Constructor
-    iListInput() {}
-
-    /*! \brief Constructor with tolerance
-     *
-     * \param[in] ftol Single precision tolerance
-     * \param[in] dtol Double precision tolerance
-     */
-    iListInput(float ftol, double dtol)
-    {
-        ftoler = ftol;
-        dtoler = dtol;
-    }
-    /*! \brief Set parameters for harmonic potential
-     *
-     * Free energy perturbation is turned on when A
-     * and B parameters are different.
-     * \param[in] ft  Function type
-     * \param[in] rA  Equilibrium value A
-     * \param[in] krA Force constant A
-     * \param[in] rB  Equilibrium value B
-     * \param[in] krB Force constant B
-     * \return The structure itself.
-     */
-    iListInput setHarmonic(InteractionFunction ft, real rA, real krA, real rB, real krB)
-    {
-        iparams.harmonic.rA  = rA;
-        iparams.harmonic.rB  = rB;
-        iparams.harmonic.krA = krA;
-        iparams.harmonic.krB = krB;
-        ftype                = ft;
-        fep                  = (rA != rB || krA != krB);
-        return *this;
-    }
-    /*! \brief Set parameters for harmonic potential
-     *
-     * \param[in] ft  Function type
-     * \param[in] rA  Equilibrium value
-     * \param[in] krA Force constant
-     * \return The structure itself.
-     */
-    iListInput setHarmonic(InteractionFunction ft, real rA, real krA)
-    {
-        return setHarmonic(ft, rA, krA, rA, krA);
-    }
-    /*! \brief Set parameters for cubic potential
-     *
-     * \param[in] b0   Equilibrium bond length
-     * \param[in] kb   Harmonic force constant
-     * \param[in] kcub Cubic force constant
-     * \return The structure itself.
-     */
-    iListInput setCubic(real b0, real kb, real kcub)
-    {
-        ftype              = InteractionFunction::CubicBonds;
-        iparams.cubic.b0   = b0;
-        iparams.cubic.kb   = kb;
-        iparams.cubic.kcub = kcub;
-        return *this;
-    }
-    /*! \brief Set parameters for morse potential
-     *
-     * Free energy perturbation is turned on when A
-     * and B parameters are different.
-     * \param[in] b0A   Equilibrium value A
-     * \param[in] cbA   Force constant A
-     * \param[in] betaA Steepness parameter A
-     * \param[in] b0B   Equilibrium value B
-     * \param[in] cbB   Force constant B
-     * \param[in] betaB Steepness parameter B
-     * \return The structure itself.
-     */
-    iListInput setMorse(real b0A, real cbA, real betaA, real b0B, real cbB, real betaB)
-    {
-        ftype               = InteractionFunction::MorsePotential;
-        iparams.morse.b0A   = b0A;
-        iparams.morse.cbA   = cbA;
-        iparams.morse.betaA = betaA;
-        iparams.morse.b0B   = b0B;
-        iparams.morse.cbB   = cbB;
-        iparams.morse.betaB = betaB;
-        fep                 = (b0A != b0B || cbA != cbB || betaA != betaB);
-        return *this;
-    }
-    /*! \brief Set parameters for morse potential
-     *
-     * \param[in] b0A   Equilibrium value
-     * \param[in] cbA   Force constant
-     * \param[in] betaA Steepness parameter
-     * \return The structure itself.
-     */
-    iListInput setMorse(real b0A, real cbA, real betaA)
-    {
-        return setMorse(b0A, cbA, betaA, b0A, cbA, betaA);
-    }
-    /*! \brief Set parameters for fene potential
-     *
-     * \param[in] bm Equilibrium bond length
-     * \param[in] kb Force constant
-     * \return The structure itself.
-     */
-    iListInput setFene(real bm, real kb)
-    {
-        ftype           = InteractionFunction::FENEBonds;
-        iparams.fene.bm = bm;
-        iparams.fene.kb = kb;
-        return *this;
-    }
-    /*! \brief Set parameters for linear angle potential
-     *
-     * Free energy perturbation is turned on when A
-     * and B parameters are different.
-     * \param[in] klinA Force constant A
-     * \param[in] aA    The position of the central atom A
-     * \param[in] klinB Force constant B
-     * \param[in] aB    The position of the central atom B
-     * \return The structure itself.
-     */
-    iListInput setLinearAngle(real klinA, real aA, real klinB, real aB)
-    {
-        ftype                  = InteractionFunction::LinearAngles;
-        iparams.linangle.klinA = klinA;
-        iparams.linangle.aA    = aA;
-        iparams.linangle.klinB = klinB;
-        iparams.linangle.aB    = aB;
-        fep                    = (klinA != klinB || aA != aB);
-        return *this;
-    }
-    /*! \brief Set parameters for linear angle potential
-     *
-     * \param[in] klinA Force constant
-     * \param[in] aA    The position of the central atom
-     * \return The structure itself.
-     */
-    iListInput setLinearAngle(real klinA, real aA) { return setLinearAngle(klinA, aA, klinA, aA); }
-    /*! \brief Set parameters for Urey Bradley potential
-     *
-     * Free energy perturbation is turned on when A
-     * and B parameters are different.
-     * \param[in] thetaA  Equilibrium angle A
-     * \param[in] kthetaA Force constant A
-     * \param[in] r13A    The distance between i and k atoms A
-     * \param[in] kUBA    The force constant for 1-3 distance A
-     * \param[in] thetaB  Equilibrium angle B
-     * \param[in] kthetaB Force constant B
-     * \param[in] r13B    The distance between i and k atoms B
-     * \param[in] kUBB    The force constant for 1-3 distance B
-     * \return The structure itself.
-     */
-    iListInput
-    setUreyBradley(real thetaA, real kthetaA, real r13A, real kUBA, real thetaB, real kthetaB, real r13B, real kUBB)
-    {
-        ftype               = InteractionFunction::UreyBradleyPotential;
-        iparams.u_b.thetaA  = thetaA;
-        iparams.u_b.kthetaA = kthetaA;
-        iparams.u_b.r13A    = r13A;
-        iparams.u_b.kUBA    = kUBA;
-        iparams.u_b.thetaB  = thetaB;
-        iparams.u_b.kthetaB = kthetaB;
-        iparams.u_b.r13B    = r13B;
-        iparams.u_b.kUBB    = kUBB;
-        fep = (thetaA != thetaB || kthetaA != kthetaB || r13A != r13B || kUBA != kUBB);
-        return *this;
-    }
-    /*! \brief Set parameters for Urey Bradley potential
-     *
-     * \param[in] thetaA  Equilibrium angle
-     * \param[in] kthetaA Force constant
-     * \param[in] r13A    The distance between i and k atoms
-     * \param[in] kUBA    The force constant for 1-3 distance
-     * \return The structure itself.
-     */
-    iListInput setUreyBradley(real thetaA, real kthetaA, real r13A, real kUBA)
-    {
-        return setUreyBradley(thetaA, kthetaA, r13A, kUBA, thetaA, kthetaA, r13A, kUBA);
-    }
-    /*! \brief Set parameters for Cross Bond Bonds potential
-     *
-     * \param[in] r1e  First bond length i-j
-     * \param[in] r2e  Second bond length i-k
-     * \param[in] krr  The force constant
-     * \return The structure itself.
-     */
-    iListInput setCrossBondBonds(real r1e, real r2e, real krr)
-    {
-        ftype                = InteractionFunction::CrossBondBonds;
-        iparams.cross_bb.r1e = r1e;
-        iparams.cross_bb.r2e = r2e;
-        iparams.cross_bb.krr = krr;
-        return *this;
-    }
-    /*! \brief Set parameters for Cross Bond Angles potential
-     *
-     * \param[in] r1e  First bond length i-j
-     * \param[in] r2e  Second bond length j-k
-     * \param[in] r3e  Third bond length i-k
-     * \param[in] krt  The force constant
-     * \return The structure itself.
-     */
-    iListInput setCrossBondAngles(real r1e, real r2e, real r3e, real krt)
-    {
-        ftype                = InteractionFunction::CrossBondAngles;
-        iparams.cross_ba.r1e = r1e;
-        iparams.cross_ba.r2e = r2e;
-        iparams.cross_ba.r3e = r3e;
-        iparams.cross_ba.krt = krt;
-        return *this;
-    }
-    /*! \brief Set parameters for Quartic Angles potential
-     *
-     * \param[in] theta Angle
-     * \param[in] c     Array of parameters
-     * \return The structure itself.
-     */
-    iListInput setQuarticAngles(real theta, const real c[5])
-    {
-        ftype                = InteractionFunction::QuarticAngles;
-        iparams.qangle.theta = theta;
-        iparams.qangle.c[0]  = c[0];
-        iparams.qangle.c[1]  = c[1];
-        iparams.qangle.c[2]  = c[2];
-        iparams.qangle.c[3]  = c[3];
-        iparams.qangle.c[4]  = c[4];
-        return *this;
-    }
-    /*! \brief Set parameters for proper dihedrals potential
-     *
-     * Free energy perturbation is turned on when A
-     * and B parameters are different.
-     * \param[in] ft   Function type
-     * \param[in] phiA Dihedral angle A
-     * \param[in] cpA  Force constant A
-     * \param[in] mult Multiplicity of the angle
-     * \param[in] phiB Dihedral angle B
-     * \param[in] cpB  Force constant B
-     * \return The structure itself.
-     */
-    iListInput setPDihedrals(InteractionFunction ft, real phiA, real cpA, int mult, real phiB, real cpB)
-    {
-        ftype              = ft;
-        iparams.pdihs.phiA = phiA;
-        iparams.pdihs.cpA  = cpA;
-        iparams.pdihs.phiB = phiB;
-        iparams.pdihs.cpB  = cpB;
-        iparams.pdihs.mult = mult;
-        fep                = (phiA != phiB || cpA != cpB);
-        return *this;
-    }
-    /*! \brief Set parameters for proper dihedrals potential
-     *
-     * \param[in] ft   Function type
-     * \param[in] phiA Dihedral angle
-     * \param[in] cpA  Force constant
-     * \param[in] mult Multiplicity of the angle
-     * \return The structure itself.
-     */
-    iListInput setPDihedrals(InteractionFunction ft, real phiA, real cpA, int mult)
-    {
-        return setPDihedrals(ft, phiA, cpA, mult, phiA, cpA);
-    }
-    /*! \brief Set parameters for Ryckaert-Bellemans dihedrals potential
-     *
-     * Free energy perturbation is turned on when A
-     * and B parameters are different.
-     * \param[in] rbcA Force constants A
-     * \param[in] rbcB Force constants B
-     * \return The structure itself.
-     */
-    iListInput setRbDihedrals(const real rbcA[NR_RBDIHS], const real rbcB[NR_RBDIHS])
-    {
-        ftype = InteractionFunction::RyckaertBellemansDihedrals;
-        fep   = false;
-        for (int i = 0; i < NR_RBDIHS; i++)
-        {
-            iparams.rbdihs.rbcA[i] = rbcA[i];
-            iparams.rbdihs.rbcB[i] = rbcB[i];
-            fep                    = fep || (rbcA[i] != rbcB[i]);
-        }
-        return *this;
-    }
-    /*! \brief Set parameters for Ryckaert-Bellemans dihedrals potential
-     *
-     * \param[in] rbc Force constants
-     * \return The structure itself.
-     */
-    iListInput setRbDihedrals(const real rbc[NR_RBDIHS]) { return setRbDihedrals(rbc, rbc); }
-    /*! \brief Set parameters for Polarization
-     *
-     * \param[in] alpha Polarizability
-     * \return The structure itself.
-     */
-    iListInput setPolarization(real alpha)
-    {
-        ftype                  = InteractionFunction::Polarization;
-        fep                    = false;
-        iparams.polarize.alpha = alpha;
-        return *this;
-    }
-    /*! \brief Set parameters for Anharmonic Polarization
-     *
-     * \param[in] alpha Polarizability (nm^3)
-     * \param[in] drcut The cut-off distance (nm) after which the
-     *                  fourth power kicks in
-     * \param[in] khyp  The force constant for the fourth power
-     * \return The structure itself.
-     */
-    iListInput setAnharmPolarization(real alpha, real drcut, real khyp)
-    {
-        ftype                         = InteractionFunction::AnharmonicPolarization;
-        fep                           = false;
-        iparams.anharm_polarize.alpha = alpha;
-        iparams.anharm_polarize.drcut = drcut;
-        iparams.anharm_polarize.khyp  = khyp;
-        return *this;
-    }
-    /*! \brief Set parameters for Thole Polarization
-     *
-     * \param[in] a      Thole factor
-     * \param[in] alpha1 Polarizability 1 (nm^3)
-     * \param[in] alpha2 Polarizability 2 (nm^3)
-     * \return The structure itself.
-     */
-    iListInput setTholePolarization(real a, real alpha1, real alpha2)
-    {
-        ftype                = InteractionFunction::TholePolarization;
-        fep                  = false;
-        iparams.thole.a      = a;
-        iparams.thole.alpha1 = alpha1;
-        iparams.thole.alpha2 = alpha2;
-        return *this;
-    }
-    /*! \brief Set parameters for Water Polarization
-     *
-     * \param[in] alpha_x Polarizability X (nm^3)
-     * \param[in] alpha_y Polarizability Y (nm^3)
-     * \param[in] alpha_z Polarizability Z (nm^3)
-     * \param[in] rOH     Oxygen-Hydrogen distance
-     * \param[in] rHH     Hydrogen-Hydrogen distance
-     * \param[in] rOD     Oxygen-Dummy distance
-     * \return The structure itself.
-     */
-    iListInput setWaterPolarization(real alpha_x, real alpha_y, real alpha_z, real rOH, real rHH, real rOD)
-    {
-        ftype             = InteractionFunction::WaterPolarization;
-        fep               = false;
-        iparams.wpol.al_x = alpha_x;
-        iparams.wpol.al_y = alpha_y;
-        iparams.wpol.al_z = alpha_z;
-        iparams.wpol.rOH  = rOH;
-        iparams.wpol.rHH  = rHH;
-        iparams.wpol.rOD  = rOD;
-        return *this;
-    }
+    // Safe from global-init ordering problems because c_pbcTypeNames
+    // will be defined before this lambda is called.
+    return std::string(c_pbcTypeNames[pbc]);
 };
 
-//! Prints the interaction and parameters to a stream
-std::ostream& operator<<(std::ostream& out, const iListInput& input)
+//! Formatter for BondedKernelFlavor - creates valid GTest parameter names
+auto formatFlavor = [](BondedKernelFlavor flavor)
 {
-    using std::endl;
-    const InteractionFunction ftype = input.ftype.value();
-    out << "Function type " << static_cast<int>(ftype) << " called " << interaction_function[ftype].name
-        << " ie. labelled '" << interaction_function[ftype].longname << "' in an energy file" << endl;
+    static constexpr gmx::EnumerationArray<BondedKernelFlavor, const char*> flavorNames = {
+        "ForcesSimdWhenAvailable", "ForcesNoSimd", "ForcesAndVirialAndEnergy", "ForcesAndEnergy"
+    };
+    return flavorNames[flavor];
+};
 
-    // Organize to print the legacy C union t_iparams, whose
-    // relevant contents vary with ftype.
-    StringOutputStream stream;
-    {
-        TextWriter writer(&stream);
-        printInteractionParameters(&writer, input.ftype.value(), input.iparams);
-    }
-    out << "Function parameters " << stream.toString();
-    out << "Parameters trigger FEP? " << (input.fep ? "true" : "false") << endl;
-    return out;
-}
+//! Formatter for FEP lambda parameter
+auto formatFepLambda = [](real lambda) { return formatString("Lambda%s", toString(lambda).c_str()); };
 
-/*! \brief Utility to fill iatoms struct
+//! Formatters for parameters in the config info
+static const auto sc_configInfoFormatters =
+        std::make_tuple(formatIListInput, formatCoordinates, formatPbcType, formatFepLambda);
+//! Formatters for parameters in the execution mode
+static const auto sc_executionModeFormatters = std::make_tuple(formatFlavor);
+
+/*! \brief Helper object to name tests using all parameters
  *
- * \param[in]  ftype  Function type
- * \param[out] iatoms Pointer to iatoms struct
+ * Test names include hardware and flavor:
+ *   Bond/ListedForcesTest.Ifunc/BONDS_4atoms_no_Lambda0_ForcesAndVirialAndEnergy_GPU1
  */
-void fillIatoms(std::optional<InteractionFunction> ftype, std::vector<t_iatom>* iatoms)
-{
-    std::unordered_map<int, std::vector<int>> ia   = { { 2, { 0, 0, 1, 0, 1, 2, 0, 2, 3 } },
-                                                       { 3, { 0, 0, 1, 2, 0, 1, 2, 3 } },
-                                                       { 4, { 0, 0, 1, 2, 3 } },
-                                                       { 5, { 0, 0, 1, 2, 3, 0 } } };
-    int                                       nral = interaction_function[ftype.value()].nratoms;
-    for (auto& i : ia[nral])
-    {
-        iatoms->push_back(i);
-    }
-}
+static const NameOfTestFromTuple<ListedForcesTestHelper::DynamicParameters> sc_testNamer =
+        ListedForcesTestHelper::testNamer(sc_configInfoFormatters, sc_executionModeFormatters);
 
-class ListedForcesTest :
-    public ::testing::TestWithParam<std::tuple<iListInput, PaddedVector<RVec>, PbcType>>
+/*! \brief Test fixture for listed forces
+ *
+ * Uses hardware-independent reference-data naming. The fixture automatically
+ * creates the RefDataFilenameMaker from sc_configInfoFormatters, so test code
+ * doesn't need to manually construct it.
+ */
+class ListedForcesTest : public HardwareTestFixture<ListedForcesTestHelper>
 {
 protected:
+    iListInput             input_;
     matrix                 box_;
     t_pbc                  pbc_;
     PaddedVector<RVec>     x_;
     PbcType                pbcType_;
-    iListInput             input_;
-    TestReferenceData      refData_;
-    TestReferenceChecker   checker_;
+    real                   lambda_;
+    BondedKernelFlavor     flavor_;
     FloatingPointTolerance shiftForcesTolerance_ = defaultRealTolerance();
-    ListedForcesTest() : checker_(refData_.rootChecker())
+
+    ListedForcesTest() :
+        HardwareTestFixture(sc_configInfoFormatters),
+        input_(std::get<0>(GetParam())),
+        x_(std::get<1>(GetParam())),
+        pbcType_(std::get<2>(GetParam())),
+        lambda_(std::get<3>(GetParam())),
+        flavor_(std::get<4>(GetParam()))
     {
-        input_   = std::get<0>(GetParam());
-        x_       = std::get<1>(GetParam());
-        pbcType_ = std::get<2>(GetParam());
         clear_mat(box_);
         box_[0][0] = box_[1][1] = box_[2][2] = 1.5;
         set_pbc(&pbc_, pbcType_, box_);
-        // We need quite specific tolerances here since angle functions
-        // etc. are not very precise and reproducible.
-        test::FloatingPointTolerance tolerance(test::FloatingPointTolerance(
-                input_.ftoler, input_.dtoler, 1.0e-6, 1.0e-12, 10000, 100, false));
-        checker_.setDefaultTolerance(tolerance);
         // The SIMD acos() is only accurate to 2-3 ULP, so the angles
         // computed by it and the non-SIMD code paths (that use
         // std::acos) differ by enough to require quite large
@@ -585,86 +380,115 @@ protected:
                                                        std::numeric_limits<uint64_t>::max(),
                                                        false);
     }
-    void testOneIfunc(TestReferenceChecker* checker, const std::vector<t_iatom>& iatoms, const real lambda)
+
+    void testOneIfunc(TestReferenceChecker* checker, const std::vector<t_iatom>& iatoms)
     {
-        SCOPED_TRACE(std::string("Testing PBC type: ") + c_pbcTypeNames[pbcType_]);
-        std::vector<int>  ddgatindex = { 0, 1, 2, 3 };
-        std::vector<real> charge     = { 1.5, -2.0, 1.5, -1.0 };
-        /* Here we run both the standard, plain-C force+shift-forces+energy+free-energy
-         * kernel flavor and the potentially optimized, with SIMD and less output,
-         * force only kernels. Note that we also run the optimized kernel for free-energy
-         * input when lambda=0, as the force output should match the non free-energy case.
-         */
-        std::vector<BondedKernelFlavor> flavors = { BondedKernelFlavor::ForcesAndVirialAndEnergy };
-        if (!input_.fep || lambda == 0)
+        SCOPED_TRACE(std::string("Testing PBC type: ") + c_pbcTypeNames[pbcType_] + ", on "
+                     + hardwareContext()->description() + " with bonded kernel flavor: "
+                     + c_bondedKernelFlavorStrings[flavor_] + ", lambda: " + toString(lambda_));
+
+        OutputQuantities output;
+
+        if (isGpuTest())
         {
-            flavors.push_back(BondedKernelFlavor::ForcesSimdWhenAvailable);
+#if GMX_GPU && !GMX_GPU_OPENCL
+            activateHardware();
+            runBondedGpu(*deviceContext(), *deviceStream(), input_, iatoms, x_, pbc_, flavor_, &output);
+#else
+            GMX_THROW(gmx::InternalError("GPU hardware context with no test code"));
+#endif
         }
-        for (const auto flavor : flavors)
+        else
         {
-            SCOPED_TRACE("Testing bonded kernel flavor: " + c_bondedKernelFlavorStrings[flavor]);
-            OutputQuantities output;
-            output.energy = calculateSimpleBond(input_.ftype.value(),
-                                                iatoms.size(),
-                                                iatoms.data(),
-                                                &input_.iparams,
-                                                as_rvec_array(x_.data()),
-                                                output.f,
-                                                output.fshift,
-                                                &pbc_,
-                                                lambda,
-                                                &output.dvdlambda,
-                                                charge,
-                                                /* struct t_fcdata * */ nullptr,
-                                                nullptr,
-                                                nullptr,
-                                                ddgatindex.data(),
-                                                flavor);
-            // Internal consistency test of both test input
-            // and bonded functions.
-            EXPECT_TRUE((input_.fep || (output.dvdlambda == 0.0))) << "dvdlambda was " << output.dvdlambda;
-            checkOutput(checker, output, flavor);
-            auto shiftForcesChecker = checker->checkCompound("Shift-Forces", "Shift-forces");
-            if (computeVirial(flavor))
-            {
-                shiftForcesChecker.setDefaultTolerance(shiftForcesTolerance_);
-                shiftForcesChecker.checkVector(output.fshift[c_centralShiftIndex], "Central");
-            }
-            else
-            {
-                // Permit omitting to compare shift forces with
-                // reference data when that is useless.
-                shiftForcesChecker.disableUnusedEntriesCheck();
-            }
+            runBondedCpu(input_, iatoms, x_, &pbc_, lambda_, flavor_, &output);
+        }
+
+        // Now check the output
+        EXPECT_TRUE((input_.hasFepParameters() || (output.dvdlambda == 0.0)))
+                << "dvdlambda was " << output.dvdlambda;
+        checkOutput(checker, output, flavor_);
+        auto shiftForcesChecker = checker->checkCompound("Shift-Forces", "Shift-forces");
+        if (computeVirial(flavor_))
+        {
+            shiftForcesChecker.setDefaultTolerance(shiftForcesTolerance_);
+            shiftForcesChecker.checkVector(output.fshift[c_centralShiftIndex], "Central");
+        }
+        else
+        {
+            shiftForcesChecker.disableUnusedEntriesCheck();
         }
     }
     void testIfunc()
     {
         EXPECT_TRUE(input_.ftype.has_value() && input_.ftype < InteractionFunction::Count);
-        TestReferenceChecker thisChecker =
-                checker_.checkCompound("FunctionType", interaction_function[input_.ftype.value()].name)
-                        .checkCompound("FEP", (input_.fep ? "Yes" : "No"));
+
+        // Activate device if GPU
+        activateHardware();
+
+        // We need quite specific tolerances here since angle functions
+        // etc. are not very precise and reproducible.
+        test::FloatingPointTolerance tolerance(test::FloatingPointTolerance(
+                input_.ftoler, input_.dtoler, 1.0e-6, 1.0e-12, 10000, 100, false));
+        checker().setDefaultTolerance(tolerance);
+
+        TestReferenceChecker thisChecker = checker().checkCompound(
+                "FunctionType", interaction_function[input_.ftype.value()].name);
+
         std::vector<t_iatom> iatoms;
         fillIatoms(input_.ftype, &iatoms);
-        if (input_.fep)
+
+        testOneIfunc(&thisChecker, iatoms);
+    }
+
+    //! Override to add parameter-dependent skip logic
+    void addCustomSkipReasons(MessageStringCollector& skipReasons) override
+    {
+        const bool isFep = input_.hasFepParameters();
+        const bool isGpu = isGpuTest();
+
+        // CPU + GPU shared skip conditions
+        skipReasons.appendIf(!isFep && lambda_ != 0.0, "Non-FEP inputs only support lambda=0.0");
+        skipReasons.appendIf(isFep && flavor_ == BondedKernelFlavor::ForcesSimdWhenAvailable,
+                             "FEP does not support ForcesSimdWhenAvailable flavor");
+
+        // GPU-specific skip conditions
+        if (isGpu)
         {
-            const int numLambdas = 3;
-            for (int i = 0; i < numLambdas; ++i)
-            {
-                const real lambda       = i / (numLambdas - 1.0);
-                auto       valueChecker = thisChecker.checkCompound("Lambda", toString(lambda));
-                testOneIfunc(&valueChecker, iatoms, lambda);
-            }
+            // TODO forces-only should also be tested on GPUs
+            skipReasons.appendIf(flavor_ != BondedKernelFlavor::ForcesAndVirialAndEnergy,
+                                 "GPU bonded only supports ForcesAndVirialAndEnergy flavor");
+            skipReasons.appendIf(isFep,
+                                 "GPU bonded does not support free-energy perturbation (FEP)");
+            skipReasons.appendIf(lambda_ != 0.0, "GPU does not support lambda != 0.0");
+            skipReasons.appendIf(!input_.ftype.has_value(), "Interaction type not specified");
+            skipReasons.appendIf(input_.ftype.has_value()
+                                         && std::find(sc_functionTypesOnGpu.begin(),
+                                                      sc_functionTypesOnGpu.end(),
+                                                      input_.ftype.value())
+                                                    == sc_functionTypesOnGpu.end(),
+                                 formatString("Interaction type '%s' not implemented on GPU",
+                                              interaction_function[input_.ftype.value()].name));
         }
+        // CPU-specific skip conditions
         else
         {
-            testOneIfunc(&thisChecker, iatoms, 0.0);
+            skipReasons.appendIf(flavor_ == BondedKernelFlavor::ForcesSimdWhenAvailable && lambda_ != 0.0,
+                                 formatString("CPU does not support %s with lambda=%.1f",
+                                              c_bondedKernelFlavorStrings[flavor_].c_str(),
+                                              lambda_));
         }
     }
 };
 
 TEST_P(ListedForcesTest, Ifunc)
 {
+    // When updating reference data, skip forces-only flavor tests since they don't compute
+    // energy fields. Reference data should be generated by ForcesAndVirialAndEnergy flavor.
+    if (!computeEnergy(flavor_) && referenceDataMode() != ReferenceDataMode::Compare)
+    {
+        GTEST_SKIP() << "Skipping forces-only flavor when updating reference data (use "
+                        "ForcesAndVirialAndEnergy for canonical data)";
+    }
     testIfunc();
 }
 
@@ -743,6 +567,7 @@ std::vector<iListInput> c_InputBondsZeroLength = {
 //! Function types for testing angles with zero angle, has zero reference angle to make physical sense.
 std::vector<iListInput> c_InputAnglesZeroAngle = {
     { iListInput(2e-3, 1e-8).setHarmonic(InteractionFunction::Angles, 0.0, 50.0) },
+    { iListInput(8e-3, 1e-8).setHarmonic(InteractionFunction::GROMOS96Angles, 0.0, 50.0) },
 };
 
 } // namespace
@@ -796,47 +621,89 @@ std::vector<PaddedVector<RVec>> c_coordinatesForTestsZeroAngle = {
 //! PBC values for testing
 std::vector<PbcType> c_pbcForTests = { PbcType::No, PbcType::XY, PbcType::Xyz };
 
+//! Bonded kernel flavors for testing
+std::vector<BondedKernelFlavor> c_flavorsForTests = { BondedKernelFlavor::ForcesAndVirialAndEnergy,
+                                                      BondedKernelFlavor::ForcesSimdWhenAvailable };
+
+//! Lambda values for testing
+std::vector<real> c_lambdaValuesForTests = { 0.0, 0.5, 1.0 };
+
 INSTANTIATE_TEST_SUITE_P(Bond,
                          ListedForcesTest,
                          ::testing::Combine(::testing::ValuesIn(c_InputBonds),
                                             ::testing::ValuesIn(c_coordinatesForTests),
-                                            ::testing::ValuesIn(c_pbcForTests)));
+                                            ::testing::ValuesIn(c_pbcForTests),
+                                            ::testing::ValuesIn(c_lambdaValuesForTests),
+                                            ::testing::ValuesIn(c_flavorsForTests),
+                                            ::testing::ValuesIn(getHardwareContextsWithCapability(
+                                                    GpuConfigurationCapabilities::Bonded))),
+                         sc_testNamer);
 
 INSTANTIATE_TEST_SUITE_P(Angle,
                          ListedForcesTest,
                          ::testing::Combine(::testing::ValuesIn(c_InputAngles),
                                             ::testing::ValuesIn(c_coordinatesForTests),
-                                            ::testing::ValuesIn(c_pbcForTests)));
+                                            ::testing::ValuesIn(c_pbcForTests),
+                                            ::testing::ValuesIn(c_lambdaValuesForTests),
+                                            ::testing::ValuesIn(c_flavorsForTests),
+                                            ::testing::ValuesIn(getHardwareContextsWithCapability(
+                                                    GpuConfigurationCapabilities::Bonded))),
+                         sc_testNamer);
 
 INSTANTIATE_TEST_SUITE_P(Dihedral,
                          ListedForcesTest,
                          ::testing::Combine(::testing::ValuesIn(c_InputDihs),
                                             ::testing::ValuesIn(c_coordinatesForTests),
-                                            ::testing::ValuesIn(c_pbcForTests)));
+                                            ::testing::ValuesIn(c_pbcForTests),
+                                            ::testing::ValuesIn(c_lambdaValuesForTests),
+                                            ::testing::ValuesIn(c_flavorsForTests),
+                                            ::testing::ValuesIn(getHardwareContextsWithCapability(
+                                                    GpuConfigurationCapabilities::Bonded))),
+                         sc_testNamer);
 
 INSTANTIATE_TEST_SUITE_P(Polarize,
                          ListedForcesTest,
                          ::testing::Combine(::testing::ValuesIn(c_InputPols),
                                             ::testing::ValuesIn(c_coordinatesForTests),
-                                            ::testing::ValuesIn(c_pbcForTests)));
+                                            ::testing::ValuesIn(c_pbcForTests),
+                                            ::testing::ValuesIn(c_lambdaValuesForTests),
+                                            ::testing::ValuesIn(c_flavorsForTests),
+                                            ::testing::ValuesIn(getHardwareContextsWithCapability(
+                                                    GpuConfigurationCapabilities::Bonded))),
+                         sc_testNamer);
 
 INSTANTIATE_TEST_SUITE_P(Restraints,
                          ListedForcesTest,
                          ::testing::Combine(::testing::ValuesIn(c_InputRestraints),
                                             ::testing::ValuesIn(c_coordinatesForTests),
-                                            ::testing::ValuesIn(c_pbcForTests)));
+                                            ::testing::ValuesIn(c_pbcForTests),
+                                            ::testing::ValuesIn(c_lambdaValuesForTests),
+                                            ::testing::ValuesIn(c_flavorsForTests),
+                                            ::testing::ValuesIn(getHardwareContextsWithCapability(
+                                                    GpuConfigurationCapabilities::Bonded))),
+                         sc_testNamer);
 
 INSTANTIATE_TEST_SUITE_P(BondZeroLength,
                          ListedForcesTest,
                          ::testing::Combine(::testing::ValuesIn(c_InputBondsZeroLength),
                                             ::testing::ValuesIn(c_coordinatesForTestsZeroBondLength),
-                                            ::testing::ValuesIn(c_pbcForTests)));
+                                            ::testing::ValuesIn(c_pbcForTests),
+                                            ::testing::ValuesIn(c_lambdaValuesForTests),
+                                            ::testing::ValuesIn(c_flavorsForTests),
+                                            ::testing::ValuesIn(getHardwareContextsWithCapability(
+                                                    GpuConfigurationCapabilities::Bonded))),
+                         sc_testNamer);
 
 INSTANTIATE_TEST_SUITE_P(AngleZero,
                          ListedForcesTest,
                          ::testing::Combine(::testing::ValuesIn(c_InputAnglesZeroAngle),
                                             ::testing::ValuesIn(c_coordinatesForTestsZeroAngle),
-                                            ::testing::ValuesIn(c_pbcForTests)));
+                                            ::testing::ValuesIn(c_pbcForTests),
+                                            ::testing::ValuesIn(c_lambdaValuesForTests),
+                                            ::testing::ValuesIn(c_flavorsForTests),
+                                            ::testing::ValuesIn(getHardwareContextsWithCapability(
+                                                    GpuConfigurationCapabilities::Bonded))),
+                         sc_testNamer);
 
 } // namespace
 

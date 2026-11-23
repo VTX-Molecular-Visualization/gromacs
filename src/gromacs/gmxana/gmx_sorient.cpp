@@ -46,11 +46,11 @@
 #include "gromacs/commandline/viewit.h"
 #include "gromacs/fileio/confio.h"
 #include "gromacs/fileio/filetypes.h"
+#include "gromacs/fileio/timecontrol.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/fileio/xvgr.h"
 #include "gromacs/gmxana/gmx_ana.h"
 #include "gromacs/gmxana/gstat.h"
-#include "gromacs/math/functions.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/pbcutil/rmpbc.h"
@@ -61,6 +61,7 @@
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/vec.h"
@@ -129,7 +130,7 @@ int gmx_sorient(int argc, char* argv[])
     PbcType      pbcType = PbcType::Unset;
     t_trxstatus* status;
     int          natoms;
-    real         t;
+    double       t;
     rvec *       xtop, *x;
     matrix       box;
 
@@ -183,8 +184,9 @@ int gmx_sorient(int argc, char* argv[])
     };
 
     gmx_output_env_t* oenv;
-    static gmx_bool   bCom = FALSE, bVec23 = FALSE, bPBC = FALSE;
-    static real       rmin = 0.0, rmax = 0.5, binwidth = 0.02, rbinw = 0.02;
+    gmx::TimeControl  timeControl;
+    gmx_bool          bCom = FALSE, bVec23 = FALSE, bPBC = FALSE;
+    real              rmin = 0.0, rmax = 0.5, binwidth = 0.02, rbinw = 0.02;
     t_pargs           pa[] = {
         { "-com", FALSE, etBOOL, { &bCom }, "Use the center of mass as the reference position" },
         { "-v23", FALSE, etBOOL, { &bVec23 }, "Use the vector between atoms 2 and 3" },
@@ -207,7 +209,7 @@ int gmx_sorient(int argc, char* argv[])
 #define NFILE asize(fnm)
 
     if (!parse_common_args(
-                &argc, argv, PCA_CAN_TIME | PCA_CAN_VIEW, NFILE, fnm, asize(pa), pa, asize(desc), desc, 0, nullptr, &oenv))
+                &argc, argv, PCA_CAN_TIME | PCA_CAN_VIEW, NFILE, fnm, asize(pa), pa, asize(desc), desc, 0, nullptr, &oenv, &timeControl))
     {
         return 0;
     }
@@ -249,7 +251,7 @@ int gmx_sorient(int argc, char* argv[])
     }
 
     /* initialize reading trajectory:                         */
-    natoms = read_first_x(oenv, &status, ftp2fn(efTRX, NFILE, fnm), &t, &x, box);
+    natoms = read_first_x(oenv, &status, ftp2fn(efTRX, NFILE, fnm), &t, &x, box, &timeControl);
 
     rmin2 = gmx::square(rmin);
     rmax2 = gmx::square(rmax);

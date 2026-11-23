@@ -57,7 +57,6 @@
 #include "gromacs/mdtypes/imdmodule.h"
 #include "gromacs/mdtypes/imdpoptionprovider.h"
 #include "gromacs/mdtypes/imdpoptionprovider_test_helper.h"
-#include "gromacs/mdtypes/mdatom.h"
 #include "gromacs/options/options.h"
 #include "gromacs/options/treesupport.h"
 #include "gromacs/utility/keyvaluetree.h"
@@ -74,7 +73,8 @@
 
 namespace gmx
 {
-
+namespace test
+{
 namespace
 {
 
@@ -149,5 +149,5 @@ TEST_F(ColvarsTest, PreProcessingWithoutColvars)
 #endif // GMX_HAVE_COLVARS
 
 } // namespace
-
+} // namespace test
 } // namespace gmx

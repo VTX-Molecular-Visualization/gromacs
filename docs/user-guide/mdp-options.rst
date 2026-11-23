@@ -3288,7 +3288,9 @@ Non-equilibrium MD
       When the :mdp:`deform` option is active, add a velocity profile
       corresponding to the box deformation to the initial velocities.
       This is done after computing observables from the initial state
-      such as the initial temperature.
+      such as the initial temperature. Ignored with integrators without
+      velocities, i.e. energy minimization, normal-mode analysis and
+      test-particle insertion.
 
 Electric fields
 ^^^^^^^^^^^^^^^
@@ -3602,14 +3604,80 @@ For further details about QM/MM interface implementation follow :ref:`qmmm`.
 
       DFT using PBE functional and DZVP-MOLOPT basis set.
 
+   .. mdp-value:: PBE-D3
+
+      DFT using PBE functional, DZVP-MOLOPT basis set and D3 dispersion correction.   
+
    .. mdp-value:: BLYP
 
       DFT using BLYP functional and DZVP-MOLOPT basis set.
+
+   .. mdp-value:: BLYP-D3
+
+      DFT using BLYP functional, DZVP-MOLOPT basis set and D3 dispersion correction.
+
+   .. mdp-value:: B3LYP
+
+      DFT using B3LYP hybrid functional and 6-31G* basis set.
+
+   .. mdp-value:: B3LYP-D3
+
+      DFT using B3LYP hybrid functional, 6-31G* basis set and D3 dispersion correction.
+   .. mdp-value:: PBE0
+
+      DFT using PBE0 hybrid functional and 6-31G* basis set.
+
+   .. mdp-value:: PBE0-D3
+
+      DFT using PBE0 hybrid functional, 6-31G* basis set and D3 dispersion correction.
+
+   .. mdp-value:: CAM-B3LYP
+
+      DFT using CAM-B3LYP range-separated functional and 6-31G* basis set.
+
+   .. mdp-value:: CAM-B3LYP-D3
+      
+      DFT using CAM-B3LYP range-separated functional, 6-31G* basis set and D3 dispersion correction.
+
+   .. mdp-value:: WB97X
+
+      DFT using wB97X range-separated functional and 6-31G* basis set.
+
+   .. mdp-value:: WB97X-D3
+
+      DFT using wB97X-D3 range-separated functional with built-in D3 dispersion correction and 6-31G* basis set.
+
+   .. mdp-value:: SCC-DFTB
+
+      Self-consistent-charge DFTB using CP2K's bundled ``DFTB/scc`` parameters.
+      The bundled parameters support C, H, N, O, P, S, and Zn, except for the P--Zn pair.
+
+   .. mdp-value:: GFN1-xTB
+
+      GFN1-xTB through CP2K's tblite interface.
+
+   .. mdp-value:: GFN2-xTB
+
+      GFN2-xTB through CP2K's tblite interface.
 
    .. mdp-value:: INPUT
 
       Provide an external input file for CP2K when running :ref:`gmx grompp` with the ``-qmi`` command-line option.
       External input files are subject to the limitations that are described in :ref:`qmmm`.
+
+.. mdp:: qmmm-cp2k-dftb-electrostatic-coupling
+
+   (point-charge) Electrostatic QM/MM coupling scheme for tight-binding methods in CP2K.
+
+   .. mdp-value:: point-charge
+
+      Periodic QM/MM electrostatics through short-range regularized point charges
+      with smooth particle mesh Ewald (SPME). 
+
+   .. mdp-value:: gauss
+
+      Periodic QM/MM electrostatics through GEEP (Gauss) MM charges 
+      with smooth particle mesh Ewald (SPME). This requires a CP2K 2027.1 or higher.
 
 .. mdp:: qmmm-cp2k-qmcharge
 
@@ -3702,52 +3770,13 @@ interface implementation follow :ref:`nnpot`.
       In this case, the NNP model is expected to return the total energy, as well as forces on
       NNP and MM atoms.
 
-.. mdp:: nnpot-model-input[1-9]
-
-   Names of input fields to be filled in by |Gromacs| at each step and passed to the NNP model.
-   Up to 9 inputs can be specified:
-
-   .. mdp-value:: atom-positions
-
-      Positions of the NNP atoms specified by :mdp:`nnpot-input-group`.
-
-   .. mdp-value:: atom-numbers
-
-      Atomic numbers of the NNP atoms specified by :mdp:`nnpot-input-group`.
-
-   .. mdp-value:: atom-pairs
-
-      Pairs of NNP atoms specified by :mdp:`nnpot-input-group`, filter by the :mdp:`pair-cutoff`,
-      as a vector of shape (N_pairs, 2).
-
-   .. mdp-value:: pair-shifts
-
-      Periodic box shift vectors for the NNP atom pairs, as a vector of shape (N_pairs, 3).
-
-   .. mdp-value:: atom-positions-mm
-
-      Positions of the MM atoms surrounding the NNP region, needed for :mdp-value:`electrostatic-model` embedding.
-
-   .. mdp-value:: atom-charges-mm
-
-      Charges of the MM atoms surrounding the NNP region, needed for :mdp-value:`electrostatic-model` embedding.
-
-   .. mdp-value:: nnp-charge
-
-      Total charge of the NNP atoms.
-
-   .. mdp-value:: box
-
-      Simulation box vectors.
-
-   .. mdp-value:: pbc
-
-      Periodic boundary conditions.
-
 .. mdp:: pair-cutoff
 
    (0.0) [nm] Cutoff distance for pairs of NNP atoms. Positive cutoff value must be specified
-   when requesting ``atom-pairs`` input.
+   when requesting ``atom-pairs`` input. To this value, the interface automatically adds
+   a buffer computed from twice the RMSD atomic displacements over the pairlist lifetime.
+   The pairlist passed to the model is pruned at each step to include only pairs of NNP atoms
+   within the specified cutoff distance.
 
 .. mdp:: nnpot-link-type
 

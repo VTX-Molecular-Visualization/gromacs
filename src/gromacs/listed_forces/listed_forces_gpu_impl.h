@@ -76,7 +76,7 @@ struct HostInteractionList
     int size() const { return iatoms.size(); }
 
     //! List of interactions, see \c HostInteractionLists
-    HostVector<int> iatoms = { {}, gmx::HostAllocationPolicy(gmx::PinningPolicy::PinnedIfSupported) };
+    HostVector<int> iatoms;
 };
 
 /* \brief Bonded parameters and GPU pointers
@@ -92,13 +92,13 @@ struct BondedGpuKernelParameters
     //! Scale factor
     float electrostaticsScaleFactor;
     //! The bonded types on GPU
-    InteractionFunction fTypesOnGpu[numFTypesOnGpu];
+    InteractionFunction functionTypesOnGpu[sc_numFunctionTypesOnGpu];
     //! The number of bonds for every function type
-    int numFTypeBonds[numFTypesOnGpu];
+    int numFTypeBonds[sc_numFunctionTypesOnGpu];
     //! The start index in the range of each interaction type
-    int fTypeRangeStart[numFTypesOnGpu];
+    int functionTypeRangeStart[sc_numFunctionTypesOnGpu];
     //! The end index in the range of each interaction type
-    int fTypeRangeEnd[numFTypesOnGpu];
+    int functionTypeRangeEnd[sc_numFunctionTypesOnGpu];
     BondedGpuKernelParameters()
     {
         matrix boxDummy = { { 0, 0, 0 }, { 0, 0, 0 }, { 0, 0, 0 } };
@@ -113,7 +113,7 @@ struct BondedGpuKernelBuffers
     //! Total Energy (on GPU)
     DeviceBuffer<float> d_vTot = nullptr;
     //! Interaction list atoms (on GPU)
-    DeviceBuffer<t_iatom> d_iatoms[numFTypesOnGpu];
+    DeviceBuffer<t_iatom> d_iatoms[sc_numFunctionTypesOnGpu];
 };
 
 /*! \internal \brief Implements GPU bondeds */
@@ -143,7 +143,7 @@ public:
      * stage. Copies the bonded interactions assigned to the GPU
      * to device data structures, and updates device buffers that
      * may have been updated after search. */
-    void updateInteractionListsAndDeviceBuffers(ArrayRef<const int>           nbnxnAtomOrder,
+    void updateInteractionListsAndDeviceBuffers(ArrayRef<const int>           nbnxmAtomOrder,
                                                 const InteractionDefinitions& idef,
                                                 DeviceBuffer<Float4>          d_xqPtr,
                                                 DeviceBuffer<RVec>            d_fPtr,
@@ -173,6 +173,11 @@ public:
     void clearEnergies();
 
 private:
+    //! GPU context object
+    const DeviceContext& deviceContext_;
+    //! \brief Bonded GPU stream, not owned by this module
+    const DeviceStream& deviceStream_;
+
     /*! \brief The interaction lists
      *
      * \todo This is potentially several pinned allocations, which
@@ -193,14 +198,9 @@ private:
     //! Shift force vector on the device.
     DeviceBuffer<Float3> d_fShift_ = nullptr;
     //! \brief Host-side virial buffer
-    HostVector<float> vTot_ = { {}, gmx::HostAllocationPolicy(gmx::PinningPolicy::PinnedIfSupported) };
+    HostVector<float> vTot_;
     //! \brief Device-side total virial
     DeviceBuffer<float> d_vTot_ = nullptr;
-
-    //! GPU context object
-    const DeviceContext& deviceContext_;
-    //! \brief Bonded GPU stream, not owned by this module
-    const DeviceStream& deviceStream_;
 
     //! Parameters, passed to the GPU kernel
     BondedGpuKernelParameters kernelParams_;

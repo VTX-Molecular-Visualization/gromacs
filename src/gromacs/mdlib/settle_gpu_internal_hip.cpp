@@ -53,9 +53,9 @@
 #include "gromacs/gpu_utils/hiputils.h"
 #include "gromacs/gpu_utils/typecasts_cuda_hip.h"
 #include "gromacs/gpu_utils/vectype_ops_hip.h"
-#include "gromacs/math/functions.h"
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/pbcutil/pbc_aiuc_hip.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/template_mp.h"
 #include "gromacs/utility/vec.h"
 
@@ -203,7 +203,7 @@ __launch_bounds__(sc_threadsPerBlock) __global__
 
 
         float sinphi = a1d_z * __frsqrt_rn(pars.ra * pars.ra);
-        float tmp2   = 1.0F - sinphi * sinphi;
+        float tmp2   = 1.0f - sinphi * sinphi;
 
         if (almost_zero > tmp2)
         {
@@ -213,7 +213,7 @@ __launch_bounds__(sc_threadsPerBlock) __global__
         float tmp    = __frsqrt_rn(tmp2);
         float cosphi = tmp2 * tmp;
         float sinpsi = (b1d.z - c1d.z) * pars.irc2 * tmp;
-        tmp2         = 1.0F - sinpsi * sinpsi;
+        tmp2         = 1.0f - sinpsi * sinpsi;
 
         float cospsi = tmp2 * __frsqrt_rn(tmp2);
 
@@ -233,7 +233,7 @@ __launch_bounds__(sc_threadsPerBlock) __global__
         float sinthe = (alpha * gamma - beta * tmp2 * __frsqrt_rn(tmp2)) * __frsqrt_rn(al2be2 * al2be2);
 
         /*  --- Step4  A3' --- */
-        tmp2         = 1.0F - sinthe * sinthe;
+        tmp2         = 1.0f - sinthe * sinthe;
         float costhe = tmp2 * __frsqrt_rn(tmp2);
 
         float3 a3d, b3d, c3d;
@@ -316,7 +316,7 @@ __launch_bounds__(sc_threadsPerBlock) __global__
         {
             for (int d = 0; d < 6; d++)
             {
-                sm_threadVirial[d * sc_threadsPerBlock + threadIdx.x] = 0.0F;
+                sm_threadVirial[d * sc_threadsPerBlock + threadIdx.x] = 0.0f;
             }
         }
     }

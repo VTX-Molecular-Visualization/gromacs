@@ -52,8 +52,8 @@
 #include "gromacs/fft/parallel_3dfft.h"
 #include "gromacs/gpu_utils/cudautils.cuh"
 #include "gromacs/gpu_utils/devicebuffer.cuh"
-#include "gromacs/math/functions.h"
 #include "gromacs/timing/wallcycle.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/vec.h"
 
 #include "pme_gpu_internal.h"
@@ -1471,8 +1471,9 @@ void convertPmeGridToFftGrid(const PmeGpu* pmeGpu, DeviceBuffer<float>* d_fftRea
         int fftSize = localFftSize[ZZ] * localFftSize[YY] * localFftNData[XX];
         if (pmeToFft)
         {
-            copyBetweenDeviceBuffers(d_fftRealGrid,
-                                     &pmeGpu->kernelParams->grid.d_realGrid[gridIndex],
+            copyBetweenDeviceBuffers(asRawDevicePointer(*d_fftRealGrid),
+                                     asRawDevicePointer(pmeGpu->kernelParams->grid.d_realGrid[gridIndex]),
+                                     0,
                                      fftSize,
                                      pmeGpu->archSpecific->pmeStream_,
                                      pmeGpu->settings.transferKind,
@@ -1480,8 +1481,9 @@ void convertPmeGridToFftGrid(const PmeGpu* pmeGpu, DeviceBuffer<float>* d_fftRea
         }
         else
         {
-            copyBetweenDeviceBuffers(&pmeGpu->kernelParams->grid.d_realGrid[gridIndex],
-                                     d_fftRealGrid,
+            copyBetweenDeviceBuffers(asRawDevicePointer(pmeGpu->kernelParams->grid.d_realGrid[gridIndex]),
+                                     asRawDevicePointer(*d_fftRealGrid),
+                                     0,
                                      fftSize,
                                      pmeGpu->archSpecific->pmeStream_,
                                      pmeGpu->settings.transferKind,

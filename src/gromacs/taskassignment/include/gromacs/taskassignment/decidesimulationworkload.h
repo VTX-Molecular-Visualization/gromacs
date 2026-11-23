@@ -41,6 +41,7 @@
 #ifndef GMX_TASKASSIGNMENT_DECIDESIMULATIONWORKLOAD_H
 #define GMX_TASKASSIGNMENT_DECIDESIMULATIONWORKLOAD_H
 
+#include <optional>
 #include <vector>
 
 #include "gromacs/mdtypes/inputrec.h"
@@ -50,8 +51,10 @@ enum class PmeRunMode;
 
 struct t_forcerec;
 struct pull_t;
-struct gmx_edsam;
-struct t_mdatoms;
+namespace gmx
+{
+struct edsam;
+}
 
 namespace gmx
 {
@@ -76,6 +79,7 @@ class MDLogger;
  * \param[in] haveFillerParticlesInLocalState  Whether filler particles are part of the local state.
  * \param[in] havePpDomainDecomposition        Whether PP domain decomposition is used in this run.
  * \param[in] haveSeparatePmeRank              Whether separate PME rank(s) are used in this run.
+ * \param[in] haveVirtualSites                 Whether the system has virtual sites.
  * \param[in] useGpuForNonbonded               Whether we have short-range nonbonded interaction
  *                                             calculations on GPU(s).
  * \param[in] useGpuForNonbondedFE             Whether we have nonbonded free-energy interaction
@@ -101,6 +105,7 @@ SimulationWorkload createSimulationWorkload(const gmx::MDLogger& mdlog,
                                             bool       haveFillerParticlesInLocalState,
                                             bool       havePpDomainDecomposition,
                                             bool       haveSeparatePmeRank,
+                                            bool       haveVirtualSites,
                                             bool       useGpuForNonbonded,
                                             bool       useGpuForNonbondedFE,
                                             PmeRunMode pmeRunMode,
@@ -117,19 +122,19 @@ SimulationWorkload createSimulationWorkload(const gmx::MDLogger& mdlog,
  * this function anytime a change in listed forces assignment after repartitioning
  * can be expected.
  *
- * \param[in] inputrec           The input record
- * \param[in] fr                 The force record
- * \param[in] pull_work          Pull data
- * \param[in] ed                 Essential dynamics data
- * \param[in] mdatoms            Atom parameter data
- * \param[in] simulationWork     Simulation workload flags
+ * \param[in] inputrec               The input record
+ * \param[in] fr                     The force record
+ * \param[in] pull_work              Pull data
+ * \param[in] ed                     Essential dynamics data
+ * \param[in] hasPerturbedParticles  Whether any particles undergo free-energy perturbation
+ * \param[in] simulationWork         Simulation workload flags
  *
  */
 DomainLifetimeWorkload setupDomainLifetimeWorkload(const t_inputrec&         inputrec,
                                                    const t_forcerec&         fr,
                                                    const pull_t*             pull_work,
-                                                   const gmx_edsam*          ed,
-                                                   const t_mdatoms&          mdatoms,
+                                                   const edsam*              ed,
+                                                   bool                      hasPerturbedParticles,
                                                    const SimulationWorkload& simulationWork);
 
 /*! \brief Set up force flag struct from the force bitmask.
@@ -137,16 +142,21 @@ DomainLifetimeWorkload setupDomainLifetimeWorkload(const t_inputrec&         inp
  * \param[in]      legacyFlags          Force bitmask flags used to construct the new flags
  * \param[in]      mtsLevels            The multiple time-stepping levels, either empty or 2 levels
  * \param[in]      step                 The current MD step
+ * \param[in]      writeCheckpoint      Whether we will write a checkpoint file at the current step,
+ *                                      a value is required when update is on GPU
  * \param[in]      domainWork           Domain lifetime workload description.
  * \param[in]      simulationWork       Simulation workload description.
+ * \param[in]      inputrec             Input record, needed for access to output intervals.
  *
  * \returns New Stepworkload description.
  */
 StepWorkload setupStepWorkload(int                           legacyFlags,
                                ArrayRef<const gmx::MtsLevel> mtsLevels,
                                int64_t                       step,
+                               std::optional<bool>           writeCheckpoint,
                                const DomainLifetimeWorkload& domainWork,
-                               const SimulationWorkload&     simulationWork);
+                               const SimulationWorkload&     simulationWork,
+                               const t_inputrec&             inputrec);
 
 } // namespace gmx
 

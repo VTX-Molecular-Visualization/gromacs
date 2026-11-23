@@ -33,7 +33,39 @@
 
 # Set up the module library
 add_library(fileio INTERFACE)
-file(GLOB FILEIO_SOURCES *.cpp)
+set(FILEIO_SOURCES
+    checkpoint.cpp
+    cifio.cpp
+    confio.cpp
+    enxio.cpp
+    espio.cpp
+    filetypes.cpp
+    g96io.cpp
+    gmxfio.cpp
+    gmxfio_xdr.cpp
+    groio.cpp
+    libxdrf.cpp
+    matio.cpp
+    md5.cpp
+    mrcdensitymap.cpp
+    mrcdensitymapheader.cpp
+    mrcserializer.cpp
+    mtxio.cpp
+    oenv.cpp
+    pdbio.cpp
+    readinp.cpp
+    tngio.cpp
+    tpxio.cpp
+    trrio.cpp
+    trxio.cpp
+    vmdio.cpp
+    warninp.cpp
+    writeps.cpp
+    xdr_serializer.cpp
+    xdrd.cpp
+    xtcio.cpp
+    xvgr.cpp
+    )
 
 add_subdirectory(h5md)
 
@@ -47,7 +79,7 @@ if(GMX_USE_PLUGINS)
     set(libgromacs_object_library_dependencies ${libgromacs_object_library_dependencies} PARENT_SCOPE)
 else()
     # Remove vmdio.cpp from sources since we do not have plugin support
-    list(FILTER FILEIO_SOURCES EXCLUDE REGEX ".*vmdio.cpp$")
+    list(REMOVE_ITEM FILEIO_SOURCES vmdio.cpp)
 endif()
 
 # Source files have the following private module dependencies.
@@ -70,6 +102,8 @@ target_link_libraries(fileio INTERFACE
                       h5md
                       legacy_api
                       math
+                      # bundled RCSB mmCIF/PDBx parser+writer, used by cifio.cpp
+                      mmcif
                       )
 
 # TODO: when fileio is an OBJECT target
@@ -90,6 +124,29 @@ target_link_libraries(fileio INTERFACE
 #target_link_libraries(fileio PRIVATE legacy_modules)
 
 target_sources(libgromacs PRIVATE ${FILEIO_SOURCES})
+
+# Headers that are installed as part of the legacy API. The module owns its
+# part of the installed include tree and installs it through a target file set.
+target_include_directories(fileio INTERFACE
+                           $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+
+target_sources(fileio
+    INTERFACE
+        FILE_SET public_headers
+        TYPE HEADERS
+        BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/include
+        FILES
+            include/gromacs/fileio/confio.h
+            include/gromacs/fileio/filetypes.h
+            include/gromacs/fileio/oenv.h
+            include/gromacs/fileio/pdbio.h
+            include/gromacs/fileio/tpxio.h
+            include/gromacs/fileio/trxio.h
+)
+
+if(GMX_INSTALL_LEGACY_API)
+    install(TARGETS fileio FILE_SET public_headers DESTINATION include)
+endif()
 
 if (BUILD_TESTING)
      add_subdirectory(tests)

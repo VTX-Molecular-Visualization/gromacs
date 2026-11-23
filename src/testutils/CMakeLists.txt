@@ -31,10 +31,6 @@
 # To help us fund GROMACS development, we humbly ask that you cite
 # the research papers on the package. Check out https://www.gromacs.org.
 
-if (NOT GMX_BUILD_UNITTESTS)
-    gmx_add_missing_tests_notice("Unit tests have not been run. You need to set GMX_BUILD_UNITTESTS=ON if you want to build and run them.")
-    return()
-endif()
 
 if (GMX_GPU_CUDA)
     add_library(testutils)
@@ -74,6 +70,8 @@ target_sources(testutils PRIVATE
                cmdlinetest.cpp
                conftest.cpp
                filematchers.cpp
+               generate_frame_data.cpp
+               hardware_test_fixture.cpp
                interactivetest.cpp
                loggertest.cpp
                mpi_printer.cpp
@@ -83,6 +81,7 @@ target_sources(testutils PRIVATE
                refdata_xml.cpp
                setenv.cpp
                simulationdatabase.cpp
+               stderrcapture.cpp
                stdiohelper.cpp
                stringtest.cpp
                testasserts.cpp
@@ -100,7 +99,6 @@ target_sources(testutils PRIVATE
                xvgtest.cpp
                )
 
-
 if(HAVE_TINYXML2)
     target_include_directories(testutils SYSTEM PRIVATE ${TinyXML2_INCLUDE_DIR})
     target_link_libraries(testutils PRIVATE ${TinyXML2_LIBRARIES})
@@ -114,7 +112,9 @@ target_include_directories(testutils PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 if (GMX_GPU_SYCL)
     add_sycl_to_target(
         TARGET testutils
-        SOURCES test_device.cpp
+        SOURCES
+            hardware_test_fixture.cpp
+            test_device.cpp
         )
 endif()
 
@@ -122,8 +122,28 @@ gmx_target_compile_options(testutils)
 target_compile_definitions(testutils PRIVATE HAVE_CONFIG_H)
 target_include_directories(testutils SYSTEM BEFORE PRIVATE ${PROJECT_SOURCE_DIR}/src/external/thread_mpi/include)
 target_compile_definitions(testutils PRIVATE TMPI_USE_VISIBILITY)
+
+# naming.h makes extensive use of std::function to make it easy for
+# test authors to name their tests expressively, but the destructor of
+# std::function is apt to give false positives with -Wmaybe-uninitialized
+# so we have to suppress it.
+if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 12)
+    target_compile_options(testutils INTERFACE -Wno-maybe-uninitialized)
+endif()
+
+# These two include directories are supplied by the gmock target below
+# but can be added after global include directories added e.g. for
+# FFTW, which leads to unexpected mismatches. See #5141 and #5531.
+target_include_directories(testutils SYSTEM BEFORE PRIVATE ${PROJECT_SOURCE_DIR}/src/external/googletest/googletest/include)
+target_include_directories(testutils SYSTEM BEFORE PRIVATE ${PROJECT_SOURCE_DIR}/src/external/googletest/googlemock/include)
 target_link_libraries(testutils PRIVATE libgromacs ${GMX_COMMON_LIBRARIES} gmock)
 target_link_libraries(testutils PUBLIC common)
+
+if(GMX_OPENMP)
+    # Until we have fully transitioned GROMACS modules to OBJECT targets, we need
+    # this to handle cases when internal headers have OpenMP.
+    target_link_libraries(testutils PUBLIC OpenMP::OpenMP_CXX)
+endif()
 
 # GROMACS module dependencies.
 # Note that testutils conveys transitive dependencies on some modules.

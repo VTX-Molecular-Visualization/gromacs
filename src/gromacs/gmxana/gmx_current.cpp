@@ -45,6 +45,7 @@
 #include "gromacs/fileio/confio.h"
 #include "gromacs/fileio/filetypes.h"
 #include "gromacs/fileio/oenv.h"
+#include "gromacs/fileio/timecontrol.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/fileio/xvgr.h"
 #include "gromacs/gmxana/gmx_ana.h"
@@ -707,7 +708,7 @@ static void dielectric(FILE*                   fmj,
                     yfit[i - ii] = std::log(rtmp);
                 }
 
-                lsq_y_ax_b(ie - ii, xfit, yfit, &sigma, &malt, &err, &rest);
+                gmx::lsq_y_ax_b(ie - ii, xfit, yfit, &sigma, &malt, &err, &rest);
 
                 malt = std::exp(malt);
 
@@ -767,7 +768,7 @@ static void dielectric(FILE*                   fmj,
             yfit[i - bi] = dsp2[i];
         }
 
-        lsq_y_ax_b(ei - bi, xfit, yfit, &sigma, &malt, &err, &rest);
+        gmx::lsq_y_ax_b(ei - bi, xfit, yfit, &sigma, &malt, &err, &rest);
 
         sigma *= 1e12;
         dk_d = calceps(prefactor, md2, 0.5 * malt / prefactorav, corint, eps_rf, TRUE);
@@ -811,54 +812,55 @@ static void dielectric(FILE*                   fmj,
 int gmx_current(int argc, char* argv[])
 {
 
-    static int      nshift  = 1000;
-    static real     temp    = 300.0;
-    static real     eps_rf  = 0.0;
-    static gmx_bool bNoJump = TRUE;
-    static real     bfit    = 100.0;
-    static real     bvit    = 0.5;
-    static real     efit    = 400.0;
-    static real     evit    = 5.0;
-    t_pargs         pa[]    = {
+    int      nshift  = 1000;
+    real     temp    = 300.0;
+    real     eps_rf  = 0.0;
+    gmx_bool bNoJump = TRUE;
+    real     bfit    = 100.0;
+    real     bvit    = 0.5;
+    real     efit    = 400.0;
+    real     evit    = 5.0;
+    t_pargs  pa[]    = {
         { "-sh",
-                     FALSE,
-                     etINT,
-                     { &nshift },
-                     "Shift of the frames for averaging the correlation functions and the mean-square "
-                                "displacement." },
+              FALSE,
+              etINT,
+              { &nshift },
+              "Shift of the frames for averaging the correlation functions and the mean-square "
+                  "displacement." },
         { "-nojump", FALSE, etBOOL, { &bNoJump }, "Removes jumps of atoms across the box." },
         { "-eps",
-                     FALSE,
-                     etREAL,
-                     { &eps_rf },
-                     "Dielectric constant of the surrounding medium. The value zero corresponds to "
-                                "infinity (tin-foil boundary conditions)." },
+              FALSE,
+              etREAL,
+              { &eps_rf },
+              "Dielectric constant of the surrounding medium. The value zero corresponds to "
+                  "infinity (tin-foil boundary conditions)." },
         { "-bfit",
-                     FALSE,
-                     etREAL,
-                     { &bfit },
-                     "Begin of the fit of the straight line to the MSD of the translational fraction "
-                                "of the dipole moment." },
+              FALSE,
+              etREAL,
+              { &bfit },
+              "Begin of the fit of the straight line to the MSD of the translational fraction "
+                  "of the dipole moment." },
         { "-efit",
-                     FALSE,
-                     etREAL,
-                     { &efit },
-                     "End of the fit of the straight line to the MSD of the translational fraction of "
-                                "the dipole moment." },
+              FALSE,
+              etREAL,
+              { &efit },
+              "End of the fit of the straight line to the MSD of the translational fraction of "
+                  "the dipole moment." },
         { "-bvit",
-                     FALSE,
-                     etREAL,
-                     { &bvit },
-                     "Begin of the fit of the current autocorrelation function to a*t^b." },
+              FALSE,
+              etREAL,
+              { &bvit },
+              "Begin of the fit of the current autocorrelation function to a*t^b." },
         { "-evit",
-                     FALSE,
-                     etREAL,
-                     { &evit },
-                     "End of the fit of the current autocorrelation function to a*t^b." },
+              FALSE,
+              etREAL,
+              { &evit },
+              "End of the fit of the current autocorrelation function to a*t^b." },
         { "-temp", FALSE, etREAL, { &temp }, "Temperature for calculating epsilon." }
     };
 
     gmx_output_env_t* oenv;
+    gmx::TimeControl  timeControl;
     t_topology        top;
     char**            grpname = nullptr;
     const char*       indexfn;
@@ -950,7 +952,7 @@ int gmx_current(int argc, char* argv[])
 
     /* At first the arguments will be parsed and the system information processed */
     if (!parse_common_args(
-                &argc, argv, PCA_CAN_TIME | PCA_CAN_VIEW, NFILE, fnm, asize(pa), pa, asize(desc), desc, 0, nullptr, &oenv))
+                &argc, argv, PCA_CAN_TIME | PCA_CAN_VIEW, NFILE, fnm, asize(pa), pa, asize(desc), desc, 0, nullptr, &oenv, &timeControl))
     {
         return 0;
     }
@@ -967,7 +969,7 @@ int gmx_current(int argc, char* argv[])
 
     flags = flags | TRX_READ_X | TRX_READ_V;
 
-    read_first_frame(oenv, &status, ftp2fn(efTRX, NFILE, fnm), &fr, flags);
+    read_first_frame(oenv, &status, ftp2fn(efTRX, NFILE, fnm), &fr, &timeControl, flags);
 
     snew(mass2, top.atoms.nr);
     snew(qmol, top.atoms.nr);
@@ -1066,6 +1068,7 @@ int gmx_current(int argc, char* argv[])
                qmol,
                eps_rf,
                oenv);
+    close_trx(status);
 
     xvgrclose(fmj);
     xvgrclose(fmd);

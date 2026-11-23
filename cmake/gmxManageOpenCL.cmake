@@ -58,12 +58,16 @@ endif()
 
 # Tell compiler to hide warnings for comments caused by cl_gl_ext.h on Linux
 if (UNIX)
-    set(OpenCL_DEFINITIONS ${OpenCL_DEFINITIONS} " -Wno-comment")
+    add_compile_options(-Wno-comment)
 endif()
 
 # Yes Virginia, Darwin kernel version 14.4 corresponds to OS X 10.4.
 if (APPLE AND ${CMAKE_SYSTEM_VERSION} VERSION_LESS "14.4")
         message(WARNING "OS X prior to version 10.10.4 produces incorrect AMD OpenCL code at runtime. You will not be able to use AMD GPUs on this host unless you upgrade your operating system.")
+endif()
+
+if (APPLE AND GMX_GPU_FFT_CLFFT)
+    message(FATAL_ERROR "clFFT is not supported on macOS; plese use -DGMX_GPU_FFT_LIBRARY=VkFFT.")
 endif()
 
 if (GMX_GPU_FFT_VKFFT)
@@ -73,9 +77,8 @@ elseif(NOT GMX_GPU_FFT_CLFFT)
     message(FATAL_ERROR "In the OpenCL build, only -DGMX_GPU_FFT_LIBRARY=VkFFT and -DGMX_GPU_FFT_LIBRARY=clFFT are supported")
 endif()
 
-add_definitions(${OpenCL_DEFINITIONS})
 math(EXPR REQUIRED_OPENCL_MIN_VERSION_DEF "100 * ${REQUIRED_OPENCL_MIN_VERSION_MAJOR} + 10 * ${REQUIRED_OPENCL_MIN_VERSION_MINOR}" OUTPUT_FORMAT DECIMAL)
-add_definitions("-DCL_TARGET_OPENCL_VERSION=${REQUIRED_OPENCL_MIN_VERSION_DEF}")
+add_compile_definitions(CL_TARGET_OPENCL_VERSION=${REQUIRED_OPENCL_MIN_VERSION_DEF})
 
 include_directories(SYSTEM ${OpenCL_INCLUDE_DIRS})
 
@@ -89,12 +92,6 @@ endif()
 set(GMX_INSTALL_OCLDIR       ${GMX_INSTALL_GMXDATADIR}/opencl)
 
 # super-cluster size <8 is not supported (does not work with cluster size 4 on Intel, untested on NVIDIA)
-if (GMX_GPU_NB_NUM_CLUSTER_PER_CELL_X AND NOT "${GMX_GPU_NB_NUM_CLUSTER_PER_CELL_X}" EQUAL 2)
-    message(FATAL_ERROR "Changing GMX_GPU_NB_NUM_CLUSTER_PER_CELL_X is not supported with OpenCL")
-endif()
-if (GMX_GPU_NB_NUM_CLUSTER_PER_CELL_Y AND NOT "${GMX_GPU_NB_NUM_CLUSTER_PER_CELL_Y}" EQUAL 2)
-    message(FATAL_ERROR "Changing GMX_GPU_NB_NUM_CLUSTER_PER_CELL_Y is not supported with OpenCL")
-endif()
-if (GMX_GPU_NB_NUM_CLUSTER_PER_CELL_Z AND NOT "${GMX_GPU_NB_NUM_CLUSTER_PER_CELL_Z}" EQUAL 2)
-    message(FATAL_ERROR "Changing GMX_GPU_NB_NUM_CLUSTER_PER_CELL_Z is not supported with OpenCL")
+if (GMX_GPU_NB_NUM_CLUSTER_PER_BIN AND NOT "${GMX_GPU_NB_NUM_CLUSTER_PER_BIN}" EQUAL 8)
+    message(FATAL_ERROR "Changing GMX_GPU_NB_NUM_CLUSTER_PER_BIN is not supported with OpenCL")
 endif()

@@ -34,7 +34,6 @@
 # Helper macros to encapsulate some usage of CTest
 #
 # This file is intended to contain CTest workarounds and such.
-include(CMakeParseArguments)
 
 macro (gmx_ctest_init)
     # Set a default valgrind suppression file.
@@ -69,7 +68,7 @@ function (gmx_get_test_prefix_cmd VAR)
     endif()
     set(_cmd "")
     if (MEMORYCHECK_TYPE STREQUAL "AddressSanitizer")
-        string(REPLACE ";" " " _opts "${_opts}")
+        list(JOIN _opts " " _opts)
         set(_cmd ${PROJECT_SOURCE_DIR}/cmake/with_asan_opts.sh ${_opts} --)
     endif()
     set(${VAR} "${_cmd}" PARENT_SCOPE)

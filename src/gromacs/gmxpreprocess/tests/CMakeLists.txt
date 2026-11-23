@@ -35,18 +35,22 @@ gmx_add_gtest_executable(gmxpreprocess-test
     CPP_SOURCE_FILES
         convparm.cpp
         editconf.cpp
+        extendableforcefield.cpp
         genconf.cpp
         genion.cpp
         genrestr.cpp
         gen_maxwell_velocities.cpp
         gpp_atomtype.cpp
         gpp_bond_atomtype.cpp
+        grompp.cpp
+        grompp_deform.cpp
         grompp_directives.cpp
         insert_molecules.cpp
         massrepartitioning.cpp
         readir.cpp
         solvate.cpp
         topdirs.cpp
+        x2top.cpp
         )
 gmx_register_gtest_test(GmxPreprocessTests gmxpreprocess-test SLOW_TEST)
 target_link_libraries(gmxpreprocess-test PRIVATE

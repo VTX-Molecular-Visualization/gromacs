@@ -102,9 +102,6 @@ struct NNPotParameters
     //! Local set of atoms that are part of the MM region
     std::unique_ptr<LocalAtomSet> mmAtoms_;
 
-    //! User defined input to NN model (9 options as of now)
-    std::vector<std::string> modelInput_{ "", "", "", "", "", "", "", "", "" };
-
     //! User defined cutoff for pairlist (if used)
     real pairCutoff_ = 0.0;
 
@@ -126,11 +123,6 @@ struct NNPotParameters
     std::string linkType_ = "H";
     //! Distance between link atom and embedded atom (default 0.1 nm)
     real linkDistance_ = 0.1;
-
-    bool modelNeedsInput(const std::string& input) const
-    {
-        return std::find(modelInput_.begin(), modelInput_.end(), input) != modelInput_.end();
-    }
 };
 
 class NNPotOptions final : public IMdpOptionProvider
@@ -190,15 +182,17 @@ public:
     const MpiComm&  mpiComm() const;
 
 private:
-//! Make sure that model and model inputs are compatible
-#if !GMX_TORCH
-    [[noreturn]] static
-#endif
-            void
-            checkNNPotModel();
+    //! Make sure that model and model inputs are compatible
+    void checkNNPotModel();
 
     //! NNPot parameters
     NNPotParameters params_;
+
+    /*! \brief Whether a tpr file of GROMACS 2025 or 2026 set any of nnpot-model-input1 to 9
+     *
+     * Those versions write the keys even when the module is inactive.
+     */
+    bool haveObsoleteModelInput_ = false;
 
     /*! \brief MDLogger during mdrun
      *

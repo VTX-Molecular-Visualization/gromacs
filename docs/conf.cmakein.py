@@ -116,6 +116,9 @@ needs_sphinx = gmx_min_sphinx
 # Add any Sphinx extension module names here, as strings. They can be
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
 # ones.
+# The third-party extensions here and the HTML theme are checked for at
+# configure time by find_package(Sphinx COMPONENTS ...) in CMakeLists.txt;
+# keep the two in sync.
 extensions = [
     "sphinx.ext.autodoc",
     "sphinx.ext.doctest",
@@ -138,6 +141,8 @@ extensions = [
     "sphinxarg.ext",
     "sphinxcontrib.autoprogram",
     "gmxsphinx",
+    "gmxcitations",
+    "gmxstyles",
 ]
 extlinks = {"issue": ("https://gitlab.com/gromacs/gromacs/-/issues/%s", "Issue %s")}
 
@@ -390,7 +395,7 @@ if tags.has("do_latex"):
         # The paper size ('letterpaper' or 'a4paper').
         "papersize": "a4paper",
         # The font size ('10pt', '11pt' or '12pt').
-        "pointsize": "11",
+        "pointsize": "11pt",
         # Additional stuff for the LaTeX preamble.
         # The tocdepth setting is needed to overwrite the default value set by Sphinx
         # to get a more detailed toctree in the pdf version of the manual.

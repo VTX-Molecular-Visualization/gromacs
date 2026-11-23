@@ -33,7 +33,36 @@
 
 # Set up the module library
 add_library(trajectoryanalysis INTERFACE)
-file(GLOB TRAJECTORYANALYSIS_SOURCES *.cpp modules/*.cpp)
+set(TRAJECTORYANALYSIS_SOURCES
+    analysismodule.cpp
+    analysissettings.cpp
+    cmdlinerunner.cpp
+    modules.cpp
+    modules/angle.cpp
+    modules/convert_trj.cpp
+    modules/distance.cpp
+    modules/dssp.cpp
+    modules/extract_cluster.cpp
+    modules/freevolume.cpp
+    modules/gyrate.cpp
+    modules/hbond.cpp
+    modules/isotope.cpp
+    modules/msd.cpp
+    modules/pairdist.cpp
+    modules/rdf.cpp
+    modules/sasa.cpp
+    modules/scattering-debye-sans.cpp
+    modules/scattering-debye-saxs.cpp
+    modules/scattering-debye.cpp
+    modules/scattering.cpp
+    modules/scatteringfactors.cpp
+    modules/select.cpp
+    modules/surfacearea.cpp
+    modules/trajectory.cpp
+    runnercommon.cpp
+    topologyinformation.cpp
+    )
+list(TRANSFORM TRAJECTORYANALYSIS_SOURCES PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/")
 set(LIBGROMACS_SOURCES ${LIBGROMACS_SOURCES} ${TRAJECTORYANALYSIS_SOURCES} PARENT_SCOPE)
 
 # Source files have the following dependencies on library infrastructure.
@@ -58,6 +87,27 @@ target_link_libraries(trajectoryanalysis INTERFACE
 #target_link_libraries(trajectoryanalysis PRIVATE NOTHING)
 # TODO: Explicitly link specific modules.
 #target_link_libraries(trajectoryanalysis PRIVATE legacy_modules)
+
+# Headers that are installed as part of the legacy API. The module owns its
+# part of the installed include tree and installs it through a target file set.
+target_include_directories(trajectoryanalysis INTERFACE
+                           $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+
+target_sources(trajectoryanalysis
+    INTERFACE
+        FILE_SET public_headers
+        TYPE HEADERS
+        BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/include
+        FILES
+            include/gromacs/trajectoryanalysis/analysismodule.h
+            include/gromacs/trajectoryanalysis/analysissettings.h
+            include/gromacs/trajectoryanalysis/cmdlinerunner.h
+            include/gromacs/trajectoryanalysis/topologyinformation.h
+)
+
+if(GMX_INSTALL_LEGACY_API)
+    install(TARGETS trajectoryanalysis FILE_SET public_headers DESTINATION include)
+endif()
 
 if (BUILD_TESTING)
     add_subdirectory(tests)

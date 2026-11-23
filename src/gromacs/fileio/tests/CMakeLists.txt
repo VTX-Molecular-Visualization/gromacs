@@ -37,6 +37,9 @@ endif()
 gmx_add_unit_test(FileIOTests fileio-test
     CPP_SOURCE_FILES
         checkpoint.cpp
+        cifio.cpp
+        cifio_trajectory.cpp
+        conect.cpp
         confio.cpp
         filemd5.cpp
         filetypes.cpp
@@ -45,9 +48,10 @@ gmx_add_unit_test(FileIOTests fileio-test
         mrcdensitymap.cpp
         mrcdensitymapheader.cpp
         readinp.cpp
-        timecontrol.cpp
         ${tng_sources}
+        trxio.cpp
         xdr_serializer.cpp
+        xtcio.cpp
         xvgio.cpp
     )
 target_link_libraries(fileio-test PRIVATE fileio legacy_api math)

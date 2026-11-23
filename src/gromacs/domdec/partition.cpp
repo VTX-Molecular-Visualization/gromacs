@@ -75,10 +75,8 @@
 #include "gromacs/gmxlib/network.h"
 #include "gromacs/gmxlib/nrnb.h"
 #include "gromacs/imd/imd.h"
-#include "gromacs/math/functions.h"
 #include "gromacs/mdlib/forcerec.h"
 #include "gromacs/mdlib/gmx_omp_nthreads.h"
-#include "gromacs/mdlib/mdatoms.h"
 #include "gromacs/mdlib/updategroupscog.h"
 #include "gromacs/mdlib/vsite.h"
 #include "gromacs/mdrunutility/mdmodulesnotifiers.h"
@@ -87,7 +85,7 @@
 #include "gromacs/mdtypes/forcerec.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
-#include "gromacs/mdtypes/mdatom.h"
+#include "gromacs/mdtypes/mdatoms.h"
 #include "gromacs/mdtypes/state.h"
 #include "gromacs/nbnxm/nbnxm.h"
 #include "gromacs/pulling/pull.h"
@@ -100,6 +98,7 @@
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/listoflists.h"
 #include "gromacs/utility/logger.h"
@@ -145,7 +144,7 @@ static void print_ddzone(FILE* fp, int d, int i, int j, gmx_ddzone_t* zone)
             zone->min0,
             zone->max1,
             zone->mch0,
-            zone->mch0,
+            zone->mch1,
             zone->p1_0,
             zone->p1_1);
 }
@@ -799,7 +798,7 @@ static void get_load_distribution(gmx_domdec_t* dd, gmx_wallcycle* wcycle)
 
     comm = dd->comm.get();
 
-    bSepPME = (dd->pme_nodeid >= 0);
+    bSepPME = (dd->numPmeOnlyRanks > 0);
 
     if (dd->ndim == 0 && bSepPME)
     {
@@ -975,8 +974,7 @@ static void get_load_distribution(gmx_domdec_t* dd, gmx_wallcycle* wcycle)
     }
 }
 
-/*! \brief Return the relative performance loss on the total run time
- * due to the force calculation load imbalance. */
+//! \brief Return the fraction of the total run time spent in the balanceable force calculation.
 static float dd_force_load_fraction(gmx_domdec_t* dd)
 {
     if (dd->comm->nload > 0 && dd->comm->load_step > 0)
@@ -990,12 +988,19 @@ static float dd_force_load_fraction(gmx_domdec_t* dd)
 }
 
 /*! \brief Return the relative performance loss on the total run time
- * due to the force calculation load imbalance. */
+ * due to the force calculation load imbalance.
+ *
+ * With FLOP-based balancing there is no FLOP count for the whole step,
+ * so we consider the step to consist of the force calculation only.
+ * The result is then the load imbalance, an upper bound for the loss.
+ */
 static float dd_force_imb_perf_loss(gmx_domdec_t* dd)
 {
-    if (dd->comm->nload > 0 && dd->comm->load_step > 0)
+    const gmx_domdec_comm_t& comm = *dd->comm;
+    const float stepLoad = comm.ddSettings.eFlop ? comm.load_sum / dd->nnodes : comm.load_step;
+    if (comm.nload > 0 && stepLoad > 0)
     {
-        return (dd->comm->load_max * dd->nnodes - dd->comm->load_sum) / (dd->comm->load_step * dd->nnodes);
+        return (comm.load_max * dd->nnodes - comm.load_sum) / (stepLoad * dd->nnodes);
     }
     else
     {
@@ -1059,13 +1064,21 @@ static void print_dd_load_av(FILE* fplog, gmx_domdec_t* dd)
 
         msg += " " + dlbStateStr + "\n";
         msg += gmx::formatString(" Average load imbalance: %.1f%%.\n", imbalance * 100);
-        msg += gmx::formatString(
-                " The balanceable part of the MD step is %d%%, load imbalance is computed from "
-                "this.\n",
-                gmx::roundToInt(dd_force_load_fraction(dd) * 100));
-        msg += gmx::formatString(
-                " Part of the total run time spent waiting due to load imbalance: %.1f%%.\n",
-                lossFraction * 100);
+        if (comm->ddSettings.eFlop)
+        {
+            // Without a FLOP count for the whole step, the time lost can not be computed
+            msg += " The load imbalance is computed from FLOP count estimates.\n";
+        }
+        else
+        {
+            msg += gmx::formatString(
+                    " The balanceable part of the MD step is %d%%, load imbalance is computed "
+                    "from this.\n",
+                    gmx::roundToInt(dd_force_load_fraction(dd) * 100));
+            msg += gmx::formatString(
+                    " Part of the total run time spent waiting due to load imbalance: %.1f%%.\n",
+                    lossFraction * 100);
+        }
         fprintf(fplog, "%s", msg.c_str());
         fprintf(stderr, "\n%s", msg.c_str());
     }
@@ -1117,10 +1130,21 @@ static void print_dd_load_av(FILE* fplog, gmx_domdec_t* dd)
 
     if ((lossFraction >= DD_PERF_LOSS_WARN) && (dd->comm->dlbState != DlbState::offTemporarilyLocked))
     {
-        std::string message = gmx::formatString(
-                "NOTE: %.1f %% of the available CPU time was lost due to load imbalance\n"
-                "      in the domain decomposition.\n",
-                lossFraction * 100);
+        std::string message;
+        if (comm->ddSettings.eFlop)
+        {
+            message += gmx::formatString(
+                    "NOTE: The FLOP count load imbalance was %.1f %% in the domain "
+                    "decomposition.\n",
+                    lossFraction * 100);
+        }
+        else
+        {
+            message += gmx::formatString(
+                    "NOTE: %.1f %% of the available CPU time was lost due to load imbalance\n"
+                    "      in the domain decomposition.\n",
+                    lossFraction * 100);
+        }
 
         bool hadSuggestion = false;
         if (dd->comm->dlbState == DlbState::offUser)
@@ -2386,8 +2410,8 @@ static void orderVector(gmx::ArrayRef<const gmx_cgsort_t> sort,
     orderVector<T>(sort, vectorToSort, fillerValue, *workVector);
 }
 
-//! Returns the sorting order for atoms based on the nbnxn grid order in sort
-static void dd_sort_order_nbnxn(const gmx::nonbonded_verlet_t& nbv, gmx::FastVector<gmx_cgsort_t>* sort)
+//! Returns the sorting order for atoms based on the nbnxm grid order in sort
+static void dd_sort_order_nbnxm(const gmx::nonbonded_verlet_t& nbv, gmx::FastVector<gmx_cgsort_t>* sort)
 {
     gmx::ArrayRef<const int> atomOrder = nbv.getLocalAtomOrder();
 
@@ -2422,7 +2446,7 @@ static void dd_sort_state(gmx_domdec_t* dd, t_forcerec* fr, t_state* state)
     gmx_domdec_sort_t& sortingData = *dd->comm->sort;
 
     // Obtain the sorting order from/as the NBNxM gridding order, including fillers
-    dd_sort_order_nbnxn(*fr->nbv, &sortingData.sorted);
+    dd_sort_order_nbnxm(*fr->nbv, &sortingData.sorted);
 
     // Get the list of old order indices for the new indexing order
     gmx::ArrayRef<const gmx_cgsort_t> sortOrder = sortingData.sorted;
@@ -2605,15 +2629,25 @@ void print_dd_statistics(gmx_domdec_t* dd, const t_inputrec& inputrec, FILE* fpl
     }
     fprintf(fplog, "\n");
 
-    if (comm.ddSettings.recordLoad && EI_DYNAMICS(inputrec.eI))
+    if (EI_DYNAMICS(inputrec.eI))
     {
-        print_dd_load_av(fplog, dd);
+        if (comm.ddSettings.recordLoad)
+        {
+            print_dd_load_av(fplog, dd);
+        }
+        else if (dd->comm->ddSettings.recordLoadDisabledByHaloOnGpu && fplog)
+        {
+            fprintf(fplog,
+                    "\nCould not measure load imbalance because halo exchange was performed on "
+                    "GPU\n");
+        }
     }
 }
 
 //!\brief TODO Remove fplog when group scheme and charge groups are gone
 void dd_partition_system(FILE*                     fplog,
                          const gmx::MDLogger&      mdlog,
+                         const SimulationWorkload& simulationWork,
                          int64_t                   step,
                          gmx_domdec_t*             dd,
                          bool                      bMainState,
@@ -2624,6 +2658,7 @@ void dd_partition_system(FILE*                     fplog,
                          gmx::ImdSession*          imdSession,
                          pull_t*                   pull_work,
                          t_state*                  state_local,
+                         StatePropagatorDataGpu*   stateGpu,
                          gmx::ForceBuffers*        f,
                          gmx::MDAtoms*             mdAtoms,
                          gmx_localtop_t*           top_local,
@@ -2634,13 +2669,19 @@ void dd_partition_system(FILE*                     fplog,
                          gmx_wallcycle*            wcycle,
                          bool                      bVerbose)
 {
-    gmx_ddbox_t ddbox = { 0 };
-    int         ncgindex_set;
-    char        sbuf[22];
+    gmx_ddbox_t        ddbox = { 0 };
+    int                ncgindex_set;
+    char               sbuf[22];
+    gmx_domdec_comm_t* comm = dd->comm.get();
 
     wallcycle_start(wcycle, WallCycleCounter::Domdec);
 
-    gmx_domdec_comm_t* comm = dd->comm.get();
+    bool pmeCycleCountersRequestIsPending = false;
+    if (fr->pmePpComm)
+    {
+        fr->pmePpComm->sendCycleCountersAndStopConditionRequest();
+        pmeCycleCountersRequestIsPending = true;
+    }
 
     // TODO if the update code becomes accessible here, use
     // upd->deform for this logic.
@@ -2699,12 +2740,22 @@ void dd_partition_system(FILE*                     fplog,
         bool bCheckWhetherToTurnDlbOn = dd_dlb_get_should_check_whether_to_turn_dlb_on(dd);
 
         /* Print load every nstlog, first and last step to the log file */
-        bool bLogLoad = ((inputrec.nstlog > 0 && step % inputrec.nstlog == 0) || comm->n_load_collect == 0
+        bool bLogLoad = ((inputrec.outputControl.nstlog > 0 && step % inputrec.outputControl.nstlog == 0)
+                         || comm->n_load_collect == 0
                          || (inputrec.nsteps >= 0
                              && (step + inputrec.nstlist > inputrec.init_step + inputrec.nsteps)));
 
         if (bDoDLB || bLogLoad || bCheckWhetherToTurnDlbOn || bVerbose)
         {
+            if (fr->pmePpComm)
+            {
+                GMX_ASSERT(pmeCycleCountersRequestIsPending,
+                           "The PME cycles must have been requested earlier");
+                const auto pmeCycleCounters = fr->pmePpComm->receiveCycleCountersAndStopCondition();
+                dd_cycles_add_pme(
+                        dd, pmeCycleCounters.cycles, pmeCycleCounters.cyclesMax, pmeCycleCounters.numSteps);
+                pmeCycleCountersRequestIsPending = false;
+            }
             get_load_distribution(dd, wcycle);
             if (DDMAIN(dd))
             {
@@ -2919,14 +2970,14 @@ void dd_partition_system(FILE*                     fplog,
         // This can only be done when are both redistributing this step and we have the correct
         // atom count per column from the old state. This is available when atoms were put on
         // the NBNxM grid at the last re-partitioning.
-        gmx::ArrayRef<const int> localGridNumAtomsPerColumn;
+        gmx::ArrayRef<const int> localGridNumAtomsPerCell;
         if (bRedist && comm->putAtomsOnGridAtLastPartitioning)
         {
-            localGridNumAtomsPerColumn = fr->nbv->getLocalGridNumAtomsPerColumn();
+            localGridNumAtomsPerCell = fr->nbv->getLocalGridNumAtomsPerCell();
         }
         comm->updateGroupsCog->addCogs(gmx::arrayRefFromArray(dd->globalAtomIndices.data(), dd->numHomeAtoms),
                                        state_local->x,
-                                       localGridNumAtomsPerColumn);
+                                       localGridNumAtomsPerCell);
 
         wallcycle_sub_stop(wcycle, WallCycleSubCounter::DDAddCogs);
     }
@@ -3176,28 +3227,12 @@ void dd_partition_system(FILE*                     fplog,
                         comm->atomRanges.end(DDAtomRanges::Type::Constraints),
                         nat_f_novirsum);
 
-    /* Update atom data for mdatoms and several algorithms */
+    /* Update atom data for mdAtoms and several algorithms */
     wallcycle_sub_stop(wcycle, WallCycleSubCounter::DDTopOther);
-    mdAlgorithmsSetupAtomData(dd, inputrec, top_global, top_local, fr, f, mdAtoms, constr, vsite, nullptr);
+    const real massLambda = state_local->lambda[FreeEnergyPerturbationCouplingType::Mass];
+    mdAlgorithmsSetupAtomData(
+            simulationWork, dd, inputrec, top_global, top_local, fr, f, massLambda, mdAtoms, constr, vsite, nullptr, stateGpu, wcycle);
     wallcycle_sub_start_nocount(wcycle, WallCycleSubCounter::DDTopOther);
-
-    auto* mdatoms = mdAtoms->mdatoms();
-    if (!dd->hasPmeDuty)
-    {
-        /* Send the charges and/or c6/sigmas to our PME only node */
-        gmx_pme_send_parameters(dd,
-                                *fr->ic,
-                                mdatoms->nChargePerturbed != 0,
-                                mdatoms->nTypePerturbed != 0,
-                                mdatoms->chargeA,
-                                mdatoms->chargeB,
-                                mdatoms->sqrt_c6A,
-                                mdatoms->sqrt_c6B,
-                                mdatoms->sigmaA,
-                                mdatoms->sigmaB,
-                                dd_pme_maxshift_x(*dd),
-                                dd_pme_maxshift_y(*dd));
-    }
 
     if (dd->atomSets != nullptr)
     {
@@ -3214,6 +3249,20 @@ void dd_partition_system(FILE*                     fplog,
 
     /* Update the local atoms to be communicated via the IMD protocol if bIMD is true. */
     imdSession->dd_make_local_IMD_atoms(dd);
+
+    /* If we have DLB on, we have already received the counters earlier.
+     * Otherwise, receive them now. This delays the blocking MPI receive
+     * to the latest possible moment, allowing better overlap between DD work
+     * and PP->PME->PP request roundtrip. */
+    if (fr->pmePpComm && pmeCycleCountersRequestIsPending)
+    {
+        const auto pmeCycleCounters = fr->pmePpComm->receiveCycleCountersAndStopCondition();
+        if (wcycle)
+        {
+            dd_cycles_add_pme(
+                    dd, pmeCycleCounters.cycles, pmeCycleCounters.cyclesMax, pmeCycleCounters.numSteps);
+        }
+    }
 
     add_dd_statistics(dd);
 
@@ -3266,9 +3315,10 @@ void dd_partition_system(FILE*                     fplog,
     // Now we have made the local atom sets and x is up to date, MDModules can be signaled
     MDModulesAtomsRedistributedSignal mdModulesAtomsRedistributedSignal(
             state_local->box,
-            gmx::makeConstArrayRef(state_local->x).subArray(0, comm->atomRanges.numHomeAtoms()),
-            gmx::makeConstArrayRef(dd->globalAtomIndices)
-                    .subArray(0, comm->atomRanges.end(DDAtomRanges::Type::Zones)));
+            makeConstArrayRef(state_local->x).subArray(0, comm->atomRanges.numHomeAtoms()),
+            makeConstArrayRef(mdAtoms->chargeA).subArray(0, comm->atomRanges.numHomeAtoms()),
+            makeConstArrayRef(mdAtoms->massT).subArray(0, comm->atomRanges.numHomeAtoms()),
+            makeConstArrayRef(dd->globalAtomIndices).subArray(0, comm->atomRanges.end(DDAtomRanges::Type::Zones)));
     mdModulesNotifiers.simulationRunNotifier_.notify(mdModulesAtomsRedistributedSignal);
 
     wallcycle_stop(wcycle, WallCycleCounter::Domdec);

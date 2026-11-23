@@ -43,10 +43,10 @@
 
 #include "gromacs/gpu_utils/capabilities.h"
 #include "gromacs/gpu_utils/devicebuffer_datatype.h"
-#include "gromacs/math/matrix.h"
 #include "gromacs/mdlib/update_constrain_gpu.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/gmxassert.h"
+#include "gromacs/utility/matrix.h"
 #include "gromacs/utility/real.h"
 #include "gromacs/utility/vectypes.h"
 
@@ -59,7 +59,6 @@ struct gmx_mtop_t;
 struct gmx_wallcycle;
 struct t_grp_tcstat;
 struct t_inputrec;
-struct t_mdatoms;
 
 namespace gmx
 {
@@ -87,11 +86,14 @@ void UpdateConstrainGpu::integrate(GpuEventSynchronizer* /* fReadyOnDevice */,
                                    const bool /* updateVelocities */,
                                    const bool /* computeVirial */,
                                    tensor /* virialScaled */,
+                                   const bool /* spreadVsiteForces */,
                                    const bool /* doTemperatureScaling */,
                                    gmx::ArrayRef<const t_grp_tcstat> /* tcstat */,
                                    const bool /* doParrinelloRahman */,
                                    const float /* dtPressureCouple */,
-                                   const Matrix3x3& /* prVelocityScalingMatrix*/)
+                                   const Matrix3x3& /* prVelocityScalingMatrix*/,
+                                   const int64_t /* seed */,
+                                   const int64_t /* step */)
 {
     GMX_ASSERT(!impl_,
                "A CPU stub for UpdateConstrain was called instead of the correct implementation.");
@@ -113,7 +115,14 @@ void UpdateConstrainGpu::set(DeviceBuffer<RVec> /* d_x */,
                              DeviceBuffer<RVec> /* d_v */,
                              const DeviceBuffer<RVec> /* d_f */,
                              const InteractionDefinitions& /* idef */,
-                             const t_mdatoms& /* md */)
+                             const MDAtoms& /* md */,
+                             ArrayRef<const int> /* globalAtomIndices */)
+{
+    GMX_ASSERT(!impl_,
+               "A CPU stub for UpdateConstrain was called instead of the correct implementation.");
+}
+
+void UpdateConstrainGpu::markStreamSynchronized()
 {
     GMX_ASSERT(!impl_,
                "A CPU stub for UpdateConstrain was called instead of the correct implementation.");
@@ -140,7 +149,7 @@ bool UpdateConstrainGpu::isNumCoupledConstraintsSupported(const gmx_mtop_t& /* m
 
 bool UpdateConstrainGpu::areConstraintsSupported()
 {
-    return GpuConfigurationCapabilities::Update;
+    return GpuConfigurationCapabilities::Constraints;
 }
 
 } // namespace gmx

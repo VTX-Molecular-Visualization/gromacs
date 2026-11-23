@@ -62,7 +62,7 @@ gmx_add_gtest_executable(${exename}
         $<TARGET_OBJECTS:mdrun_objlib>
     )
 target_link_libraries(${exename} PRIVATE mdrun_test_infrastructure)
-gmx_register_gtest_test(${testname} ${exename} OPENMP_THREADS 2 INTEGRATION_TEST IGNORE_LEAKS QUICK_GPU_TEST)
+gmx_register_gtest_test(${testname} ${exename} OPENMP_THREADS 2 INTEGRATION_TEST QUICK_GPU_TEST)
 
 set(testname "MdrunModulesTests")
 set(exename "mdrun-modules-test")
@@ -107,7 +107,9 @@ gmx_add_gtest_executable(${exename} MPI
         tabulated_bonded_interactions.cpp
         freezegroups.cpp
         constantacceleration.cpp
+        force_output.cpp
         boxdeformation.cpp
+        orires.cpp
         # pseudo-library for code for mdrun
         $<TARGET_OBJECTS:mdrun_objlib>
     )
@@ -121,7 +123,6 @@ if (TEST MdrunTestsTwoRanks AND TEST MdrunTestsOneRank)
     set_tests_properties(MdrunTestsTwoRanks PROPERTIES DEPENDS MdrunTestsOneRank)
 endif()
 
-# The orires test is separate, as it supports only a single MPI rank
 set(testname "MdrunSingleRankAlgorithmsTests")
 set(exename "mdrun-single-rank-algorithms-test")
 
@@ -129,12 +130,11 @@ gmx_add_gtest_executable(${exename}
     CPP_SOURCE_FILES
         dispersion_correction.cpp
         ewaldsurfaceterm.cpp
-        orires.cpp
         # pseudo-library for code for mdrun
         $<TARGET_OBJECTS:mdrun_objlib>
     )
 target_link_libraries(${exename} PRIVATE mdrun_test_infrastructure)
-gmx_register_gtest_test(${testname} ${exename} OPENMP_THREADS 2 INTEGRATION_TEST IGNORE_LEAKS SLOW_GPU_TEST)
+gmx_register_gtest_test(${testname} ${exename} OPENMP_THREADS 2 INTEGRATION_TEST SLOW_GPU_TEST)
 
 set(exename "minimize-test")
 
@@ -146,8 +146,8 @@ gmx_add_gtest_executable(${exename} MPI
         $<TARGET_OBJECTS:mdrun_objlib>
         )
 target_link_libraries(${exename} PRIVATE mdrun_test_infrastructure)
-gmx_register_gtest_test(Minimize1RankTests ${exename} MPI_RANKS 1 OPENMP_THREADS 2 INTEGRATION_TEST IGNORE_LEAKS QUICK_GPU_TEST)
-gmx_register_gtest_test(Minimize2RankTests ${exename} MPI_RANKS 2 OPENMP_THREADS 2 INTEGRATION_TEST IGNORE_LEAKS QUICK_GPU_TEST)
+gmx_register_gtest_test(Minimize1RankTests ${exename} MPI_RANKS 1 OPENMP_THREADS 2 INTEGRATION_TEST QUICK_GPU_TEST)
+gmx_register_gtest_test(Minimize2RankTests ${exename} MPI_RANKS 2 OPENMP_THREADS 2 INTEGRATION_TEST QUICK_GPU_TEST)
 # Because the minimizer tests depend on writing files whose names are not
 # unique across test cases, prevent CTest from running these tests
 # concurrently. See #4654
@@ -169,7 +169,7 @@ gmx_add_gtest_executable(${exename}
         $<TARGET_OBJECTS:mdrun_objlib>
         )
 target_link_libraries(${exename} PRIVATE mdrun_test_infrastructure)
-gmx_register_gtest_test(${testname} ${exename} OPENMP_THREADS 2 INTEGRATION_TEST IGNORE_LEAKS SLOW_GPU_TEST)
+gmx_register_gtest_test(${testname} ${exename} OPENMP_THREADS 2 INTEGRATION_TEST SLOW_GPU_TEST)
 
 # TPI does not support OpenMP, so we need a separate test binary
 set(testname "MdrunTpiTests")
@@ -183,7 +183,7 @@ gmx_add_gtest_executable(${exename}
         $<TARGET_OBJECTS:mdrun_objlib>
         )
 target_link_libraries(${exename} PRIVATE mdrun_test_infrastructure)
-gmx_register_gtest_test(${testname} ${exename} INTEGRATION_TEST IGNORE_LEAKS QUICK_GPU_TEST)
+gmx_register_gtest_test(${testname} ${exename} INTEGRATION_TEST QUICK_GPU_TEST)
 
 # Tests that only make sense to run with multiple ranks and/or real
 # MPI are implemented here.
@@ -263,10 +263,10 @@ gmx_add_gtest_executable(${exename} MPI
         # pseudo-library for code for mdrun
         $<TARGET_OBJECTS:mdrun_objlib>
         )
-target_link_libraries(${exename} PRIVATE mdrun_test_infrastructure taskassignment)
-gmx_register_gtest_test(MdrunMpi1RankPmeTests ${exename} MPI_RANKS 1 OPENMP_THREADS 2 HARDWARE_DETECTION INTEGRATION_TEST IGNORE_LEAKS SLOW_GPU_TEST)
-gmx_register_gtest_test(MdrunMpi2RankPmeTests ${exename} MPI_RANKS 2 OPENMP_THREADS 2 HARDWARE_DETECTION INTEGRATION_TEST IGNORE_LEAKS SLOW_GPU_TEST)
-gmx_register_gtest_test(MdrunMpi4RankPmeTests ${exename} MPI_RANKS 4 OPENMP_THREADS 1 HARDWARE_DETECTION INTEGRATION_TEST IGNORE_LEAKS SLOW_GPU_TEST)
+target_link_libraries(${exename} PRIVATE mdrun_test_infrastructure taskassignment timing)
+gmx_register_gtest_test(MdrunMpi1RankPmeTests ${exename} MPI_RANKS 1 OPENMP_THREADS 2 INTEGRATION_TEST SLOW_GPU_TEST)
+gmx_register_gtest_test(MdrunMpi2RankPmeTests ${exename} MPI_RANKS 2 OPENMP_THREADS 2 INTEGRATION_TEST SLOW_GPU_TEST)
+gmx_register_gtest_test(MdrunMpi4RankPmeTests ${exename} MPI_RANKS 4 OPENMP_THREADS 1 INTEGRATION_TEST SLOW_GPU_TEST)
 # Because the mdrun tests depend on writing files whose names are not
 # unique across test cases, prevent CTest from running these tests
 # concurrently. See #4654
@@ -375,7 +375,7 @@ target_link_libraries(${exename} PRIVATE mdrun_test_infrastructure)
 
 # End-to-end test for pull functionality
 target_link_libraries(${exename} PRIVATE legacy_modules)
-gmx_register_gtest_test(${testname} ${exename} OPENMP_THREADS 2 INTEGRATION_TEST IGNORE_LEAKS SLOW_GPU_TEST)
+gmx_register_gtest_test(${testname} ${exename} OPENMP_THREADS 2 INTEGRATION_TEST SLOW_TEST SLOW_GPU_TEST)
 
 set(testname "MdrunPullTests")
 set(exename "mdrun-pull-test")
@@ -389,7 +389,7 @@ gmx_add_gtest_executable(${exename}
 )
 target_link_libraries(${exename} PRIVATE mdrun_test_infrastructure)
 target_link_libraries(${exename} PRIVATE legacy_modules)
-gmx_register_gtest_test(${testname} ${exename} OPENMP_THREADS 2 INTEGRATION_TEST IGNORE_LEAKS QUICK_GPU_TEST)
+gmx_register_gtest_test(${testname} ${exename} OPENMP_THREADS 2 INTEGRATION_TEST QUICK_GPU_TEST)
 
 # End-to-end test for enforced rotation ("rotational pulling") functionality
 set(testname "MdrunRotationTests")
@@ -405,7 +405,22 @@ gmx_add_gtest_executable(${exename}
 target_include_directories(${exename} PRIVATE ${PROJECT_SOURCE_DIR}/src/gromacs/math/include)
 target_link_libraries(${exename} PRIVATE mdrun_test_infrastructure)
 target_link_libraries(${exename} PRIVATE legacy_modules)
-gmx_register_gtest_test(${testname} ${exename} OPENMP_THREADS 2 INTEGRATION_TEST IGNORE_LEAKS QUICK_GPU_TEST)
+gmx_register_gtest_test(${testname} ${exename} OPENMP_THREADS 2 INTEGRATION_TEST QUICK_GPU_TEST)
+
+# End-to-end test for essential dynamics and flooding functionality
+set(testname "MdrunEssentialDynamicsTests")
+set(exename "mdrun-essentialdynamics-test")
+
+gmx_add_gtest_executable(${exename}
+        CPP_SOURCE_FILES
+        # files with code for tests
+        essentialdynamics.cpp
+        # pseudo-library for code for mdrun
+        $<TARGET_OBJECTS:mdrun_objlib>
+)
+target_link_libraries(${exename} PRIVATE mdrun_test_infrastructure)
+# Note the inputs are not constructed with multiple domains in mind
+gmx_register_gtest_test(${testname} ${exename} MPI_RANKS 1 OPENMP_THREADS 2 INTEGRATION_TEST IGNORE_LEAKS QUICK_GPU_TEST)
 
 # End-to-end tests comparing different simulator code paths
 set(testname "MdrunSimulatorComparison")
@@ -434,3 +449,15 @@ gmx_add_gtest_executable(${exename} MPI
         )
 target_link_libraries(${exename} PRIVATE mdrun_test_infrastructure)
 gmx_register_gtest_test(${testname} ${exename} MPI_RANKS 2 INTEGRATION_TEST IGNORE_LEAKS QUICK_GPU_TEST)
+# ... but also with a single rank, because constructing virtual sites on the GPU requires
+# all virtual sites to be within update groups when using domain decomposition, which the
+# virtual site test system does not allow. Under compute-sanitizer racecheck in the
+# GROMACS CI system, the single-rank run skips the CPU-update tests, which the multi-rank
+# run covers (see VirtualSiteTest).
+gmx_register_gtest_test("MdrunVirtualSiteSingleRankTests" ${exename} INTEGRATION_TEST IGNORE_LEAKS QUICK_GPU_TEST)
+# Because the mdrun tests depend on writing files whose names are not
+# unique across test cases, prevent CTest from running these tests
+# concurrently. See #4654
+if (TEST MdrunVirtualSiteTests AND TEST MdrunVirtualSiteSingleRankTests)
+    set_tests_properties(MdrunVirtualSiteTests PROPERTIES DEPENDS MdrunVirtualSiteSingleRankTests)
+endif()

@@ -41,6 +41,7 @@
 #include <filesystem>
 #include <string>
 
+#include "gromacs/fileio/cifio.h"
 #include "gromacs/fileio/espio.h"
 #include "gromacs/fileio/filetypes.h"
 #include "gromacs/fileio/g96io.h"
@@ -52,6 +53,7 @@
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/topology/atoms.h"
 #include "gromacs/topology/block.h"
+#include "gromacs/topology/chainid.h"
 #include "gromacs/topology/mtop_util.h"
 #include "gromacs/topology/symtab.h"
 #include "gromacs/topology/topology.h"
@@ -113,6 +115,9 @@ void write_sto_conf_indexed(const std::filesystem::path& outfile,
                     out, title, atoms, x, pbcType, box, ' ', -1, nindex, index, nullptr, ftp == efPQR);
             gmx_fio_fclose(out);
             break;
+        case efCIF:
+            CifIO::writeIndexed(outfile, title, atoms, x, pbcType, box, nindex, index);
+            break;
         case efESP:
             out = gmx_fio_fopen(outfile, "w");
             write_espresso_conf_indexed(out, title, atoms, nindex, index, x, v, box);
@@ -165,6 +170,7 @@ void write_sto_conf(const std::filesystem::path& outfile,
             write_pdbfile(out, title, atoms, x, pbcType, box, ' ', -1, nullptr);
             gmx_fio_fclose(out);
             break;
+        case efCIF: CifIO::write(outfile, title, atoms, x, pbcType, box); break;
         case efESP:
             out = gmx_fio_fopen(outfile, "w");
             write_espresso_conf_indexed(out, title, atoms, atoms->nr, nullptr, x, v, box);
@@ -240,103 +246,10 @@ static void get_stx_coordnum(const std::filesystem::path& infile, int* natoms)
             get_pdb_coordnum(in, natoms);
             gmx_fio_fclose(in);
             break;
+        case efCIF: CifIO::countAtoms(infile, natoms); break;
         case efESP: *natoms = get_espresso_coordnum(infile); break;
         default: gmx_fatal(FARGS, "File type %s not supported in get_stx_coordnum", ftp2ext(ftp));
     }
-}
-
-//! Constructs plausible chain IDs for multi-molecule systems, e.g. when read from .tpr files
-class ChainIdFiller
-{
-public:
-    //! Fill in the chain ID for the indicated atom range, which might be a molecule.
-    void fill(t_atoms* atoms, int startAtomIndex, int endAtomIndex);
-    //! If only one chain was found, we don't add a chain ID.
-    void clearIfNeeded(t_atoms* atoms) const;
-
-private:
-    //! Minimum size for a chain worth giving an ID
-    static constexpr int s_chainMinAtoms = 15;
-
-    //! The number of the next chain that will be assigned.
-    int nextChainNumber_ = 0;
-    //! The chain ID of the next chain that will be assigned.
-    char nextChainId_ = 'A';
-    //! Whether the set of chain IDs (ie. upper- and lower-case letters and single digits) is exhausted.
-    bool outOfIds_ = false;
-};
-
-void ChainIdFiller::fill(t_atoms* atoms, const int startAtomIndex, const int endAtomIndex)
-{
-    // We always assign a new chain number, but only assign a chain id
-    // characters for larger molecules.
-    char chainIdToAssign;
-    if (endAtomIndex - startAtomIndex >= s_chainMinAtoms && !outOfIds_)
-    {
-        /* Set the chain id for the output */
-        chainIdToAssign = nextChainId_;
-        /* Here we allow for the max possible 2*26+10=62 chain ids */
-        if (nextChainId_ == 'Z')
-        {
-            nextChainId_ = 'a';
-        }
-        else if (nextChainId_ == 'z')
-        {
-            nextChainId_ = '0';
-        }
-        else if (nextChainId_ == '9')
-        {
-            outOfIds_ = true;
-        }
-        else
-        {
-            nextChainId_++;
-        }
-    }
-    else
-    {
-        chainIdToAssign = ' ';
-    }
-    for (int a = startAtomIndex; a < endAtomIndex; a++)
-    {
-        atoms->resinfo[atoms->atom[a].resind].chainnum = nextChainNumber_;
-        atoms->resinfo[atoms->atom[a].resind].chainid  = chainIdToAssign;
-    }
-    nextChainNumber_++;
-}
-
-void ChainIdFiller::clearIfNeeded(t_atoms* atoms) const
-{
-    /* Blank out the chain id if there was only one chain */
-    if (nextChainId_ == 'B')
-    {
-        for (int r = 0; r < atoms->nres; r++)
-        {
-            atoms->resinfo[r].chainid = ' ';
-        }
-    }
-}
-
-//! Make chain IDs in the t_atoms for a gmx_mtop_t built from a .tpr file
-static void makeChainIdentifiersAfterTprReading(t_atoms* atoms, const gmx::RangePartitioning& mols)
-{
-    ChainIdFiller filler;
-    for (auto m = 0; m != mols.numBlocks(); ++m)
-    {
-        filler.fill(atoms, mols.block(m).begin(), mols.block(m).end());
-    }
-    filler.clearIfNeeded(atoms);
-}
-
-//! Make chain IDs in the t_atoms for a legacy t_topology built from a .tpr file
-static void tpx_make_chain_identifiers(t_atoms* atoms, const t_block* mols)
-{
-    ChainIdFiller filler;
-    for (int m = 0; m < mols->nr; m++)
-    {
-        filler.fill(atoms, mols->index[m], mols->index[m + 1]);
-    }
-    filler.clearIfNeeded(atoms);
 }
 
 static void read_stx_conf(const std::filesystem::path& infile,
@@ -385,6 +298,7 @@ static void read_stx_conf(const std::filesystem::path& infile,
         case efPDB:
         case efBRK:
         case efENT: gmx_pdb_read_conf(infile, symtab, name, atoms, x, pbcType, box); break;
+        case efCIF: CifIO::read(infile, symtab, name, atoms, x, pbcType, box); break;
         case efESP: gmx_espresso_read_conf(infile, symtab, name, atoms, x, v, box); break;
         default: gmx_incons("Not supported in read_stx_conf");
     }
@@ -408,7 +322,7 @@ void readConfAndAtoms(const std::filesystem::path& infile,
         *name                            = gmx_strdup(*mtop.name);
         *atoms                           = gmx_mtop_global_atoms(mtop);
         gmx::RangePartitioning molecules = gmx_mtop_molecules(mtop);
-        makeChainIdentifiersAfterTprReading(atoms, molecules);
+        gmx::makeChainIdentifiersAfterTprReading(atoms, molecules);
 
         /* Inelegant solution to avoid all char pointers in atoms becoming
          * invalid after destruction of mtop.
@@ -423,7 +337,7 @@ void readConfAndAtoms(const std::filesystem::path& infile,
     int natoms;
     get_stx_coordnum(infile, &natoms);
 
-    init_t_atoms(atoms, natoms, (fn2ftp(infile) == efPDB));
+    init_t_atoms(atoms, natoms, (fn2ftp(infile) == efPDB || fn2ftp(infile) == efCIF));
 
     bool xIsNull = false;
     if (x == nullptr)
@@ -513,7 +427,7 @@ gmx_bool read_tps_conf(const std::filesystem::path& infile,
     // This conditional has the side effect of preserving chain identifiers read from a PDB file.
     if (haveTopology)
     {
-        tpx_make_chain_identifiers(&top->atoms, &top->mols);
+        gmx::tpx_make_chain_identifiers(&top->atoms, &top->mols);
     }
 
     if (requireMasses && !top->atoms.haveMass)

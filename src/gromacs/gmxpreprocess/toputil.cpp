@@ -62,6 +62,9 @@
 #include "gromacs/utility/strconvert.h"
 #include "gromacs/utility/stringutil.h"
 
+namespace gmx
+{
+
 /* UTILITIES */
 
 void add_param_to_list(InteractionsOfType* list, const InteractionOfType& b)
@@ -71,13 +74,13 @@ void add_param_to_list(InteractionsOfType* list, const InteractionOfType& b)
 
 /* PRINTING STRUCTURES */
 
-static void print_bt(FILE*                                                                 out,
-                     Directive                                                             d,
-                     PreprocessingAtomTypes*                                               at,
-                     InteractionFunction                                                   ftype,
-                     int                                                                   fsubtype,
-                     const gmx::EnumerationArray<InteractionFunction, InteractionsOfType>& plist,
-                     bool                                                                  bFullDih)
+static void print_bt(FILE*                                                            out,
+                     Directive                                                        d,
+                     PreprocessingAtomTypes*                                          at,
+                     InteractionFunction                                              ftype,
+                     int                                                              fsubtype,
+                     const EnumerationArray<InteractionFunction, InteractionsOfType>& plist,
+                     bool                                                             bFullDih)
 {
     /* This dihp is a DIRTY patch because the dih-types do not use
      * all four atoms to determine the type.
@@ -113,10 +116,10 @@ static void print_bt(FILE*                                                      
             bDih = TRUE;
             break;
         case InteractionFunction::ConstraintsNoCoupling: // Intended to fall through
-        case InteractionFunction::VirtualSite3FlexibleDistance: f = 1; break;
-        case InteractionFunction::VirtualSite3FlexibleAngleDistance: f = 2; break;
+        case InteractionFunction::VirtualSite3FixedDistance: f = 1; break;
+        case InteractionFunction::VirtualSite3FixedAngleDistance: f = 2; break;
         case InteractionFunction::VirtualSite3Outside: f = 3; break;
-        case InteractionFunction::VirtualSite4FlexibleDistanceNormalization: // Intended to fall through
+        case InteractionFunction::VirtualSite4FixedDistanceNormalization: // Intended to fall through
         case InteractionFunction::DihedralEnergyCorrectionMap: f = 1; break;
 
         default: bDih = FALSE;
@@ -170,7 +173,7 @@ static void print_bt(FILE*                                                      
         {
             bSwapParity = (parm.c0() == NOTSET) && (parm.c1() == -1);
         }
-        gmx::ArrayRef<const int> atoms = parm.atoms();
+        ArrayRef<const int> atoms = parm.atoms();
         if (!bDih)
         {
             for (int j = 0; (j < nral); j++)
@@ -193,7 +196,7 @@ static void print_bt(FILE*                                                      
         }
         else
         {
-            gmx::ArrayRef<const real> forceParam = parm.forceParam();
+            ArrayRef<const real> forceParam = parm.forceParam();
             for (int j = 0; (j < nrfp) && (forceParam[j] != NOTSET); j++)
             {
                 fprintf(out, "%13.6e ", forceParam[j]);
@@ -314,8 +317,10 @@ void print_atoms(FILE* out, PreprocessingAtomTypes* atype, t_atoms* at, bool bRT
             /* This is true by construction, but static analysers don't know */
             GMX_ASSERT(!bRTPresname || at->resinfo[at->atom[i].resind].rtp,
                        "-rtpres did not have residue name available");
+            // With %g .7 results in 7 decimals total, which is what we need
+            // to capture full single precision charges and masses
             fprintf(out,
-                    "%6d %10s %6d%c %5s %6s %6d %10g %10g",
+                    "%6d %10s %6d%c %5s %6s %6d %10.7g %10.7g",
                     i + 1,
                     tpnmA->c_str(),
                     at->resinfo[ri].nr,
@@ -334,7 +339,7 @@ void print_atoms(FILE* out, PreprocessingAtomTypes* atype, t_atoms* at, bool bRT
                 {
                     gmx_fatal(FARGS, "tpB = %d, i= %d in print_atoms", tpB, i);
                 }
-                fprintf(out, " %6s %10g %10g", tpnmB->c_str(), at->atom[i].qB, at->atom[i].mB);
+                fprintf(out, " %6s %10.7g %10.7g", tpnmB->c_str(), at->atom[i].qB, at->atom[i].mB);
             }
             // Accumulate the total charge to help troubleshoot issues.
             qtot += static_cast<double>(at->atom[i].q);
@@ -361,19 +366,21 @@ void print_atoms(FILE* out, PreprocessingAtomTypes* atype, t_atoms* at, bool bRT
     std::fflush(out);
 }
 
-void print_bondeds(FILE*                                                                 out,
-                   int                                                                   natoms,
-                   Directive                                                             d,
-                   InteractionFunction                                                   ftype,
-                   int                                                                   fsubtype,
-                   const gmx::EnumerationArray<InteractionFunction, InteractionsOfType>& plist)
+void print_bondeds(FILE*                                                            out,
+                   int                                                              natoms,
+                   Directive                                                        d,
+                   InteractionFunction                                              ftype,
+                   int                                                              fsubtype,
+                   const EnumerationArray<InteractionFunction, InteractionsOfType>& plist)
 {
     auto                   atom = std::make_unique<t_atom>();
     PreprocessingAtomTypes atype;
     for (int i = 0; (i < natoms); i++)
     {
-        std::string name = gmx::toString(i + 1);
+        std::string name = toString(i + 1);
         atype.addType(*atom, name, InteractionOfType({}, {}), 0, 0);
     }
     print_bt(out, d, &atype, ftype, fsubtype, plist, TRUE);
 }
+
+} // namespace gmx

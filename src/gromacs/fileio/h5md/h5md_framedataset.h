@@ -32,9 +32,12 @@
  * the research papers on the package. Check out https://www.gromacs.org.
  */
 
-/*! \brief Declarations of H5md frame data set manipulation routines.
+/*! \internal \file
+ * \brief Declarations of H5md frame data set manipulation routines.
  *
  * \author Petter Johansson <pettjoha@kth.se>
+ * \author Yang Zhang <yang.zhang@scilifelab.se>
+ * \ingroup module_fileio
  */
 
 #ifndef GMX_FILEIO_H5MD_FRAMEDATASET_H
@@ -42,7 +45,7 @@
 
 #include <hdf5.h>
 
-#include <memory>
+#include <optional>
 
 #include "gromacs/fileio/h5md/h5md_datasetbase.h"
 #include "gromacs/fileio/h5md/h5md_guard.h"
@@ -103,8 +106,11 @@ public:
     ~H5mdFrameDataSet() noexcept;
     //! \brief Move constructor.
     H5mdFrameDataSet(H5mdFrameDataSet<ValueType>&&) noexcept;
-    //! \brief Move assignment.
-    H5mdFrameDataSet& operator=(H5mdFrameDataSet<ValueType>&&) noexcept;
+    //! \brief Move assignment explicitly deleted (not supported by H5mdDataSetBase).
+    H5mdFrameDataSet& operator=(H5mdFrameDataSet<ValueType>&&) = delete;
+
+    //! \brief Return the absolute error bound of data (if lossy compression is applied).
+    std::optional<double> absoluteError() const;
 
     /*! \brief Return the dimensions of a single frame of the templated type in data set.
      *
@@ -149,7 +155,7 @@ public:
      * \param[in]  index  Frame index to read data from.
      * \param[out] values Container of values to read data into.
      *
-     * \throws gmx::FileIOError if the size of \p values does not match the frame dimensions
+     * \throws H5mdError if the size of \p values does not match the frame dimensions
      *     or if an error occurred when reading the data.
      */
     void readFrame(hsize_t index, ArrayRef<ValueType> values);
@@ -158,7 +164,7 @@ public:
      *
      * \param[in] newNumFrames New number of frames for the data set.
      *
-     * \throws gmx::FileIOError if \p newNumFrames is larger than the current number
+     * \throws H5mdError if \p newNumFrames is larger than the current number
      * of frames in the data set.
      */
     void shrinkToNumFrames(hsize_t newNumFrames);
@@ -186,7 +192,7 @@ public:
      *
      * \param[in] values Container of values to write.
      *
-     * \throws gmx::FileIOError if the size of \p values does not match the frame dimensions,
+     * \throws H5mdError if the size of \p values does not match the frame dimensions,
      *     if the maximum number of frames set for the data set has already been written,
      *     or if another error occurred when writing the data.
      */
@@ -206,7 +212,8 @@ private:
         FrameDescription(const FrameDescription&)            = delete;
         FrameDescription& operator=(const FrameDescription&) = delete;
         FrameDescription(FrameDescription&&)                 = default;
-        FrameDescription& operator=(FrameDescription&&)      = default;
+        // explicitly deleted (not supported by sg::scope_guard).
+        FrameDescription& operator=(FrameDescription&&) = delete;
 
         /*! \brief Construct and return a data space for reading a frame at \p frameIndex.
          *
@@ -259,20 +266,13 @@ private:
         //!< Memory data space for a single frame, called `mem_space_id` in hdf5 documentation.
         hid_t memoryDataSpace_;
 
-        /*! \brief Handle to scope guard which closes the memory data space handle when the destructor is called.
-         *
-         * Scope guards have no move semantics, so in order for the class to have move semantics
-         * we must store this indirectly. For the default move constructor this will be swapped
-         * with a nullptr, and thus not result in an extra close of the moved handle. For default
-         * move assignment this and the handle will be swapped together, and thus closed by the
-         * moved-from object's destructor.
+        /*! \brief Scope guard which closes the memory data space handle when the destructor is called.
          *
          * \note Must be declared directly below and thus initialized just after the guarded
          * handle. If not the guard may not be active if a subsequent initialization fails,
          * resulting in a memory leak.
          */
-        std::unique_ptr<H5mdGuard> memoryDataSpaceGuard_ = std::make_unique<H5mdGuard>(
-                sg::make_scope_guard(H5mdCloser(memoryDataSpace_, H5Sclose)));
+        H5mdGuard memoryDataSpaceGuard_ = sg::make_scope_guard(H5mdCloser(memoryDataSpace_, H5Sclose));
 
         /*! \brief Offset for hyperslab used to select frame.
          *
@@ -296,6 +296,9 @@ private:
 
     //!< Current number of frames in the data set.
     hsize_t numFrames_;
+
+    //! Absolute error bound of data (if lossy compression is applied).
+    const std::optional<double> absoluteError_;
 };
 
 /*! \brief Class which provides an interface for reading and writing scalar frame data to H5mdDataSetBase objects.
@@ -315,13 +318,13 @@ public:
 
     /*! \brief Constructor to manage a given \p dataSet.
      *
-     * \throws gmx::FileIOError if the data set frame dimensions is not empty.
+     * \throws H5mdError if the data set frame dimensions is not empty.
      */
     H5mdScalarFrameDataSet(H5mdFrameDataSet<ValueType>&& dataSet);
 
     /*! \brief Constructor to open an existing data set (called \p name, in \p container).
      *
-     * \throws gmx::FileIOError if the data set frame dimensions is not empty.
+     * \throws H5mdError if the data set frame dimensions is not empty.
      */
     H5mdScalarFrameDataSet(hid_t container, const char* name);
 
@@ -330,7 +333,7 @@ public:
      * \param[in]  frameIndex Frame index to read data from.
      * \param[out] value Value into which to read data.
      *
-     * \throws gmx::FileIOError if an error occurred when reading the data.
+     * \throws H5mdError if an error occurred when reading the data.
      */
     void readFrame(hsize_t frameIndex, ValueType* value);
 
@@ -338,33 +341,23 @@ public:
      *
      * \param[in] value Value to write.
      *
-     * \throws gmx::FileIOError if an error occurred when writing the data.
+     * \throws H5mdError if an error occurred when writing the data.
      */
     void writeNextFrame(const ValueType& value);
 };
 
 extern template class H5mdFrameDataSet<int32_t>;
-
 extern template class H5mdFrameDataSet<int64_t>;
-
 extern template class H5mdFrameDataSet<float>;
-
 extern template class H5mdFrameDataSet<double>;
-
 extern template class H5mdFrameDataSet<BasicVector<float>>;
-
 extern template class H5mdFrameDataSet<BasicVector<double>>;
 
 extern template class H5mdScalarFrameDataSet<int32_t>;
-
 extern template class H5mdScalarFrameDataSet<int64_t>;
-
 extern template class H5mdScalarFrameDataSet<float>;
-
 extern template class H5mdScalarFrameDataSet<double>;
-
 extern template class H5mdScalarFrameDataSet<BasicVector<float>>;
-
 extern template class H5mdScalarFrameDataSet<BasicVector<double>>;
 
 } // namespace gmx

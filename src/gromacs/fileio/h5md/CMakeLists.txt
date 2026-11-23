@@ -40,22 +40,32 @@ if(GMX_USE_HDF5)
     target_sources(h5md PRIVATE
         h5md.cpp
         h5md_attribute.cpp
+        h5md_compound_type.cpp
+        h5md_compression.cpp
         h5md_datasetbase.cpp
-        h5md_error.cpp
         h5md_fixeddataset.cpp
         h5md_framedataset.cpp
         h5md_group.cpp
+        h5md_indexgroup.cpp
         h5md_guard.cpp
+        h5md_kvtree_writer.cpp
+        h5md_mdparameters.cpp
         h5md_particleblock.cpp
         h5md_timedatablock.cpp
+        h5md_topologycompound.cpp
         h5md_topologyutils.cpp
+        binary_information.cpp
+        exceptions.cpp
     )
 
     target_include_directories(h5md SYSTEM PUBLIC ${HDF5_INCLUDE_DIRS})
     target_link_libraries(h5md PUBLIC ${HDF5_LIBRARIES})
+    if (GMX_HAVE_SZ3)
+        target_link_libraries(h5md PRIVATE hdf5sz3)
+    endif()
 else()
     # We do not need to compile H5md implementation files if we aren't building with it
-    target_sources(h5md PRIVATE h5md.cpp)
+    target_sources(h5md PRIVATE h5md.cpp binary_information.cpp)
 endif()
 
 target_link_libraries(h5md PRIVATE
@@ -74,6 +84,12 @@ endif()
 # Set required compile flags
 gmx_target_compile_options(h5md)
 target_compile_definitions(h5md PRIVATE HAVE_CONFIG_H)
+
+# Set whether we are building with SZ3 as a compile-time definition in target source files
+set_source_files_properties(binary_information.cpp h5md_compression.cpp
+    PROPERTIES
+    COMPILE_DEFINITIONS "GMX_HAVE_SZ3=$<BOOL:${GMX_HAVE_SZ3}>"
+)
 
 if (BUILD_TESTING)
      add_subdirectory(tests)

@@ -33,7 +33,11 @@
 
 # Set up the module library
 add_library(restraint INTERFACE)
-file(GLOB RESTRAINT_SOURCES *.cpp)
+set(RESTRAINT_SOURCES
+    manager.cpp
+    restraintmdmodule.cpp
+    )
+list(TRANSFORM RESTRAINT_SOURCES PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/")
 set(LIBGROMACS_SOURCES ${LIBGROMACS_SOURCES} ${RESTRAINT_SOURCES} PARENT_SCOPE)
 
 # Source files have the following dependencies on library infrastructure.
@@ -58,6 +62,24 @@ target_link_libraries(restraint INTERFACE
 #target_link_libraries(restraint PRIVATE NOTHING)
 # TODO: Explicitly link specific modules.
 #target_link_libraries(restraint PRIVATE legacy_modules)
+
+# Headers that are installed as part of the legacy API. The module owns its
+# part of the installed include tree and installs it through a target file set.
+target_include_directories(restraint INTERFACE
+                           $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+
+target_sources(restraint
+    INTERFACE
+        FILE_SET public_headers
+        TYPE HEADERS
+        BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/include
+        FILES
+            include/gromacs/restraint/restraintpotential.h
+)
+
+if(GMX_INSTALL_LEGACY_API)
+    install(TARGETS restraint FILE_SET public_headers DESTINATION include)
+endif()
 
 if (BUILD_TESTING)
     add_subdirectory(tests)

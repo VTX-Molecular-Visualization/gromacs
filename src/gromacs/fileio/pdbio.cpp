@@ -47,7 +47,6 @@
 #include <string>
 
 #include "gromacs/fileio/gmxfio.h"
-#include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
 #include "gromacs/math/utilities.h"
 #include "gromacs/mdtypes/md_enums.h"
@@ -64,6 +63,7 @@
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/futil.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/real.h"
@@ -164,27 +164,26 @@ void gmx_write_pdb_box(FILE* out, PbcType pbcType, const matrix box)
 
 static void read_cryst1(char* line, PbcType* pbcType, matrix box)
 {
-#define SG_SIZE 11
-    char    sa[12], sb[12], sc[12], sg[SG_SIZE + 1], ident;
-    double  fa, fb, fc, alpha, beta, gamma, cosa, cosb, cosg, sing;
-    int     syma, symb, symc;
-    PbcType pbcTypeFile;
+    char   sa[12], sb[12], sc[12];
+    double alpha, beta, gamma;
 
     sscanf(line, "%*s%s%s%s%lf%lf%lf", sa, sb, sc, &alpha, &beta, &gamma);
 
-    pbcTypeFile = PbcType::Unset;
+    PbcType pbcTypeFile = PbcType::Unset;
     if (std::strlen(line) >= 55)
     {
-        std::strncpy(sg, line + 55, SG_SIZE);
-        sg[SG_SIZE] = '\0';
-        ident       = ' ';
-        syma        = 0;
-        symb        = 0;
-        symc        = 0;
+        constexpr int c_sgSize = 11;
+        char          sg[c_sgSize + 1];
+        std::strncpy(sg, line + 55, c_sgSize);
+        sg[c_sgSize] = '\0';
+        char ident   = ' ';
+        int  syma    = 0;
+        int  symb    = 0;
+        int  symc    = 0;
         sscanf(sg, "%c %d %d %d", &ident, &syma, &symb, &symc);
         if (ident == 'P' && syma == 1 && symb <= 1 && symc <= 1)
         {
-            fc          = std::strtod(sc, nullptr) * 0.1;
+            double fc   = std::strtod(sc, nullptr) * 0.1;
             pbcTypeFile = (fc > 0 ? PbcType::Xyz : PbcType::XY);
         }
         if (ident == 'P' && syma == 21 && symb == 1 && symc == 1)
@@ -192,6 +191,15 @@ static void read_cryst1(char* line, PbcType* pbcType, matrix box)
             pbcTypeFile = PbcType::Screw;
         }
     }
+
+    if (pbcTypeFile == PbcType::Xyz && std::strtod(sa, nullptr) == 1
+        && std::strtod(sb, nullptr) == 1 && std::strtod(sc, nullptr) == 1)
+    {
+        // A unit-cell with P=1 and dimensions 1 Angstrom signals no PBC.
+        // According to spec, the angles should all be 90 degrees, but ignoring that is harmless.
+        pbcTypeFile = PbcType::No;
+    }
+
     if (pbcType)
     {
         *pbcType = pbcTypeFile;
@@ -199,17 +207,23 @@ static void read_cryst1(char* line, PbcType* pbcType, matrix box)
 
     if (box)
     {
-        fa = std::strtod(sa, nullptr) * 0.1;
-        fb = std::strtod(sb, nullptr) * 0.1;
-        fc = std::strtod(sc, nullptr) * 0.1;
+        clear_mat(box);
+    }
+
+    if (box && pbcTypeFile != PbcType::Unset && pbcTypeFile != PbcType::No)
+    {
+        double fa = std::strtod(sa, nullptr) * 0.1;
+        double fb = std::strtod(sb, nullptr) * 0.1;
+        double fc = std::strtod(sc, nullptr) * 0.1;
         if (pbcTypeFile == PbcType::Screw)
         {
             fa *= 0.5;
         }
-        clear_mat(box);
         box[XX][XX] = fa;
         if ((alpha != 90.0) || (beta != 90.0) || (gamma != 90.0))
         {
+            double cosa;
+            double cosb;
             if (alpha != 90.0)
             {
                 cosa = std::cos(alpha * gmx::c_deg2Rad);
@@ -226,6 +240,8 @@ static void read_cryst1(char* line, PbcType* pbcType, matrix box)
             {
                 cosb = 0;
             }
+            double cosg;
+            double sing;
             if (gamma != 90.0)
             {
                 cosg = std::cos(gamma * gmx::c_deg2Rad);
@@ -476,10 +492,24 @@ void write_pdbfile_indexed(FILE*          out,
 
     if (nullptr != gc)
     {
-        /* Write conect records */
-        for (int i = 0; (i < gc->nconect); i++)
+        // Write CONECT records, checking whether both atoms exist in
+        // the index.
+        for (int c = 0; (c < gc->nconect); c++)
         {
-            fprintf(out, "CONECT%5d%5d\n", gc->conect[i].ai + 1, gc->conect[i].aj + 1);
+            int  iAtom      = gc->conect[c].ai;
+            int  jAtom      = gc->conect[c].aj;
+            bool foundIAtom = false, foundJAtom = false;
+            for (int i = 0; i < nindex; ++i)
+            {
+                foundIAtom = foundIAtom || (index[i] == iAtom);
+                foundJAtom = foundJAtom || (index[i] == jAtom);
+            }
+            if (foundIAtom && foundJAtom)
+            {
+                // Both i and j atom are in the index, so print
+                // the CONECT record.
+                fprintf(out, "CONECT%5d%5d\n", iAtom + 1, jAtom + 1);
+            }
         }
     }
 }
@@ -845,7 +875,12 @@ void gmx_conect_done(gmx_conect conect)
 {
     gmx_conect_t* gc = conect;
 
+    if (gc == nullptr)
+    {
+        return;
+    }
     sfree(gc->conect);
+    sfree(gc);
 }
 
 gmx_bool gmx_conect_exist(gmx_conect conect, int ai, int aj)
@@ -874,6 +909,23 @@ void gmx_conect_add(gmx_conect conect, int ai, int aj)
         gc->conect[gc->nconect - 1].ai = ai;
         gc->conect[gc->nconect - 1].aj = aj;
     }
+}
+
+int gmx_conect_nconect(gmx_conect conect)
+{
+    const gmx_conect_t* gc = conect;
+
+    return (gc != nullptr) ? gc->nconect : 0;
+}
+
+void gmx_conect_get(gmx_conect conect, int i, int* ai, int* aj)
+{
+    const gmx_conect_t* gc = conect;
+
+    GMX_RELEASE_ASSERT(gc != nullptr, "Need a valid conect structure");
+    GMX_RELEASE_ASSERT(i >= 0 && i < gc->nconect, "Connection index out of range");
+    *ai = gc->conect[i].ai;
+    *aj = gc->conect[i].aj;
 }
 
 int read_pdbfile(FILE*      in,
@@ -1079,7 +1131,8 @@ void gmx_pdb_read_conf(const std::filesystem::path& infile,
     gmx_fio_fclose(in);
 }
 
-gmx_conect gmx_conect_generate(const t_topology* top)
+// DEPRECATED
+gmx_conect gmx_conect_generate(const t_idef& idef)
 {
     int        i;
     gmx_conect gc;
@@ -1091,9 +1144,41 @@ gmx_conect gmx_conect_generate(const t_topology* top)
     {
         if (IS_CHEMBOND(f))
         {
-            for (i = 0; (i < top->idef.il[f].nr); i += interaction_function[f].nratoms + 1)
+            for (i = 0; (i < idef.il[f].nr); i += interaction_function[f].nratoms + 1)
             {
-                gmx_conect_add(gc, top->idef.il[f].iatoms[i + 1], top->idef.il[f].iatoms[i + 2]);
+                gmx_conect_add(gc, idef.il[f].iatoms[i + 1], idef.il[f].iatoms[i + 2]);
+            }
+        }
+    }
+    return gc;
+}
+
+gmx_conect gmx_conect_generate(const gmx_mtop_t& mtop)
+{
+    gmx_conect gc = gmx_conect_init();
+
+    int indexOfFirstAtomInMolecule = 0;
+    // Loop over the molecule blocks
+    for (const gmx_molblock_t& molblock : mtop.molblock)
+    {
+        const gmx_moltype_t& moltype = mtop.moltype[molblock.type];
+        // Loop over each molecule in the block
+        for (int mol = 0; mol < molblock.nmol; mol++, indexOfFirstAtomInMolecule += moltype.atoms.nr)
+        {
+            // Find each "chemical bond"
+            for (const auto functionType : gmx::EnumerationWrapper<InteractionFunction>{})
+            {
+                if (IS_CHEMBOND(functionType))
+                {
+                    // Record a connection between its two atoms
+                    const InteractionList& ilist = moltype.ilist[functionType];
+                    for (int i = 1; i < ilist.size(); i += NRAL(functionType) + 1)
+                    {
+                        gmx_conect_add(gc,
+                                       indexOfFirstAtomInMolecule + ilist.iatoms[i],
+                                       indexOfFirstAtomInMolecule + ilist.iatoms[i + 1]);
+                    }
+                }
             }
         }
     }

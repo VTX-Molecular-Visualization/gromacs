@@ -40,9 +40,9 @@
  */
 #include "gmxpre.h"
 
-#include "gromacs/math/functions.h"
 #include "gromacs/nbnxm/gpu_common.h"
 #include "gromacs/utility/exceptions.h"
+#include "gromacs/utility/functions.h"
 
 #include "nbnxm_sycl_kernel.h"
 #include "nbnxm_sycl_kernel_pruneonly.h"
@@ -96,7 +96,7 @@ void gpu_launch_kernel_pruneonly(NbnxmGpu* nb, const InteractionLocality iloc, c
     launchNbnxmKernelPruneOnly(nb, iloc, numParts, numSciInPartMax);
     if (plist->haveFreshList && nbnxmSortListsOnGpu())
     {
-        const auto& deviceInfo = nb->deviceContext_->deviceInfo();
+        const auto& deviceInfo = nb->deviceContext.deviceInfo();
         launchSciSortOnGpu(plist, deviceInfo.maxWorkGroupSize, *nb->deviceStreams[iloc]);
     }
 
@@ -143,20 +143,9 @@ void gpu_launch_kernel(NbnxmGpu* nb, const gmx::StepWorkload& stepWork, const In
     launchNbnxmKernel(nb, stepWork, iloc, doPrune);
     if (doPrune && nbnxmSortListsOnGpu())
     {
-        const auto& deviceInfo = nb->deviceContext_->deviceInfo();
+        const auto& deviceInfo = nb->deviceContext.deviceInfo();
         launchSciSortOnGpu(plist, deviceInfo.maxWorkGroupSize, *nb->deviceStreams[iloc]);
     }
-}
-
-/*! Launch the Nonbonded free energy GPU kernels. */
-[[noreturn]] void gpu_launch_free_energy_kernel(NbnxmGpu gmx_unused*                 nb,
-                                                const SimulationWorkload gmx_unused& simulationWork,
-                                                const gmx::StepWorkload gmx_unused&  stepWork,
-                                                const InteractionLocality gmx_unused iloc)
-{
-    // Currently not GPU support for nonbonded free energy calculations in SYCL build. If workload flags are set correctly, it should never enter here.
-    GMX_THROW(NotImplementedError(
-            "Free energy GPU supported for SYCL build is not implemented yet."));
 }
 
 /*! \brief SYCL exclusive prefix sum kernel for list sorting.
@@ -177,7 +166,7 @@ void gpu_launch_kernel(NbnxmGpu* nb, const gmx::StepWorkload& stepWork, const In
  * \warning This kernel is inefficient for large inputs (oneDPL uses it with <= 16384 elements).
  */
 template<int workGroupSize, int nElements>
-static auto nbnxnKernelExclusivePrefixSum(const int* __restrict__ gm_input, int* __restrict__ gm_output)
+static auto nbnxmKernelExclusivePrefixSum(const int* __restrict__ gm_input, int* __restrict__ gm_output)
 {
     static_assert(nElements % workGroupSize == 0, "This simple scan kernel does not handle padding");
     return [=](sycl::nd_item<1> itemIdx)
@@ -207,17 +196,17 @@ class ExclusivePrefixSum;
  *                     positions \c gm_sciOffset[i] to \c gm_sciOffset[i+1] exclusive.
  * \param gm_sciSorted Sorted pair list.
  */
-static auto nbnxnKernelBucketSciSort(const nbnxn_sci_t* __restrict__ gm_sci,
+static auto nbnxmKernelBucketSciSort(const nbnxm_sci_t* __restrict__ gm_sci,
                                      const int* __restrict__ gm_sciCount,
                                      int* __restrict__ gm_sciOffset,
-                                     nbnxn_sci_t* __restrict__ gm_sciSorted)
+                                     nbnxm_sci_t* __restrict__ gm_sciSorted)
 {
     return [=](sycl::id<1> itemIdx)
     {
         using sycl::memory_order, sycl::memory_scope, sycl::access::address_space;
 
         const int         idx      = itemIdx[0];
-        const nbnxn_sci_t sci      = gm_sci[idx];
+        const nbnxm_sci_t sci      = gm_sci[idx];
         const int         sciCount = gm_sciCount[idx];
         // Choose an order in the sorted list for sci with the same number of neighbours as each other.
         // We want each sci with the same count to go somewhere in the list between sciOffset[count]
@@ -238,7 +227,7 @@ class BucketSciSort;
 template<int workGroupSize>
 static void launchPrefixSumKernel(sycl::queue& q, GpuPairlistSorting* sorting)
 {
-    auto kernelFunctionBuilder = nbnxnKernelExclusivePrefixSum<workGroupSize, c_sciHistogramSize>;
+    auto kernelFunctionBuilder = nbnxmKernelExclusivePrefixSum<workGroupSize, c_sciHistogramSize>;
     syclSubmitWithoutCghOrEvent<ExclusivePrefixSum<workGroupSize>>(
             q,
             kernelFunctionBuilder,
@@ -250,7 +239,7 @@ static void launchPrefixSumKernel(sycl::queue& q, GpuPairlistSorting* sorting)
 static void launchBucketSortKernel(sycl::queue& q, GpuPairlist* plist)
 {
     const size_t size                  = plist->numSci;
-    auto         kernelFunctionBuilder = nbnxnKernelBucketSciSort;
+    auto         kernelFunctionBuilder = nbnxmKernelBucketSciSort;
     syclSubmitWithoutCghOrEvent<BucketSciSort>(q,
                                                kernelFunctionBuilder,
                                                sycl::range<1>{ size },

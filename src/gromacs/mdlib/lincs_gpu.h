@@ -44,11 +44,13 @@
 #define GMX_MDLIB_LINCS_GPU_CUH
 
 #include <memory>
+#include <vector>
 
 #include "gromacs/gpu_utils/device_context.h"
 #include "gromacs/gpu_utils/device_stream.h"
 #include "gromacs/gpu_utils/devicebuffer_datatype.h"
 #include "gromacs/gpu_utils/gputraits.h"
+#include "gromacs/gpu_utils/hostallocator.h"
 #include "gromacs/mdlib/constr.h"
 #include "gromacs/mdlib/lincs_constraint_group_sizes.h"
 #include "gromacs/pbcutil/pbc_aiuc.h"
@@ -99,6 +101,10 @@ struct LincsGpuKernelParameters
     DeviceBuffer<float> d_massFactors;
     //! Sizes for constraint groups if no coupled constraints are found
     DeviceBuffer<int> d_constraintGroupsSizes;
+    //! Whether any constraints are part of triangles (3-atom rigid triangles)
+    bool hasTriangleConstraints = false;
+    //! Per-constraint bitmask: bit n set means coupling slot n is a triangle coupling (GPU)
+    DeviceBuffer<int> d_triangleBits;
 };
 
 /*! \internal \brief Class with interfaces and data for GPU version of LINCS. */
@@ -108,13 +114,15 @@ class LincsGpu
 public:
     /*! \brief Constructor.
      *
-     * \param[in] numIterations    Number of iteration for the correction of the projection.
-     * \param[in] expansionOrder   Order of the matrix inversion algorithm.
-     * \param[in] deviceContext    Device context.
-     * \param[in] deviceStream     Device command stream.
+     * \param[in] numIterations           Number of iteration for the correction of the projection.
+     * \param[in] expansionOrder          Order of the matrix inversion algorithm.
+     * \param[in] hasTriangleConstraints Whether any constraints are part of triangles (3-atom rigid triangles).
+     * \param[in] deviceContext           Device context.
+     * \param[in] deviceStream            Device command stream.
      */
     LincsGpu(int                  numIterations,
              int                  expansionOrder,
+             bool                 hasTriangleConstraints,
              const DeviceContext& deviceContext,
              const DeviceStream&  deviceStream);
     /*! \brief Destructor.*/
@@ -156,15 +164,19 @@ public:
      * This version uses common data formats so it can be called from anywhere
      * in the code. Does not recycle the data preparation routines from the CPU
      * version. Works only with simple case when all the constraints in idef are
-     * are handled by a single GPU. Triangles are not handled as special case.
+     * handled by a single GPU.
      *
      * Information about constraints is taken from:
      *     idef.il[InteractionFunction::Constraints].iatoms  --- type (T) of constraint and two
      * atom indexes (i1, i2) idef.iparams[T].constr.dA --- target length for constraint of type T
      *
+     * The copies to the GPU are asynchronous, so \p invmass has to be page-locked (pinned)
+     * host memory and has to stay alive until they have completed, and the device stream has to
+     * be synchronized between calls.
+     *
      * \param[in] idef      Local topology data to get information on constraints from.
      * \param[in] numAtoms  Number of atoms.
-     * \param[in] invmass   Inverse masses of atoms.
+     * \param[in] invmass   Inverse masses of atoms, in pinned host memory.
      */
     void set(const InteractionDefinitions& idef, int numAtoms, ArrayRef<const real> invmass);
 
@@ -186,24 +198,49 @@ private:
     LincsGpuKernelParameters kernelParams_;
 
     //! Scaled virial tensor (6 floats: [XX, XY, XZ, YY, YZ, ZZ])
-    std::vector<float> h_virialScaled_;
+    gmx::HostVector<float> h_virialScaled_;
 
-    /*! \brief Maximum total number of constraints so far.
-     *
-     * If the new number of constraints is larger then previous maximum, the GPU data arrays are
-     * reallocated.
-     */
-    int numConstraintsThreadsAlloc_;
+    //! Sizes and capacities of the device buffers in kernelParams_, see reallocateDeviceBuffer()
+    //! \{
+    int d_constraintsSize_                   = -1;
+    int d_constraintsCapacity_               = -1;
+    int d_constraintsTargetLengthsSize_      = -1;
+    int d_constraintsTargetLengthsCapacity_  = -1;
+    int d_coupledConstraintsCountsSize_      = -1;
+    int d_coupledConstraintsCountsCapacity_  = -1;
+    int d_coupledConstraintsIndicesSize_     = -1;
+    int d_coupledConstraintsIndicesCapacity_ = -1;
+    int d_massFactorsSize_                   = -1;
+    int d_massFactorsCapacity_               = -1;
+    int d_matrixASize_                       = -1;
+    int d_matrixACapacity_                   = -1;
+    int d_constraintGroupsSizesSize_         = -1;
+    int d_constraintGroupsSizesCapacity_     = -1;
+    int d_triangleBitsSize_                  = -1;
+    int d_triangleBitsCapacity_              = -1;
+    int d_inverseMassesSize_                 = -1;
+    int d_inverseMassesCapacity_             = -1;
+    //! \}
 
-    /*! \brief Maximum total number of atoms so far.
-     *
-     * If the new number of atoms is larger then previous maximum, the GPU array with masses is
-     * reallocated.
-     */
-    int numAtomsAlloc_;
-
-    //! Maximum number of coupled constraints
+    //! Maximum number of coupled constraints of any constraint in the last set() call
     int maxCoupledConstraints_ = 0;
+
+    //! Constraint in each device slot, -1 for padding; kept to avoid reallocating it in set()
+    std::vector<int> slotToConstraint_;
+    //! Host buffer for constrained atom pairs
+    gmx::HostVector<AtomPair> h_constraints_;
+    //! Host buffer for constraint target lengths
+    gmx::HostVector<float> h_constraintsTargetLengths_;
+    //! Host buffer for coupled constraint counts
+    gmx::HostVector<int> h_coupledConstraintsCounts_;
+    //! Host buffer for coupled constraint indices
+    gmx::HostVector<int> h_coupledConstraintsIndices_;
+    //! Host buffer for mass factors
+    gmx::HostVector<float> h_massFactors_;
+    //! Host buffer for constraint group sizes, HIP only
+    gmx::HostVector<int> h_constraintGroupSize_;
+    //! Host buffer for per-constraint triangle bitmask
+    gmx::HostVector<int> h_triangleBits_;
 };
 
 } // namespace gmx

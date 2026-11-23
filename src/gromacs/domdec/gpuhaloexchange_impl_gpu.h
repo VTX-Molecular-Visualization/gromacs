@@ -83,21 +83,23 @@ public:
      *
      * \param [inout] dd                       domdec structure
      * \param [in]    dimIndex                 the dimension index for this instance
-     * \param [in]    mpi_comm_mysim           communicator used for simulation
+     * \param [in]    mpiCommPpGroup           MPI communicator used for PP group (null on PME ranks)
      * \param [in]    mpi_comm_mysim_world     communicator used for simulation with PP + PME.
+     * \param [in]    haloStream               GPU device stream to perform haloexchange in
      * \param [in]    deviceContext            GPU device context
      * \param [in]    pulse                    the communication pulse for this instance
-     * \param [in]    wcycle                   The wallclock counter
      */
     Impl(gmx_domdec_t*        dd,
          int                  dimIndex,
-         MPI_Comm             mpi_comm_mysim,
+         MPI_Comm             mpiCommPpGroup,
          MPI_Comm             mpi_comm_mysim_world,
+         const DeviceStream&  haloStream,
          const DeviceContext& deviceContext,
-         int                  pulse,
-         gmx_wallcycle*       wcycle);
+         int                  pulse);
     ~Impl();
 
+    //! Finish the construction once \c wcycle is available
+    void addWallcycleCounters(gmx_wallcycle* wcycle);
     /*! \brief
      * (Re-) Initialization for GPU halo exchange
      * \param [in] d_coordinatesBuffer  pointer to coordinates buffer in GPU memory
@@ -137,15 +139,15 @@ private:
      * \param [in] recvRank     rank of source
      * \param [in] haloType     whether halo exchange is of coordinates or forces
      */
-    void communicateHaloData(DeviceBuffer<Float3> sendPtr,
-                             int                  sendOffset,
-                             int                  sendSize,
-                             int                  sendRank,
-                             DeviceBuffer<Float3> recvPtr,
-                             int                  recvOffset,
-                             int                  recvSize,
-                             int                  recvRank,
-                             HaloType             haloType);
+    void communicateHaloData(Float3*  sendPtr,
+                             int      sendOffset,
+                             int      sendSize,
+                             int      sendRank,
+                             Float3*  recvPtr,
+                             int      recvOffset,
+                             int      recvSize,
+                             int      recvRank,
+                             HaloType haloType);
 
     /*! \brief Data transfer for GPU halo exchange using peer-to-peer copies
      * \param [inout] sendPtr    address to send data from
@@ -156,13 +158,13 @@ private:
      * \param [in] recvRank      rank to recv data from
      * \param [in] haloType      whether halo exchange is of coordinates or forces
      */
-    void communicateHaloDataPeerToPeer(DeviceBuffer<Float3>* sendPtr,
-                                       int                   sendOffset,
-                                       int                   sendSize,
-                                       int                   sendRank,
-                                       DeviceBuffer<Float3>* remotePtr,
-                                       int                   recvRank,
-                                       HaloType              haloType);
+    void communicateHaloDataPeerToPeer(Float3*  sendPtr,
+                                       int      sendOffset,
+                                       int      sendSize,
+                                       int      sendRank,
+                                       Float3*  remotePtr,
+                                       int      recvRank,
+                                       HaloType haloType);
 
     /*! \brief Data transfer for GPU halo exchange using GPU-aware MPI
      * \param [in] sendPtr      send buffer address
@@ -262,10 +264,10 @@ private:
     int fRecvSize_ = 0;
     //! number of home atoms - offset of local halo region
     int numHomeAtoms_ = 0;
-    //! remote GPU coordinates buffer pointer for pushing data
-    DeviceBuffer<Float3> remoteXPtr_ = nullptr;
-    //! remote GPU force buffer pointer for pushing data
-    DeviceBuffer<Float3> remoteFPtr_ = nullptr;
+    //! remote GPU coordinates buffer pointer for pushing data, not to be freed
+    Float3* remoteXPtr_ = nullptr;
+    //! remote GPU force buffer pointer for pushing data, not to be freed
+    Float3* remoteFPtr_ = nullptr;
     //! Periodic Boundary Conditions for this rank
     bool usePBC_ = false;
     //! force shift buffer on device
@@ -274,14 +276,14 @@ private:
     std::unique_ptr<GpuEventSynchronizer> haloXDataTransferLaunched_;
     //! Event triggered when F halo transfer has been launched with peer-to-peer memory copy
     std::unique_ptr<GpuEventSynchronizer> haloFDataTransferLaunched_;
-    //! MPI communicator used for simulation
-    MPI_Comm mpi_comm_mysim_;
+    //! MPI communicator used for PP ranks
+    MPI_Comm mpiCommPpGroup_;
     //! MPI communicator involving PP + PME.
     MPI_Comm mpi_comm_mysim_world_;
     //! GPU context object
     const DeviceContext& deviceContext_;
     //! Device stream for this halo exchange
-    std::unique_ptr<DeviceStream> haloStream_;
+    const DeviceStream& haloStream_;
     //! full coordinates buffer in GPU memory
     DeviceBuffer<Float3> d_x_ = nullptr;
     //! full forces buffer in GPU memory

@@ -48,7 +48,6 @@
 #include <vector>
 
 #include "gromacs/domdec/domdec_struct.h"
-#include "gromacs/math/functions.h"
 #include "gromacs/mdtypes/commrec.h"
 #include "gromacs/timing/cyclecounter.h"
 #include "gromacs/timing/gpu_timing.h"
@@ -57,6 +56,7 @@
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/gmxmpi.h"
 #include "gromacs/utility/logger.h"
@@ -398,14 +398,14 @@ WallcycleCounts wallcycle_sum(const t_commrec* cr, gmx_wallcycle* wc)
 
     subtract_cycles(wcc, WallCycleCounter::PmeFft, WallCycleCounter::PmeFftComm);
 
-    if (cr->dd && cr->dd->numPmeOnlyRanks == 0)
+    if (cr->dd == nullptr || cr->dd->numPmeOnlyRanks == 0)
     {
         /* All nodes do PME (or no PME at all) */
         subtract_cycles(wcc, WallCycleCounter::Force, WallCycleCounter::PmeMesh);
     }
     else
     {
-        /* The are PME-only nodes */
+        /* There are PME-only nodes */
         if (wcc[WallCycleCounter::PmeMesh].n > 0)
         {
             GMX_ASSERT(wcc[WallCycleCounter::PmeGpuMesh].c == 0,
@@ -659,17 +659,17 @@ static void print_header(FILE* fplog, int nrank_pp, int nth_pp, int nrank_pme, i
 }
 
 
-void wallcycle_print(FILE*                            fplog,
-                     const gmx::MDLogger&             mdlog,
-                     int                              nnodes,
-                     int                              npme,
-                     int                              nth_pp,
-                     int                              nth_pme,
-                     double                           realtime,
-                     gmx_wallcycle*                   wc,
-                     const WallcycleCounts&           cyc_sum,
-                     const gmx_wallclock_gpu_nbnxn_t* gpu_nbnxn_t,
-                     const gmx_wallclock_gpu_pme_t*   gpu_pme_t)
+void wallcycle_print(FILE*                                         fplog,
+                     const gmx::MDLogger&                          mdlog,
+                     int                                           nnodes,
+                     int                                           npme,
+                     int                                           nth_pp,
+                     int                                           nth_pme,
+                     double                                        realtime,
+                     gmx_wallcycle*                                wc,
+                     const WallcycleCounts&                        cyc_sum,
+                     const gmx_wallclock_gpu_nbnxm_t*              gpu_nbnxm_t,
+                     const std::optional<gmx_wallclock_gpu_pme_t>& pmeGpuTimings)
 {
     double      tot, tot_for_pp, tot_for_rest, tot_cpu_overlap, gpu_cpu_ratio;
     double      c2t, c2t_pp, c2t_pme = 0;
@@ -893,28 +893,28 @@ void wallcycle_print(FILE*                            fplog,
 
     /* print GPU timing summary */
     double tot_gpu = 0.0;
-    if (gpu_pme_t)
+    if (pmeGpuTimings.has_value())
     {
-        for (auto key : keysOf(gpu_pme_t->timing))
+        for (auto key : keysOf(pmeGpuTimings->timing))
         {
-            tot_gpu += gpu_pme_t->timing[key].t;
+            tot_gpu += pmeGpuTimings->timing[key].t;
         }
     }
-    if (gpu_nbnxn_t)
+    if (gpu_nbnxm_t)
     {
         const char* k_log_str[2][2] = { { "Nonbonded F kernel", "Nonbonded F+ene k." },
                                         { "Nonbonded F+prune k.", "Nonbonded F+ene+prune k." } };
-        tot_gpu += gpu_nbnxn_t->pl_h2d_t + gpu_nbnxn_t->nb_h2d_t + gpu_nbnxn_t->nb_d2h_t;
+        tot_gpu += gpu_nbnxm_t->pl_h2d_t + gpu_nbnxm_t->nb_h2d_t + gpu_nbnxm_t->nb_d2h_t;
 
         /* add up the kernel timings */
         for (int i = 0; i < 2; i++)
         {
             for (int j = 0; j < 2; j++)
             {
-                tot_gpu += gpu_nbnxn_t->ktime[i][j].t;
+                tot_gpu += gpu_nbnxm_t->ktime[i][j].t;
             }
         }
-        tot_gpu += gpu_nbnxn_t->pruneTime.t;
+        tot_gpu += gpu_nbnxm_t->pruneTime.t;
 
         tot_cpu_overlap = wc->wcc[WallCycleCounter::Force].c;
         if (wc->wcc[WallCycleCounter::PmeMesh].n > 0)
@@ -928,46 +928,46 @@ void wallcycle_print(FILE*                            fplog,
                 " Computing:                         Count  Wall t (s)      ms/step       %c\n",
                 '%');
         fprintf(fplog, "%s\n", hline);
-        print_gputimes(fplog, "Pair list H2D", gpu_nbnxn_t->pl_h2d_c, gpu_nbnxn_t->pl_h2d_t, tot_gpu);
-        print_gputimes(fplog, "X / q H2D", gpu_nbnxn_t->nb_c, gpu_nbnxn_t->nb_h2d_t, tot_gpu);
+        print_gputimes(fplog, "Pair list H2D", gpu_nbnxm_t->pl_h2d_c, gpu_nbnxm_t->pl_h2d_t, tot_gpu);
+        print_gputimes(fplog, "X / q H2D", gpu_nbnxm_t->nb_c, gpu_nbnxm_t->nb_h2d_t, tot_gpu);
 
         for (int i = 0; i < 2; i++)
         {
             for (int j = 0; j < 2; j++)
             {
-                if (gpu_nbnxn_t->ktime[i][j].c)
+                if (gpu_nbnxm_t->ktime[i][j].c)
                 {
                     print_gputimes(fplog,
                                    k_log_str[i][j],
-                                   gpu_nbnxn_t->ktime[i][j].c,
-                                   gpu_nbnxn_t->ktime[i][j].t,
+                                   gpu_nbnxm_t->ktime[i][j].c,
+                                   gpu_nbnxm_t->ktime[i][j].t,
                                    tot_gpu);
                 }
             }
         }
-        if (gpu_pme_t)
+        if (pmeGpuTimings.has_value())
         {
-            for (auto key : keysOf(gpu_pme_t->timing))
+            for (auto key : keysOf(pmeGpuTimings->timing))
             {
-                if (gpu_pme_t->timing[key].c)
+                if (pmeGpuTimings->timing[key].c)
                 {
                     print_gputimes(fplog,
                                    enumValuetoString(key),
-                                   gpu_pme_t->timing[key].c,
-                                   gpu_pme_t->timing[key].t,
+                                   pmeGpuTimings->timing[key].c,
+                                   pmeGpuTimings->timing[key].t,
                                    tot_gpu);
                 }
             }
         }
-        if (gpu_nbnxn_t->pruneTime.c)
+        if (gpu_nbnxm_t->pruneTime.c)
         {
-            print_gputimes(fplog, "Pruning kernel", gpu_nbnxn_t->pruneTime.c, gpu_nbnxn_t->pruneTime.t, tot_gpu);
+            print_gputimes(fplog, "Pruning kernel", gpu_nbnxm_t->pruneTime.c, gpu_nbnxm_t->pruneTime.t, tot_gpu);
         }
-        print_gputimes(fplog, "F D2H", gpu_nbnxn_t->nb_c, gpu_nbnxn_t->nb_d2h_t, tot_gpu);
+        print_gputimes(fplog, "F D2H", gpu_nbnxm_t->nb_c, gpu_nbnxm_t->nb_d2h_t, tot_gpu);
         fprintf(fplog, "%s\n", hline);
-        print_gputimes(fplog, "Total ", gpu_nbnxn_t->nb_c, tot_gpu, tot_gpu);
+        print_gputimes(fplog, "Total ", gpu_nbnxm_t->nb_c, tot_gpu, tot_gpu);
         fprintf(fplog, "%s\n", hline);
-        if (gpu_nbnxn_t->dynamicPruneTime.c)
+        if (gpu_nbnxm_t->dynamicPruneTime.c)
         {
             /* We print the dynamic pruning kernel timings after a separator
              * and avoid adding it to tot_gpu as this is not in the force
@@ -975,18 +975,18 @@ void wallcycle_print(FILE*                            fplog,
              */
             print_gputimes(fplog,
                            "*Dynamic pruning",
-                           gpu_nbnxn_t->dynamicPruneTime.c,
-                           gpu_nbnxn_t->dynamicPruneTime.t,
+                           gpu_nbnxm_t->dynamicPruneTime.c,
+                           gpu_nbnxm_t->dynamicPruneTime.t,
                            tot_gpu);
             fprintf(fplog, "%s\n", hline);
         }
         gpu_cpu_ratio = tot_gpu / tot_cpu_overlap;
-        if (gpu_nbnxn_t->nb_c > 0 && wc->wcc[WallCycleCounter::Force].n > 0)
+        if (gpu_nbnxm_t->nb_c > 0 && wc->wcc[WallCycleCounter::Force].n > 0)
         {
             fprintf(fplog,
                     "\nAverage per-step force GPU/CPU evaluation time ratio: %.3f ms/%.3f ms = "
                     "%.3f\n",
-                    tot_gpu / gpu_nbnxn_t->nb_c,
+                    tot_gpu / gpu_nbnxm_t->nb_c,
                     tot_cpu_overlap / wc->wcc[WallCycleCounter::Force].n,
                     gpu_cpu_ratio);
         }

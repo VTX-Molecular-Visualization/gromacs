@@ -41,6 +41,7 @@
 #include "gmxpre.h"
 
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -48,6 +49,7 @@
 #include <gtest/gtest.h>
 
 #include "gromacs/fileio/tpxio.h"
+#include "gromacs/gmxpreprocess/gmxcpp.h"
 #include "gromacs/gmxpreprocess/grompp.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/state.h"
@@ -363,7 +365,9 @@ TEST_P(GromppCmapDirectiveTest, AcceptValidAndErrorOnInvalidCMAP)
 }
 
 std::vector<std::tuple<std::string, ExpectedResult, std::string>> cmapValidInputOutput = {
-    { "", ExpectedResult::Death, "Unknown cmap torsion between atoms 1 2 3 4 5" },
+    { "",
+      ExpectedResult::Death,
+      "Unable to assign a cmap type to torsion between atoms 1 2 3 4 and 5" },
     { "define = -DNOT_A_CMAPTYPE",
       ExpectedResult::Death,
       "Unknown atomtype 1 found at position 5 in cmap type" },
@@ -385,10 +389,10 @@ std::vector<std::tuple<std::string, ExpectedResult, std::string>> cmapValidInput
       "Invalid function type for cmap type: must be 1" },
     { "define = -DRECTANGULAR_GRID_IN_CMAPTYPE",
       ExpectedResult::Death,
-      "Not the same grid spacing in x and y for cmap grid: x=2, y=3" },
-    { "define = -DUNREAL_GRID_SIZE_IN_CMAPTYPE",
+      "Not the same grid extent in x and y for cmap grid: x=2, y=3" },
+    { "define = -DUNREAL_GRID_EXTENT_IN_CMAPTYPE",
       ExpectedResult::Death,
-      "Invalid cmap type grid spacings in x and y dimensions: must be numbers,\n  found Tarydium" },
+      "Invalid cmap-type grid extents in x and y dimensions: must be numbers,\n  found Tarydium" },
     { "define = -DTOO_FEW_GRID_PARAMETERS_IN_CMAPTYPE",
       ExpectedResult::Death,
       "Error in reading cmap parameter for atomtypes X Y X X Y: found 3,\n  expected 4" },
@@ -406,7 +410,7 @@ std::vector<std::tuple<std::string, ExpectedResult, std::string>> cmapValidInput
     { "define = -DMATCHING_RESIDUE_NAMES_IN_CMAPTYPE", ExpectedResult::Success, "" },
     { "define = -DNONMATCHING_RESIDUE_NAMES_IN_CMAPTYPE",
       ExpectedResult::Death,
-      "Unknown cmap torsion between atoms 1 2 3 4 5" },
+      "Unable to assign a cmap type to torsion between atoms 1 2 3 4 and 5" },
     { "define = -DNOT_A_CMAP_TORSION", ExpectedResult::Death, "Too few parameters on line" },
     { "define = -DINVALID_FUNCTYPE_IN_CMAP_TORSION",
       ExpectedResult::Death,
@@ -414,13 +418,60 @@ std::vector<std::tuple<std::string, ExpectedResult, std::string>> cmapValidInput
     { "define = -DUSER_SPECIFIED_CMAPTYPE", ExpectedResult::Success, "" },
     { "define = -DUSER_SPECIFIED_CMAPTYPE_OUT_OF_BOUNDS",
       ExpectedResult::Death,
-      "Unable to assign a cmap type to torsion 1 2 3 4 and 5" },
-    { "define = -DALL_CMAP_TYPES_MUST_USE_SAME_GRID_SPACING",
+      "Unable to assign a cmap type to torsion between atoms 1 2 3 4 and 5" },
+    { "define = -DUSER_SPECIFIED_NAMED_CMAPTYPES", ExpectedResult::Success, "" }, // both A and B grids resolved by name
+    { "define = -DUSER_SPECIFIED_NUMBER_CMAPTYPES", ExpectedResult::Success, "" }, // A/B grids resolved by 1-based integer index
+    { "define = -DUSER_SPECIFIED_NUMBER_UNNAMED_CMAPTYPE",
+      ExpectedResult::Success,
+      "" }, // unnamed cmaptype (old format, no name token) selectable by 1-based integer index
+    { "define = -DUSER_SPECIFIED_MIXED_NAME_AND_INDEX",
       ExpectedResult::Death,
-      "each CMAP must have the same grid spacing" },
+      "must both be names or both be indices" }, // mixing name and integer index is not allowed
+    { "define = -DUSER_SPECIFIED_MIXED_INDEX_AND_NAME",
+      ExpectedResult::Death,
+      "must both be names or both be indices" }, // reverse: integer A + name B also rejected
+    { "define = -DUSER_SPECIFIED_UNKNOWN_CMAP_NAME", ExpectedResult::Death, "name 'UNKNOWN' found" }, // unrecognised B-state name must trigger fatal error
+    { "define = -DALL_CMAP_TYPES_MUST_USE_SAME_GRID_EXTENT",
+      ExpectedResult::Death,
+      "each CMAP must have the same grid extent" },
 };
 
 INSTANTIATE_TEST_SUITE_P(CMAPDefinesAndErrors, GromppCmapDirectiveTest, testing::ValuesIn(cmapValidInputOutput));
+
+TEST(GmxcppTest, LongIfdefBlockDoesNotOverflowStack)
+{
+    TestFileManager       fileManager;
+    std::filesystem::path topPath = fileManager.getTemporaryFilePath("long_ifdef.top");
+    {
+        std::ofstream file(topPath);
+        file << "before_ifdef\n";
+        file << "#ifdef NOT_DEFINED\n";
+        for (int i = 0; i < 100000; ++i)
+        {
+            file << "skipped line " << i << "\n";
+        }
+        file << "#else\n";
+        file << "in_else_branch\n";
+        file << "#endif\n";
+        file << "after_ifdef\n";
+    }
+
+    CPreProcessor_t handle = nullptr;
+    ASSERT_EQ(cpp_open_file(topPath, &handle, nullptr), eCPP_OK);
+    char buf[1024];
+
+    ASSERT_EQ(cpp_read_line(&handle, sizeof(buf), buf), eCPP_OK);
+    EXPECT_STREQ(buf, "before_ifdef");
+
+    ASSERT_EQ(cpp_read_line(&handle, sizeof(buf), buf), eCPP_OK);
+    EXPECT_STREQ(buf, "in_else_branch");
+
+    ASSERT_EQ(cpp_read_line(&handle, sizeof(buf), buf), eCPP_OK);
+    EXPECT_STREQ(buf, "after_ifdef");
+
+    EXPECT_EQ(cpp_read_line(&handle, sizeof(buf), buf), eCPP_EOF);
+    cpp_done(handle);
+}
 
 } // namespace
 } // namespace test

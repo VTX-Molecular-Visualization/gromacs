@@ -92,7 +92,7 @@ public:
     //! Whether force buffer ops are done on the GPU this step
     bool useGpuFBufferOps = false;
     //! Whether PME forces are reduced with other contributions on the GPU this step
-    bool useGpuPmeFReduction = false; // TODO: add this flag to the internal PME GPU data structures too
+    bool useGpuPmeFReduction = false;
     //! Whether GPU coordinates halo exchange is active this step
     bool useGpuXHalo = false;
     //! Whether GPU forces halo exchange is active this step
@@ -105,6 +105,31 @@ public:
     bool combineMtsForcesBeforeHaloExchange = false;
     //! Whether to clear local force buffer on the device early on in the step
     bool clearGpuFBufferEarly = false;
+    //! Whether we need to copy coordinates from GPU for IO at this step, will occur just before update, is always false with update on CPU
+    bool copyXFromGpuForIO = false;
+    //! Whether we need to copy velocities from GPU for IO at this step, will occur just before update, is always false with update on CPU
+    bool copyVFromGpuForIO = false;
+    /*! \brief Whether the forces reduced on the GPU are copied to the host for
+     * CPU update, host-side VSite spreading (see \c spreadVsiteForcesOnHost),
+     * or staged PME contribution. */
+    bool copyReducedFFromGpu = false;
+    //! \brief Whether final forces need to be copied from the GPU for output before update; always false with CPU update
+    bool copyFinalFFromGpu = false;
+    //! \brief Whether the host holds the final forces that the GPU update needs, so they are copied to the GPU
+    bool copyFinalFToGpu = false;
+    /*! \brief Whether virtual-site forces are spread on the host this step
+     *
+     * Always the case with virtual sites and CPU update. With GPU update, this is the case
+     * on virial and force-output steps, when the spread forces are needed on the host.
+     * These are the only host-side consumers of spread vsite forces with GPU update.
+     * Mutually exclusive with \c spreadVsiteForcesOnGpu.
+     */
+    bool spreadVsiteForcesOnHost = false;
+    /*! \brief Whether virtual-site forces are spread on the GPU, within the GPU update, this step
+     *
+     * Mutually exclusive with \c spreadVsiteForcesOnHost.
+     */
+    bool spreadVsiteForcesOnGpu = false;
 };
 
 /*! \libinternal
@@ -217,6 +242,8 @@ public:
     bool haveEwaldSurfaceContribution = false;
     //! Whether to use multiple time stepping
     bool useMts = false;
+    //! \brief Whether the system has virtual sites
+    bool haveVirtualSites = false;
     //! Whether a GPU graph should be used to execute steps in the MD loop if run conditions allow.
     bool useMdGpuGraph = false;
     //! Whether to use NVSHMEM enabled GPU initiated communication.

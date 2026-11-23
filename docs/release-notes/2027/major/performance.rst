@@ -8,3 +8,60 @@ Performance improvements
    a space between the colon and number!
 
 
+Improved performance of systems that are inhomogeneous along z
+""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+
+The non-bonded kernels got very inefficient with systems that are have
+a very inhomogeneous atom distribution along the z-dimension. Now
+all three dimensions are considered when estimating atom density.
+
+:issue:`5622`
+
+Reduced host-side blocking in the GPU update and constraints setup
+""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+
+The mass and temperature-coupling group data that the GPU update and
+constraints upload on every neighbour-search step is now held in pinned
+host memory and copied asynchronously, rather than with blocking copies.
+This cuts the host-side cost of the GPU update and constraints setup by
+roughly a factor of 2.6, with the largest benefit for runs with frequent
+pair-list updates.
+
+Improved dual-pairlist pruning interval heuristics
+""""""""""""""""""""""""""""""""""""""""""""""""""
+
+For large nstlist values, the pairlist pruning interval is now larger.
+This improves performance, in particular with reaction-field electrostatics.
+
+:issue:`5701`
+
+GROMOS-96 angle interactions are now supported with GPU bonded forces
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+
+GROMOS-96 cosine-harmonic angle potentials (``F_G96ANGLES``) are now
+computed on the GPU with CUDA, HIP, and SYCL whenever bonded interactions
+are offloaded to the GPU (``-bonded gpu``).
+
+:issue:`5776`
+
+Faster CPU PME free-energy runs when Coulomb or LJ lambda is 0 or 1
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+
+On steps that compute forces without energies or virials, CPU Coulomb PME
+and LJ-PME free-energy simulations now skip the zero-weight reciprocal grid
+pass whenever the corresponding lambda is 0 or 1 (for example across van der
+Waals windows where charges are already decoupled, or at lambda endpoints).
+
+:issue:`5805`
+Triangle constraints are now supported with GPU-resident update
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+
+Triangles of coupled constraints are now supported with GPU-resident update and LINCS.
+This can lead to performance improvements for systems with many such coupled constraints,
+for example when constraining water molecules with LINCS, or in coarse-grained models like Martini.
+|Gromacs| will now be able to run such systems with the ``-update gpu`` option.
+
+Currently, this feature is pending validation and requires explicit activation via the
+``GMX_GPU_TRIANGLE_CONSTRAINTS=1`` environment variable.
+
+:issue:`5665`

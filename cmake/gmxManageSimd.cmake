@@ -31,6 +31,8 @@
 # To help us fund GROMACS development, we humbly ask that you cite
 # the research papers on the package. Check out https://www.gromacs.org.
 
+include(CheckCompilerFlag)
+include(CheckCXXSourceCompiles)
 include(gmxDetectCpu)
 include(gmxSimdFlags)
 
@@ -273,14 +275,14 @@ elseif(GMX_SIMD_ACTIVE STREQUAL "IBM_VSX")
 
 elseif(GMX_SIMD_ACTIVE STREQUAL "REFERENCE")
 
-    # NB: This file handles settings for the SIMD module, so in the interest 
+    # NB: This file handles settings for the SIMD module, so in the interest
     # of proper modularization, please do NOT put any verlet kernel settings in this file.
 
     if(GMX_SIMD_REF_FLOAT_WIDTH)
-        add_definitions(-DGMX_SIMD_REF_FLOAT_WIDTH=${GMX_SIMD_REF_FLOAT_WIDTH})
+        add_compile_definitions(GMX_SIMD_REF_FLOAT_WIDTH=${GMX_SIMD_REF_FLOAT_WIDTH})
     endif()
     if(GMX_SIMD_REF_DOUBLE_WIDTH)
-        add_definitions(-DGMX_SIMD_REF_DOUBLE_WIDTH=${GMX_SIMD_REF_DOUBLE_WIDTH})
+        add_compile_definitions(GMX_SIMD_REF_DOUBLE_WIDTH=${GMX_SIMD_REF_DOUBLE_WIDTH})
     endif()
 
     set(GMX_SIMD_${GMX_SIMD_ACTIVE} 1)
@@ -330,12 +332,12 @@ if(GMX_ENABLE_AVX512_TESTS AND
     if (NOT MSVC)
         foreach(_testflag "-Wno-unused-command-line-argument" "-wd10121")
             string(REGEX REPLACE "[^a-zA-Z0-9]+" "_" FLAG_ACCEPTED_VARIABLE "${_testflag}_FLAG_ACCEPTED")
-            check_cxx_compiler_flag("${_testflag}" ${FLAG_ACCEPTED_VARIABLE})
+            check_compiler_flag(CXX "${_testflag}" ${FLAG_ACCEPTED_VARIABLE})
             if(${FLAG_ACCEPTED_VARIABLE})
                 set(CXX_NO_UNUSED_OPTION_WARNING_FLAGS "${_testflag}")
                 break()
             endif()
-        endforeach(_testflag)
+        endforeach()
     endif()
 endif()
 
@@ -350,12 +352,12 @@ endif()
 #
 # Update 2015-11-04: As of version 3.6, clang has added support for __vectorcall
 # (also on Linux). This appears to be buggy for the reference SIMD
-# implementation when using the Debug build (when functions are not inlined) 
+# implementation when using the Debug build (when functions are not inlined)
 # while it seems works fine for the actual SIMD implementations. This is likely
 # because the reference build ends up passing lots of structures with arrays
 # rather than actual vector data. For now we disable __vectorcall with clang
 # when using the reference build.
-# 
+#
 # xlc 13.1.5 does not seem recognize any attribute, and warns about invalid ones
 # so we avoid searching for any.
 #

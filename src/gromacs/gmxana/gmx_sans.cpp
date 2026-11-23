@@ -46,6 +46,7 @@
 #include "gromacs/commandline/pargs.h"
 #include "gromacs/fileio/confio.h"
 #include "gromacs/fileio/filetypes.h"
+#include "gromacs/fileio/timecontrol.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/fileio/xvgr.h"
 #include "gromacs/gmxana/gmx_ana.h"
@@ -91,17 +92,16 @@ int gmx_sans(int argc, char* argv[])
         "WARNING: If sq or pr specified this tool can produce large number of files! Up to ",
         "two times larger than number of frames!"
     };
-    static gmx_bool bPBC     = TRUE;
-    static gmx_bool bNORM    = FALSE;
-    static real     binwidth = 0.2,
-                grid = 0.05; /* bins shouldn't be smaller then smallest bond (~0.1nm) length */
-    static real         start_q = 0.0, end_q = 2.0, q_step = 0.01;
-    static real         mcover   = -1;
-    static unsigned int seed     = 0;
-    static int          nthreads = -1;
+    gmx_bool bPBC  = TRUE;
+    gmx_bool bNORM = FALSE;
+    real binwidth = 0.2, grid = 0.05; /* bins shouldn't be smaller then smallest bond (~0.1nm) length */
+    real         start_q = 0.0, end_q = 2.0, q_step = 0.01;
+    real         mcover   = -1;
+    unsigned int seed     = 0;
+    int          nthreads = -1;
 
-    static const char* emode[]   = { nullptr, "direct", "mc", nullptr };
-    static const char* emethod[] = { nullptr, "debye", "fft", nullptr };
+    const char* emode[]   = { nullptr, "direct", "mc", nullptr };
+    const char* emethod[] = { nullptr, "debye", "fft", nullptr };
 
     gmx_neutron_atomic_structurefactors_t* gnsf;
     gmx_sans_t*                            gsans;
@@ -140,7 +140,7 @@ int gmx_sans(int argc, char* argv[])
     matrix                               box;
     rvec*                                x;
     int                                  natoms;
-    real                                 t;
+    double                               t;
     char**                               grpname = nullptr;
     int*                                 index   = nullptr;
     int                                  isize;
@@ -148,6 +148,7 @@ int gmx_sans(int argc, char* argv[])
     gmx_radial_distribution_histogram_t *prframecurrent = nullptr, *pr = nullptr;
     gmx_static_structurefactor_t *       sqframecurrent = nullptr, *sq = nullptr;
     gmx_output_env_t*                    oenv;
+    gmx::TimeControl                     timeControl;
 
     std::array<t_filenm, 8> filenames = { { { efTPR, "-s", nullptr, ffREAD },
                                             { efTRX, "-f", nullptr, ffREAD },
@@ -164,7 +165,7 @@ int gmx_sans(int argc, char* argv[])
     nthreads = gmx_omp_get_max_threads();
 
     if (!parse_common_args(
-                &argc, argv, PCA_CAN_TIME | PCA_TIME_UNIT, NFILE, fnm, asize(pa), pa, asize(desc), desc, 0, nullptr, &oenv))
+                &argc, argv, PCA_CAN_TIME | PCA_TIME_UNIT, NFILE, fnm, asize(pa), pa, asize(desc), desc, 0, nullptr, &oenv, &timeControl))
     {
         return 0;
     }
@@ -243,7 +244,7 @@ int gmx_sans(int argc, char* argv[])
         gmx_rmpbc_apply(gpbc, top->atoms.nr, box, x);
     }
 
-    natoms = read_first_x(oenv, &status, fnTRX, &t, &x, box);
+    natoms = read_first_x(oenv, &status, fnTRX, &t, &x, box, &timeControl);
     if (natoms != top->atoms.nr)
     {
         fprintf(stderr,

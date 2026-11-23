@@ -32,9 +32,12 @@
  * the research papers on the package. Check out https://www.gromacs.org.
  */
 
-/*! \brief Declarations of H5md fixed data set class.
+/*! \internal \file
+ * \brief Declarations of H5md fixed data set class.
  *
  * \author Petter Johansson <pettjoha@kth.se>
+ * \author Yang Zhang <yang.zhang@scilifelab.se>
+ * \ingroup module_fileio
  */
 
 #ifndef GMX_FILEIO_H5MD_FIXEDDATASET_H
@@ -89,7 +92,7 @@ public:
      *
      * \param[out] data Buffer to read data into from the data set.
      *
-     * \throws gmx::FileIOError if the buffer size does not match the data set.
+     * \throws H5mdError if the buffer size does not match the data set.
      */
     void readData(ArrayRef<ValueType> data) const;
 
@@ -100,7 +103,7 @@ public:
      *
      * \param[in] data Buffer with values to write into the data set.
      *
-     * \throws gmx::FileIOError if the buffer size does not match the data set.
+     * \throws H5mdError if the buffer size does not match the data set.
      */
     void writeData(ArrayRef<const ValueType> data) const;
 

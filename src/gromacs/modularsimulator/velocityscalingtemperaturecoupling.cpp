@@ -52,7 +52,6 @@
 #include <type_traits>
 
 #include "gromacs/domdec/domdec_network.h"
-#include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
 #include "gromacs/mdlib/coupling.h"
 #include "gromacs/mdlib/stat.h"
@@ -69,6 +68,7 @@
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/strconvert.h"
 #include "gromacs/utility/vec.h"
@@ -659,8 +659,8 @@ void VelocityScalingTemperatureCoupling::setLambda(Step step)
     for (int temperatureGroup = 0; (temperatureGroup < numTemperatureGroups_); temperatureGroup++)
     {
         const real currentKineticEnergy = useFullStepKE_ == UseFullStepKE::Yes
-                                                  ? ::trace(ekind->tcstat[temperatureGroup].ekinf)
-                                                  : ::trace(ekind->tcstat[temperatureGroup].ekinh);
+                                                  ? trace(ekind->tcstat[temperatureGroup].ekinf)
+                                                  : trace(ekind->tcstat[temperatureGroup].ekinh);
         const real currentTemperature   = useFullStepKE_ == UseFullStepKE::Yes
                                                   ? ekind->tcstat[temperatureGroup].T
                                                   : ekind->tcstat[temperatureGroup].Th;
@@ -779,6 +779,7 @@ ISimulatorElement* VelocityScalingTemperatureCoupling::getElementPointerImpl(
         FreeEnergyPerturbationData gmx_unused*  freeEnergyPerturbationData,
         GlobalCommunicationHelper gmx_unused*   globalCommunicationHelper,
         ObservablesReducer* /*observablesReducer*/,
+        const DeviceStreamManager* /*deviceStreamManager*/,
         Offset                            offset,
         UseFullStepKE                     useFullStepKE,
         ReportPreviousStepConservedEnergy reportPreviousStepConservedEnergy,

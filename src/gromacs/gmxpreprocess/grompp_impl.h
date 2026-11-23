@@ -39,6 +39,8 @@
 #include <string>
 
 #include "gromacs/gmxpreprocess/notset.h"
+#include "gromacs/math/multidimarray.h"
+#include "gromacs/mdspan/extensions.h"
 #include "gromacs/topology/atoms.h"
 #include "gromacs/topology/block.h"
 #include "gromacs/topology/idef.h"
@@ -50,9 +52,9 @@
 
 namespace gmx
 {
+
 template<typename>
 class ArrayRef;
-}
 
 /*! \libinternal \brief
  * Describes an interaction of a given type, plus its parameters.
@@ -61,10 +63,10 @@ class InteractionOfType
 {
 public:
     //! Constructor that initializes vectors.
-    InteractionOfType(gmx::ArrayRef<const int>  atoms,
-                      gmx::ArrayRef<const real> params,
-                      const std::string&        name    = "",
-                      bool                      special = false);
+    InteractionOfType(ArrayRef<const int>  atoms,
+                      ArrayRef<const real> params,
+                      const std::string&   name    = "",
+                      bool                 special = false);
     /*!@{*/
     //! Access the individual elements set for the parameter.
     const int& ai() const;
@@ -91,13 +93,13 @@ public:
     void setForceParameter(int pos, real value);
 
     //! View on all atoms numbers that are actually set.
-    gmx::ArrayRef<int> atoms() { return atoms_; }
+    ArrayRef<int> atoms() { return atoms_; }
     //! Const view on all atoms numbers that are actually set.
-    gmx::ArrayRef<const int> atoms() const { return atoms_; }
+    ArrayRef<const int> atoms() const { return atoms_; }
     //! View on all of the force field parameters
-    gmx::ArrayRef<const real> forceParam() const { return forceParam_; }
+    ArrayRef<const real> forceParam() const { return forceParam_; }
     //! View on all of the force field parameters
-    gmx::ArrayRef<real> forceParam() { return forceParam_; }
+    ArrayRef<real> forceParam() { return forceParam_; }
 
 private:
     //! Return if we have a bond parameter, means two atoms right now.
@@ -129,6 +131,19 @@ private:
     bool specbond_;
 };
 
+struct CmapInteractionType
+{
+    static constexpr size_t sc_numAtomTypesPerCmapInteraction = 5;
+    //! Grid data for this CMAP type (state A; B-state selected by cmapB index at push_cmap time)
+    MultiDimArray<std::vector<real>, dynamicExtents2D> gridA_;
+    //! The five atomtypes
+    std::array<int, sc_numAtomTypesPerCmapInteraction> atomTypes_;
+    //! The names of the five residue types
+    std::array<std::string, sc_numAtomTypesPerCmapInteraction> residueTypeNames_;
+    //! Optional unique name for this CMAP type; enables explicit A/B-state FEP grid lookup by name in [ cmap ]
+    std::string name_;
+};
+
 /*! \libinternal \brief
  * A set of interactions of a given type
  * (found in the enumeration in ifunc.h), complete with
@@ -139,19 +154,11 @@ private:
  * topology file definition.
  */
 struct InteractionsOfType
-{ // NOLINT (clang-analyzer-optin.performance.Padding)
+{ // NOLINT(clang-analyzer-optin.performance.Padding)
     //! The different parameters in the system.
     std::vector<InteractionOfType> interactionTypes;
-    //! CMAP grid spacing, when used.
-    std::optional<int> cmapGridSpacing_;
-    //! Number of CMAP dihedral angle pairs.
-    int numCmaps_ = -1;
-    //! CMAP grid data.
-    std::vector<real> cmap;
-    //! The five atomtypes followed by a number that identifies the type.
-    std::vector<int> cmapAtomTypes;
-    //! The five residue types followed by empty string for alignment with \link cmapAtomTypes \endlink.
-    std::vector<std::string> cmapResTypes_;
+    //! Data for all CMAP interaction types.
+    std::vector<CmapInteractionType> cmapTypes_;
     //! \brief Processed dihedral types
     //!
     //! When Amber LEaP-like ordering is used, only dihedrals after the first one of the
@@ -175,10 +182,6 @@ struct InteractionsOfType
 
     //! Number of parameters.
     size_t size() const { return interactionTypes.size(); }
-    //! Elements in cmap grid data.
-    std::size_t ncmap() const { return cmap.size(); }
-    //! Number of elements in cmapAtomTypes.
-    std::size_t nct() const { return cmapAtomTypes.size(); }
 };
 
 struct t_excls
@@ -204,9 +207,9 @@ struct MoleculeInformation
     //! Molecules separated in datastructure.
     t_block mols;
     //! Exclusions in the molecule.
-    gmx::ListOfLists<int> excls;
+    ListOfLists<int> excls;
     //! Interactions of a defined type.
-    gmx::EnumerationArray<InteractionFunction, InteractionsOfType> interactions;
+    EnumerationArray<InteractionFunction, InteractionsOfType> interactions;
 
     /*! \brief
      * Initializer.
@@ -243,5 +246,7 @@ struct t_mols
 
 bool is_int(double x);
 /* Returns TRUE when x is integer */
+
+} // namespace gmx
 
 #endif

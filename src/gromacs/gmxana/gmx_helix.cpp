@@ -45,6 +45,7 @@
 #include "gromacs/commandline/viewit.h"
 #include "gromacs/fileio/confio.h"
 #include "gromacs/fileio/filetypes.h"
+#include "gromacs/fileio/timecontrol.h"
 #include "gromacs/fileio/tpxio.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/fileio/xvgr.h"
@@ -99,22 +100,22 @@ int gmx_helix(int argc, char* argv[])
         " * Average [GRK]phi[grk] and [GRK]psi[grk] angles (file [TT]phipsi.xvg[tt]).",
         " * Ellipticity at 222 nm according to Hirst and Brooks."
     };
-    static gmx_bool bCheck = FALSE, bFit = TRUE, bDBG = FALSE, bEV = FALSE;
-    static int      rStart = 0, rEnd = 0, r0 = 1;
-    t_pargs pa[] = { { "-r0", FALSE, etINT, { &r0 }, "The first residue number in the sequence" },
-                     { "-q",
-                       FALSE,
-                       etBOOL,
-                       { &bCheck },
-                       "Check at every step which part of the sequence is helical" },
-                     { "-F", FALSE, etBOOL, { &bFit }, "Toggle fit to a perfect helix" },
-                     { "-db", FALSE, etBOOL, { &bDBG }, "Print debug info" },
-                     { "-ev", FALSE, etBOOL, { &bEV }, "Write a new 'trajectory' file for ED" },
-                     { "-ahxstart", FALSE, etINT, { &rStart }, "First residue in helix" },
-                     { "-ahxend", FALSE, etINT, { &rEnd }, "Last residue in helix" } };
+    gmx_bool bCheck = FALSE, bFit = TRUE, bDBG = FALSE, bEV = FALSE;
+    int      rStart = 0, rEnd = 0, r0 = 1;
+    t_pargs  pa[] = { { "-r0", FALSE, etINT, { &r0 }, "The first residue number in the sequence" },
+                      { "-q",
+                        FALSE,
+                        etBOOL,
+                        { &bCheck },
+                        "Check at every step which part of the sequence is helical" },
+                      { "-F", FALSE, etBOOL, { &bFit }, "Toggle fit to a perfect helix" },
+                      { "-db", FALSE, etBOOL, { &bDBG }, "Print debug info" },
+                      { "-ev", FALSE, etBOOL, { &bEV }, "Write a new 'trajectory' file for ED" },
+                      { "-ahxstart", FALSE, etINT, { &rStart }, "First residue in helix" },
+                      { "-ahxend", FALSE, etINT, { &rEnd }, "Last residue in helix" } };
 
     typedef struct
-    { //NOLINT(clang-analyzer-optin.performance.Padding)
+    { // NOLINT(clang-analyzer-optin.performance.Padding)
         FILE *      fp, *fp2;
         gmx_bool    bfp2;
         const char* filenm;
@@ -145,6 +146,7 @@ int gmx_helix(int argc, char* argv[])
     };
 
     gmx_output_env_t* oenv;
+    gmx::TimeControl  timeControl;
     char              buf[54];
     t_trxstatus*      status;
     int               natoms, nres;
@@ -154,7 +156,7 @@ int gmx_helix(int argc, char* argv[])
     t_topology*       top;
     PbcType           pbcType;
     rvec *            x, *xref;
-    real              t;
+    double            t;
     real              rms;
     matrix            box;
     gmx_rmpbc_t       gpbc = nullptr;
@@ -168,7 +170,7 @@ int gmx_helix(int argc, char* argv[])
 #define NFILE asize(fnm)
 
     if (!parse_common_args(
-                &argc, argv, PCA_CAN_VIEW | PCA_CAN_TIME, NFILE, fnm, asize(pa), pa, asize(desc), desc, 0, nullptr, &oenv))
+                &argc, argv, PCA_CAN_VIEW | PCA_CAN_TIME, NFILE, fnm, asize(pa), pa, asize(desc), desc, 0, nullptr, &oenv, &timeControl))
     {
         return 0;
     }
@@ -177,7 +179,7 @@ int gmx_helix(int argc, char* argv[])
 
     top = read_top(ftp2fn(efTPR, NFILE, fnm), &pbcType);
 
-    natoms = read_first_x(oenv, &status, opt2fn("-f", NFILE, fnm), &t, &x, box);
+    natoms = read_first_x(oenv, &status, opt2fn("-f", NFILE, fnm), &t, &x, box, &timeControl);
 
     if (natoms != top->atoms.nr)
     {

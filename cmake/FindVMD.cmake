@@ -57,12 +57,14 @@ find_library(VMDXYZPLUGIN NAME "xyzplugin.so"
     PATHS ${VMD_PATHS})
 
 if (VMDXYZPLUGIN)
-    try_run(TESTVMD TESTVMD_COMPILED ${CMAKE_BINARY_DIR}
-        "${CMAKE_SOURCE_DIR}/cmake/TestVMD.cpp"
-        CMAKE_FLAGS "-DLINK_LIBRARIES=${CMAKE_DL_LIBS}"
-            "-DINCLUDE_DIRECTORIES=${CMAKE_SOURCE_DIR}/src/external/vmd_molfile"
+    try_run(TESTVMD TESTVMD_COMPILED
+        SOURCES "${CMAKE_SOURCE_DIR}/cmake/TestVMD.cpp"
+        CMAKE_FLAGS "-DINCLUDE_DIRECTORIES=${CMAKE_SOURCE_DIR}/src/external/vmd_molfile"
         COMPILE_DEFINITIONS "-DGMX_USE_PLUGINS"
-        RUN_OUTPUT_VARIABLE TESTVMD_OUTPUT ARGS ${VMDXYZPLUGIN})
+        LINK_LIBRARIES ${CMAKE_DL_LIBS}
+        LOG_DESCRIPTION "Checking the VMD molfile plugin version"
+        RUN_OUTPUT_VARIABLE TESTVMD_OUTPUT
+        ARGS ${VMDXYZPLUGIN})
 endif()
 
 if(NOT TESTVMD EQUAL 0)
@@ -82,7 +84,7 @@ if(NOT TESTVMD EQUAL 0)
     set(GMX_VMD_PLUGIN_PATH "/usr/local/lib/vmd/plugins/*/molfile"
         CACHE PATH "Path to VMD plugins for molfile I/O" FORCE)
 else()
-    get_filename_component(VMD_PLUGIN_PATH ${VMDXYZPLUGIN} PATH)
+    get_filename_component(VMD_PLUGIN_PATH ${VMDXYZPLUGIN} DIRECTORY)
     message(STATUS "VMD version of ${VMD_PLUGIN_PATH} is suitable")
     set(GMX_VMD_PLUGIN_PATH ${VMD_PLUGIN_PATH}
         CACHE PATH "Path to VMD plugins for molfile I/O" FORCE)

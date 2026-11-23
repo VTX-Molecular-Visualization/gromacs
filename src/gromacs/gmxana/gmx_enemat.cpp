@@ -47,10 +47,10 @@
 #include "gromacs/fileio/matio.h"
 #include "gromacs/fileio/oenv.h"
 #include "gromacs/fileio/rgb.h"
+#include "gromacs/fileio/timecontrol.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/fileio/xvgr.h"
 #include "gromacs/gmxana/gmx_ana.h"
-#include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
 #include "gromacs/trajectory/energyframe.h"
 #include "gromacs/utility/arrayref.h"
@@ -58,6 +58,7 @@
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/futil.h"
 #include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
@@ -140,25 +141,25 @@ int gmx_enemat(int argc, char* argv[])
         "(e.g. residue number) in the [TT]-groups[tt] will be ignored",
         "in the comparison."
     };
-    static gmx_bool bSum      = FALSE;
-    static gmx_bool bMeanEmtx = TRUE;
-    static int      skip = 0, nlevels = 20;
-    static real     cutmax = 1e20, cutmin = -1e20, reftemp = 300.0;
-    static gmx_bool bCoulSR = TRUE, bCoul14 = FALSE;
-    static gmx_bool bLJSR = TRUE, bLJ14 = FALSE, bBhamSR = FALSE, bFree = TRUE;
-    t_pargs         pa[] = {
+    gmx_bool bSum      = FALSE;
+    gmx_bool bMeanEmtx = TRUE;
+    int      skip = 0, nlevels = 20;
+    real     cutmax = 1e20, cutmin = -1e20, reftemp = 300.0;
+    gmx_bool bCoulSR = TRUE, bCoul14 = FALSE;
+    gmx_bool bLJSR = TRUE, bLJ14 = FALSE, bBhamSR = FALSE, bFree = TRUE;
+    t_pargs  pa[] = {
         { "-sum",
-                  FALSE,
-                  etBOOL,
-                  { &bSum },
-                  "Sum the energy terms selected rather than display them all" },
+           FALSE,
+           etBOOL,
+           { &bSum },
+           "Sum the energy terms selected rather than display them all" },
         { "-skip", FALSE, etINT, { &skip }, "Skip number of frames between data points" },
         { "-mean",
-                  FALSE,
-                  etBOOL,
-                  { &bMeanEmtx },
-                  "with [TT]-groups[tt] extracts matrix of mean energies instead of "
-                          "matrix for each timestep" },
+           FALSE,
+           etBOOL,
+           { &bMeanEmtx },
+           "with [TT]-groups[tt] extracts matrix of mean energies instead of "
+            "matrix for each timestep" },
         { "-nlevels", FALSE, etINT, { &nlevels }, "number of levels for matrix colors" },
         { "-max", FALSE, etREAL, { &cutmax }, "max value for energies" },
         { "-min", FALSE, etREAL, { &cutmin }, "min value for energies" },
@@ -169,10 +170,10 @@ int gmx_enemat(int argc, char* argv[])
         { "-bhamsr", FALSE, etBOOL, { &bBhamSR }, "extract Buckingham SR energies" },
         { "-free", FALSE, etBOOL, { &bFree }, "calculate free energy" },
         { "-temp",
-                  FALSE,
-                  etREAL,
-                  { &reftemp },
-                  "reference temperature for free energy calculation" }
+           FALSE,
+           etREAL,
+           { &reftemp },
+           "reference temperature for free energy calculation" }
     };
     /* We will define egSP more energy-groups:
        egTotal (total energy) */
@@ -182,16 +183,15 @@ int gmx_enemat(int argc, char* argv[])
     ener_file_t       in;
     FILE*             out;
     int               timecheck = 0;
-    gmx_enxnm_t*      enm       = nullptr;
     t_enxframe*       fr;
     int               teller = 0;
     real              sum;
     gmx_bool          bCont, bRef;
     gmx_bool          bCutmax, bCutmin;
     real **           eneset, *time = nullptr;
-    int *             set, i, j, prevk, k, m = 0, n, nre, nset, nenergy;
+    int *             set, i, j, prevk, k, m = 0, n, nset, nenergy;
     char**            groups = nullptr;
-    char              groupname[255], fn[255];
+    char              fn[255];
     int               ngroups;
     t_rgb             rlo, rhi, rmid;
     real              emax, emid, emin;
@@ -202,6 +202,7 @@ int gmx_enemat(int argc, char* argv[])
     real *            eref = nullptr, *edif = nullptr;
     int               neref = 0;
     gmx_output_env_t* oenv;
+    gmx::TimeControl  timeControl;
 
     t_filenm fnm[] = { { efEDR, "-f", nullptr, ffOPTRD },
                        { efDAT, "-groups", "groups", ffREAD },
@@ -211,7 +212,7 @@ int gmx_enemat(int argc, char* argv[])
 #define NFILE asize(fnm)
 
     if (!parse_common_args(
-                &argc, argv, PCA_CAN_VIEW | PCA_CAN_TIME, NFILE, fnm, asize(pa), pa, asize(desc), desc, 0, nullptr, &oenv))
+                &argc, argv, PCA_CAN_VIEW | PCA_CAN_TIME, NFILE, fnm, asize(pa), pa, asize(desc), desc, 0, nullptr, &oenv, &timeControl))
     {
         return 0;
     }
@@ -227,9 +228,10 @@ int gmx_enemat(int argc, char* argv[])
     egrp_use[egLJ14]   = bLJ14;
     egrp_use[egTotal]  = TRUE;
 
-    bRef = opt2bSet("-eref", NFILE, fnm);
-    in   = open_enx(ftp2fn(efEDR, NFILE, fnm), "r");
-    do_enxnms(in, &nre, &enm);
+    bRef                               = opt2bSet("-eref", NFILE, fnm);
+    in                                 = open_enx(ftp2fn(efEDR, NFILE, fnm), "r");
+    const std::vector<gmx_enxnm_t> enm = readEnxNames(in);
+    const int                      nre = gmx::ssize(enm);
 
     if (nre == 0)
     {
@@ -258,11 +260,12 @@ int gmx_enemat(int argc, char* argv[])
             {
                 if (egrp_use[m])
                 {
-                    sprintf(groupname, "%s:%s-%s", egrp_nm[m], groups[i], groups[j]);
+                    std::string groupname =
+                            gmx::formatString("%s:%s-%s", egrp_nm[m], groups[i], groups[j]);
                     bool foundMatch = false;
                     for (k = prevk; (k < prevk + nre); k++)
                     {
-                        if (std::strcmp(enm[k % nre].name, groupname) == 0)
+                        if (enm[k % nre].name == groupname)
                         {
                             set[n++]   = k;
                             foundMatch = true;
@@ -274,7 +277,7 @@ int gmx_enemat(int argc, char* argv[])
                         fprintf(stderr,
                                 "WARNING! could not find group %s (%d,%d) "
                                 "in energy file\n",
-                                groupname,
+                                groupname.c_str(),
                                 i,
                                 j);
                     }
@@ -289,12 +292,10 @@ int gmx_enemat(int argc, char* argv[])
     fprintf(stderr, "\n");
     if (n == 0)
     {
-        // Return an error, can't do what the user asked for
-        fprintf(stderr,
-                "None of the specified energy groups were found in this .edr file.\n"
-                "Perhaps you used the wrong groups, the wrong files, or didn't use a .tpr\n"
-                "that was made from an .mdp file that specified these energy groups.\n");
-        return 1;
+        gmx_fatal(FARGS,
+                  "None of the specified energy groups were found in this .edr file.\n"
+                  "Perhaps you used the wrong groups, the wrong files, or didn't use a .tpr\n"
+                  "that was made from an .mdp file that specified these energy groups.\n");
     }
     nset = n;
     snew(eneset, nset + 1);
@@ -309,7 +310,7 @@ int gmx_enemat(int argc, char* argv[])
             bCont = do_enx(in, fr);
             if (bCont)
             {
-                timecheck = check_times(fr->t);
+                timecheck = check_times(fr->t, timeControl);
             }
         } while (bCont && (timecheck < 0));
 
@@ -690,7 +691,7 @@ int gmx_enemat(int argc, char* argv[])
             gmx_ffclose(out);
          */
     }
-    close_enx(in);
+    done_ener_file(in);
 
     return 0;
 }

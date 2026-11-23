@@ -46,11 +46,11 @@
 #include "gromacs/commandline/viewit.h"
 #include "gromacs/fileio/confio.h"
 #include "gromacs/fileio/filetypes.h"
+#include "gromacs/fileio/timecontrol.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/fileio/xvgr.h"
 #include "gromacs/gmxana/gmx_ana.h"
 #include "gromacs/math/do_fit.h"
-#include "gromacs/math/functions.h"
 #include "gromacs/pbcutil/rmpbc.h"
 #include "gromacs/topology/index.h"
 #include "gromacs/topology/topology.h"
@@ -58,6 +58,7 @@
 #include "gromacs/utility/arraysize.h"
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/futil.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/real.h"
@@ -68,20 +69,21 @@
 enum class PbcType : int;
 struct gmx_output_env_t;
 
-static void get_refx(gmx_output_env_t* oenv,
-                     const char*       trxfn,
-                     int               nfitdim,
-                     int               skip,
-                     int               gnx,
-                     int*              index,
-                     gmx_bool          bMW,
-                     const t_topology* top,
-                     PbcType           pbcType,
-                     rvec*             x_ref)
+static void get_refx(gmx_output_env_t*       oenv,
+                     const gmx::TimeControl& timeControl,
+                     const char*             trxfn,
+                     int                     nfitdim,
+                     int                     skip,
+                     int                     gnx,
+                     int*                    index,
+                     gmx_bool                bMW,
+                     const t_topology*       top,
+                     PbcType                 pbcType,
+                     rvec*                   x_ref)
 {
     int          natoms, nfr_all, nfr, i, j, a, r, c, min_fr;
     t_trxstatus* status;
-    real *       ti, min_t;
+    double *     ti, min_t;
     double       tot_mass, msd, *srmsd, min_srmsd, srmsd_tot;
     rvec *       x, **xi;
     real         xf;
@@ -94,7 +96,7 @@ static void get_refx(gmx_output_env_t* oenv,
     nfr     = 0;
     snew(ti, 100);
     snew(xi, 100);
-    natoms = read_first_x(oenv, &status, trxfn, &ti[nfr], &x, box);
+    natoms = read_first_x(oenv, &status, trxfn, &ti[nfr], &x, box, &timeControl);
 
     snew(w_rls, gnx);
     tot_mass = 0;
@@ -224,17 +226,17 @@ int gmx_rotmat(int argc, char* argv[])
         "Option [TT]-fitxy[tt] fits in the [IT]x-y[it] plane before determining",
         "the rotation matrix."
     };
-    const char*     reffit[] = { nullptr, "none", "xyz", "xy", nullptr };
-    static int      skip     = 1;
-    static gmx_bool bFitXY = FALSE, bMW = TRUE;
-    t_pargs         pa[] = {
+    const char* reffit[] = { nullptr, "none", "xyz", "xy", nullptr };
+    int         skip     = 1;
+    gmx_bool    bFitXY = FALSE, bMW = TRUE;
+    t_pargs     pa[] = {
         { "-ref", FALSE, etENUM, { reffit }, "Determine the optimal reference structure" },
         { "-skip", FALSE, etINT, { &skip }, "Use every nr-th frame for [TT]-ref[tt]" },
         { "-fitxy",
-                  FALSE,
-                  etBOOL,
-                  { &bFitXY },
-                  "Fit the x/y rotation before determining the rotation" },
+              FALSE,
+              etBOOL,
+              { &bFitXY },
+              "Fit the x/y rotation before determining the rotation" },
         { "-mw", FALSE, etBOOL, { &bMW }, "Use mass weighted fitting" }
     };
     FILE*                      out;
@@ -243,13 +245,14 @@ int gmx_rotmat(int argc, char* argv[])
     PbcType                    pbcType;
     rvec *                     x_ref, *x;
     matrix                     box, R;
-    real                       t;
+    double                     t;
     int                        natoms, i;
     char*                      grpname;
     int                        gnx;
     gmx_rmpbc_t                gpbc = nullptr;
     int*                       index;
     gmx_output_env_t*          oenv;
+    gmx::TimeControl           timeControl;
     real*                      w_rls;
     std::array<std::string, 9> leg = { "xx", "xy", "xz", "yx", "yy", "yz", "zx", "zy", "zz" };
 #define NLEG asize(leg)
@@ -260,7 +263,7 @@ int gmx_rotmat(int argc, char* argv[])
 #define NFILE asize(fnm)
 
     if (!parse_common_args(
-                &argc, argv, PCA_CAN_TIME | PCA_CAN_VIEW, NFILE, fnm, asize(pa), pa, asize(desc), desc, 0, nullptr, &oenv))
+                &argc, argv, PCA_CAN_TIME | PCA_CAN_VIEW, NFILE, fnm, asize(pa), pa, asize(desc), desc, 0, nullptr, &oenv, &timeControl))
     {
         return 0;
     }
@@ -276,10 +279,20 @@ int gmx_rotmat(int argc, char* argv[])
     GMX_RELEASE_ASSERT(reffit[0] != nullptr, "Options inconsistency; reffit[0] is NULL");
     if (reffit[0][0] != 'n')
     {
-        get_refx(oenv, ftp2fn(efTRX, NFILE, fnm), reffit[0][2] == 'z' ? 3 : 2, skip, gnx, index, bMW, &top, pbcType, x_ref);
+        get_refx(oenv,
+                 timeControl,
+                 ftp2fn(efTRX, NFILE, fnm),
+                 reffit[0][2] == 'z' ? 3 : 2,
+                 skip,
+                 gnx,
+                 index,
+                 bMW,
+                 &top,
+                 pbcType,
+                 x_ref);
     }
 
-    natoms = read_first_x(oenv, &status, ftp2fn(efTRX, NFILE, fnm), &t, &x, box);
+    natoms = read_first_x(oenv, &status, ftp2fn(efTRX, NFILE, fnm), &t, &x, box, &timeControl);
 
     snew(w_rls, natoms);
     for (i = 0; i < gnx; i++)

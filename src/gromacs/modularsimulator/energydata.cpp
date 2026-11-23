@@ -45,7 +45,6 @@
 #include "gromacs/gmxlib/network.h"
 #include "gromacs/mdlib/enerdata_utils.h"
 #include "gromacs/mdlib/energyoutput.h"
-#include "gromacs/mdlib/mdatoms.h"
 #include "gromacs/mdlib/mdoutf.h"
 #include "gromacs/mdlib/stat.h"
 #include "gromacs/mdlib/tgroup.h"
@@ -55,7 +54,7 @@
 #include "gromacs/mdtypes/energyhistory.h"
 #include "gromacs/mdtypes/group.h"
 #include "gromacs/mdtypes/inputrec.h"
-#include "gromacs/mdtypes/mdatom.h"
+#include "gromacs/mdtypes/mdatoms.h"
 #include "gromacs/mdtypes/observableshistory.h"
 #include "gromacs/mdtypes/pullhistory.h"
 #include "gromacs/topology/topology.h"
@@ -77,7 +76,7 @@ EnergyData::EnergyData(StatePropagatorData*        statePropagatorData,
                        FreeEnergyPerturbationData* freeEnergyPerturbationData,
                        const gmx_mtop_t&           globalTopology,
                        const t_inputrec*           inputrec,
-                       const MDAtoms*              mdAtoms,
+                       const MDAtoms&              mdAtoms,
                        gmx_enerdata_t*             enerd,
                        gmx_ekindata_t*             ekind,
                        const Constraints*          constr,
@@ -95,7 +94,6 @@ EnergyData::EnergyData(StatePropagatorData*        statePropagatorData,
     shakeVirialStep_(-1),
     totalVirialStep_(-1),
     pressureStep_(-1),
-    needToSumEkinhOld_(false),
     hasReadEkinFromCheckpoint_(false),
     startingBehavior_(startingBehavior),
     statePropagatorData_(statePropagatorData),
@@ -149,7 +147,7 @@ void EnergyData::Element::scheduleTask(Step step, Time time, const RegisterRunFu
 
 void EnergyData::teardown()
 {
-    if (inputrec_->nstcalcenergy > 0 && isMainRank_)
+    if (inputrec_->outputControl.nstcalcenergy > 0 && isMainRank_)
     {
         energyOutput_->printEnergyConservation(fplog_, inputrec_->simulation_part, EI_MD(inputrec_->eI));
         energyOutput_->printAverages(fplog_, groups_);
@@ -249,7 +247,7 @@ void EnergyData::doStep(Step step, Time time, bool isEnergyCalculationStep, bool
             isFreeEnergyCalculationStep,
             isEnergyCalculationStep,
             time,
-            mdAtoms_->mdatoms()->tmass,
+            mdAtoms_.tmass,
             enerd_,
             inputrec_->fepvals.get(),
             statePropagatorData_->constPreviousBox(),
@@ -369,11 +367,6 @@ gmx_ekindata_t* EnergyData::ekindata()
     return ekind_;
 }
 
-bool* EnergyData::needToSumEkinhOld()
-{
-    return &needToSumEkinhOld_;
-}
-
 bool EnergyData::hasReadEkinFromCheckpoint() const
 {
     return hasReadEkinFromCheckpoint_;
@@ -411,11 +404,8 @@ void EnergyData::Element::saveCheckpointState(std::optional<WriteCheckpointData>
 {
     // Here we always store the ekinstate, even when it might be not be used at this step.
     // It would be cleaner make it conditional on when it is used (and thus up to date).
-    update_ekinstate(mpiComm.isMainRank() ? &energyData_->ekinstate_ : nullptr,
-                     energyData_->ekind_,
-                     energyData_->needToSumEkinhOld_,
-                     mpiComm,
-                     dd);
+    update_ekinstate(
+            mpiComm.isMainRank() ? &energyData_->ekinstate_ : nullptr, *energyData_->ekind_, mpiComm, dd);
 
     if (mpiComm.isMainRank())
     {
@@ -530,7 +520,7 @@ void EnergyData::updateKineticEnergy()
 
     enerd_->term[InteractionFunction::Temperature] = sum_ekin(
             &(inputrec_->opts), ekind_, dEkinDLambda, useFullStepKineticEnergy, ignoreScalingFactor);
-    enerd_->term[InteractionFunction::KineticEnergy] = ::trace(ekind_->ekin);
+    enerd_->term[InteractionFunction::KineticEnergy] = trace(ekind_->ekin);
 }
 
 EnergyData::Element* EnergyData::element()
@@ -555,7 +545,8 @@ ISimulatorElement* EnergyData::Element::getElementPointerImpl(
         EnergyData*                                        energyData,
         FreeEnergyPerturbationData gmx_unused*             freeEnergyPerturbationData,
         GlobalCommunicationHelper gmx_unused*              globalCommunicationHelper,
-        ObservablesReducer* /*observablesReducer*/)
+        ObservablesReducer* /*observablesReducer*/,
+        const DeviceStreamManager* /*deviceStreamManager*/)
 {
     return energyData->element();
 }

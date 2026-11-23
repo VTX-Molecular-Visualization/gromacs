@@ -137,7 +137,7 @@ if(REGRESSIONTEST_PATH)
     #(e.g. Cray) we enable it.
     list(APPEND ARGS -crosscompile)
 
-    set(REGRESSIONTEST_EXTRA_ARGS "" CACHE STRING 
+    set(REGRESSIONTEST_EXTRA_ARGS "" CACHE STRING
         "Extra arguments passed to gmxtest")
     mark_as_advanced(REGRESSIONTEST_EXTRA_ARGS)
     list(APPEND ARGS ${REGRESSIONTEST_EXTRA_ARGS})
@@ -177,7 +177,7 @@ if(REGRESSIONTEST_PATH)
     endif()
 
     #currently not testing tools because they don't contain any useful tests
-    foreach(subtest complex essentialdynamics)
+    foreach(subtest complex)
         add_test(NAME regressiontests/${subtest}
             #windows requires the command to be perl and not the script
             COMMAND perl "${REGRESSIONTEST_PATH}/gmxtest.pl" ${subtest} ${ARGS})

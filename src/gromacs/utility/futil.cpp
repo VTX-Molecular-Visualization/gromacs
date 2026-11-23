@@ -103,7 +103,7 @@ namespace gmx
 namespace
 {
 //! Global library file finder; stores the object set with setLibraryFileFinder().
-const DataFileFinder* g_libFileFinder; //NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+const DataFileFinder* g_libFileFinder; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
 //! Default library file finder if nothing is set.
 const DataFileFinder g_defaultLibFileFinder;
 } // namespace
@@ -171,7 +171,7 @@ static void push_ps(FILE* fp)
 #        undef gmx_ffclose
 #    endif
 #endif
-#if (!HAVE_PIPES && !defined(__native_client__))
+#if !HAVE_PIPES
 static FILE* popen(const char* /* nm */, const char* /* mode */)
 {
     gmx_impl("Sorry no pipes...");
@@ -185,7 +185,7 @@ static int pclose(FILE* /* fp */)
 
     return 0;
 }
-#endif /* !HAVE_PIPES && !defined(__native_client__) */
+#endif /* !HAVE_PIPES */
 
 int gmx_ffclose(FILE* fp)
 {
@@ -539,8 +539,10 @@ static int makeTemporaryFilename(char* buf)
 // TODO use std::string
 void gmx_tmpnam(char* buf)
 {
+#if GMX_NATIVE_WINDOWS
+    makeTemporaryFilename(buf);
+#else
     int fd = makeTemporaryFilename(buf);
-#if !GMX_NATIVE_WINDOWS
     close(fd);
 #endif
 }
@@ -549,19 +551,18 @@ void gmx_tmpnam(char* buf)
 FILE* gmx_fopen_temporary(char* buf)
 {
     FILE* fpout = nullptr;
-    int   fd    = makeTemporaryFilename(buf);
 
 #if GMX_NATIVE_WINDOWS
-    if ((fpout = std::fopen(buf, "w")) == NULL)
-    {
-        gmx_fatal(FARGS, "Cannot open temporary file %s", buf);
-    }
+    makeTemporaryFilename(buf);
+    fpout = std::fopen(buf, "w");
 #else
-    if ((fpout = fdopen(fd, "w")) == nullptr)
+    int fd = makeTemporaryFilename(buf);
+    fpout  = fdopen(fd, "w");
+#endif
+    if (!fpout)
     {
         gmx_fatal(FARGS, "Cannot open temporary file %s", buf);
     }
-#endif
 
     return fpout;
 }

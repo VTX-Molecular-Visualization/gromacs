@@ -49,7 +49,6 @@
 #include "gromacs/gmxpreprocess/grompp_impl.h"
 #include "gromacs/gmxpreprocess/topio.h"
 #include "gromacs/gmxpreprocess/toputil.h"
-#include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
 #include "gromacs/math/utilities.h"
 #include "gromacs/mdtypes/md_enums.h"
@@ -60,14 +59,18 @@
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/vec.h"
 #include "gromacs/utility/vectypes.h"
 
+namespace gmx
+{
+
 static int round_check(real r, int limit, InteractionFunction ftype, const char* name)
 {
-    const int i = gmx::roundToInt(r);
+    const int i = roundToInt(r);
 
     if (r - i > 0.01 || r - i < -0.01)
     {
@@ -97,7 +100,7 @@ static void set_ljparams(CombinationRule comb, double reppow, double v, double w
     {
         if (v >= 0)
         {
-            *c6  = 4 * w * gmx::power6(v);
+            *c6  = 4 * w * power6(v);
             *c12 = 4 * w * std::pow(v, reppow);
         }
         else
@@ -117,11 +120,11 @@ static void set_ljparams(CombinationRule comb, double reppow, double v, double w
 /* A return value of 0 means parameters were assigned successfully,
  * returning -1 means this is an all-zero interaction that should not be added.
  */
-static int assign_param(InteractionFunction       ftype,
-                        t_iparams*                newparam,
-                        gmx::ArrayRef<const real> old,
-                        CombinationRule           comb,
-                        double                    reppow)
+static int assign_param(InteractionFunction  ftype,
+                        t_iparams*           newparam,
+                        ArrayRef<const real> old,
+                        CombinationRule      comb,
+                        double               reppow)
 {
     bool all_param_zero = true;
 
@@ -155,16 +158,16 @@ static int assign_param(InteractionFunction       ftype,
     {
         case InteractionFunction::GROMOS96Angles:
             /* Post processing of input data: store cosine iso angle itself */
-            newparam->harmonic.rA  = std::cos(old[0] * gmx::c_deg2Rad);
+            newparam->harmonic.rA  = std::cos(old[0] * c_deg2Rad);
             newparam->harmonic.krA = old[1];
-            newparam->harmonic.rB  = std::cos(old[2] * gmx::c_deg2Rad);
+            newparam->harmonic.rB  = std::cos(old[2] * c_deg2Rad);
             newparam->harmonic.krB = old[3];
             break;
         case InteractionFunction::GROMOS96Bonds:
             /* Post processing of input data: store square of length itself */
-            newparam->harmonic.rA  = gmx::square(old[0]);
+            newparam->harmonic.rA  = square(old[0]);
             newparam->harmonic.krA = old[1];
-            newparam->harmonic.rB  = gmx::square(old[2]);
+            newparam->harmonic.rB  = square(old[2]);
             newparam->harmonic.krB = old[3];
             break;
         case InteractionFunction::FENEBonds:
@@ -418,12 +421,12 @@ static int assign_param(InteractionFunction       ftype,
             break;
         case InteractionFunction::VirtualSite1:
         case InteractionFunction::VirtualSite2:
-        case InteractionFunction::VirtualSite2FlexibleDistance:
+        case InteractionFunction::VirtualSite2FixedDistance:
         case InteractionFunction::VirtualSite3:
-        case InteractionFunction::VirtualSite3FlexibleDistance:
+        case InteractionFunction::VirtualSite3FixedDistance:
         case InteractionFunction::VirtualSite3Outside:
-        case InteractionFunction::VirtualSite4FlexibleDistance:
-        case InteractionFunction::VirtualSite4FlexibleDistanceNormalization:
+        case InteractionFunction::VirtualSite4FixedDistance:
+        case InteractionFunction::VirtualSite4FixedDistanceNormalization:
             newparam->vsite.a = old[0];
             newparam->vsite.b = old[1];
             newparam->vsite.c = old[2];
@@ -431,9 +434,9 @@ static int assign_param(InteractionFunction       ftype,
             newparam->vsite.e = old[4];
             newparam->vsite.f = old[5];
             break;
-        case InteractionFunction::VirtualSite3FlexibleAngleDistance:
-            newparam->vsite.a = old[1] * std::cos(gmx::c_deg2Rad * old[0]);
-            newparam->vsite.b = old[1] * std::sin(gmx::c_deg2Rad * old[0]);
+        case InteractionFunction::VirtualSite3FixedAngleDistance:
+            newparam->vsite.a = old[1] * std::cos(c_deg2Rad * old[0]);
+            newparam->vsite.b = old[1] * std::sin(c_deg2Rad * old[0]);
             newparam->vsite.c = old[2];
             newparam->vsite.d = old[3];
             newparam->vsite.e = old[4];
@@ -456,13 +459,13 @@ static int assign_param(InteractionFunction       ftype,
     return 0;
 }
 
-static int enter_params(gmx_ffparams_t*           ffparams,
-                        InteractionFunction       ftype,
-                        gmx::ArrayRef<const real> forceparams,
-                        CombinationRule           comb,
-                        real                      reppow,
-                        int                       start,
-                        bool                      bAppend)
+static int enter_params(gmx_ffparams_t*      ffparams,
+                        InteractionFunction  ftype,
+                        ArrayRef<const real> forceparams,
+                        CombinationRule      comb,
+                        real                 reppow,
+                        int                  start,
+                        bool                 bAppend)
 {
     t_iparams newparam;
     int       rc;
@@ -512,7 +515,7 @@ static int enter_params(gmx_ffparams_t*           ffparams,
     return type;
 }
 
-static void append_interaction(InteractionList* ilist, int type, gmx::ArrayRef<const int> a)
+static void append_interaction(InteractionList* ilist, int type, ArrayRef<const int> a)
 {
     ilist->iatoms.push_back(type);
     for (const auto& atom : a)
@@ -548,20 +551,21 @@ static void enter_function(const InteractionsOfType* p,
 
 bool shouldConvertInteractionType(InteractionFunction ftype)
 {
-    const unsigned long flags = interaction_function[ftype].flags;
+    const unsigned long flags = interaction_function[ftype].categories;
     return ((ftype != InteractionFunction::LennardJonesShortRange)
             && (ftype != InteractionFunction::BuckinghamShortRange)
-            && ((flags & IF_BOND) != 0u || (flags & IF_VSITE) != 0u || (flags & IF_CONSTRAINT) != 0u));
+            && ((flags & sc_ifcBondedForce) != 0u || (flags & sc_ifcVirtualSite) != 0u
+                || (flags & sc_ifcConstraint) != 0u));
 }
 
 void convertInteractionsOfType(int atnr,
-                               const gmx::EnumerationArray<InteractionFunction, InteractionsOfType>& nbtypes,
-                               gmx::ArrayRef<const MoleculeInformation> mi,
-                               const MoleculeInformation*               intermolecular_interactions,
-                               CombinationRule                          comb,
-                               double                                   reppow,
-                               real                                     fudgeQQ,
-                               gmx_mtop_t*                              mtop)
+                               const EnumerationArray<InteractionFunction, InteractionsOfType>& nbtypes,
+                               ArrayRef<const MoleculeInformation> mi,
+                               const MoleculeInformation*          intermolecular_interactions,
+                               CombinationRule                     comb,
+                               double                              reppow,
+                               real                                fudgeQQ,
+                               gmx_mtop_t*                         mtop)
 {
     gmx_ffparams_t* ffp;
     gmx_moltype_t*  molt;
@@ -592,11 +596,11 @@ void convertInteractionsOfType(int atnr,
     for (size_t mt = 0; mt < mtop->moltype.size(); mt++)
     {
         molt = &mtop->moltype[mt];
-        for (const auto i : gmx::EnumerationWrapper<InteractionFunction>{})
+        for (const auto i : EnumerationWrapper<InteractionFunction>{})
         {
             molt->ilist[i].iatoms.clear();
 
-            const gmx::EnumerationArray<InteractionFunction, InteractionsOfType>& interactions =
+            const EnumerationArray<InteractionFunction, InteractionsOfType>& interactions =
                     mi[mt].interactions;
 
             if (shouldConvertInteractionType(i))
@@ -620,22 +624,22 @@ void convertInteractionsOfType(int atnr,
         /* Process the intermolecular interaction list */
         mtop->intermolecular_ilist = std::make_unique<InteractionLists>();
 
-        for (const auto i : gmx::EnumerationWrapper<InteractionFunction>{})
+        for (const auto i : EnumerationWrapper<InteractionFunction>{})
         {
             (*mtop->intermolecular_ilist)[i].iatoms.clear();
 
-            const gmx::EnumerationArray<InteractionFunction, InteractionsOfType>& interactions =
+            const EnumerationArray<InteractionFunction, InteractionsOfType>& interactions =
                     intermolecular_interactions->interactions;
 
             if (!interactions[i].interactionTypes.empty())
             {
-                const unsigned long flags = interaction_function[i].flags;
+                const unsigned long flags = interaction_function[i].categories;
                 /* For intermolecular interactions we (currently)
                  * only support potentials.
                  * Constraints and virtual sites would be possible,
                  * but require a lot of extra (bug-prone) code.
                  */
-                if (!(flags & IF_BOND))
+                if (!(flags & sc_ifcBondedForce))
                 {
                     gmx_fatal(FARGS,
                               "The intermolecular_interaction section may only contain bonded "
@@ -648,7 +652,7 @@ void convertInteractionsOfType(int atnr,
                               "intermolecular_interaction section, you can put them in the "
                               "moleculetype section");
                 }
-                else if (flags & IF_CHEMBOND)
+                else if (flags & sc_ifcChemicalBond)
                 {
                     gmx_fatal(FARGS,
                               "The intermolecular_interaction can not contain chemically bonding "
@@ -672,3 +676,5 @@ void convertInteractionsOfType(int atnr,
 
     ffp->fudgeQQ = fudgeQQ;
 }
+
+} // namespace gmx

@@ -57,11 +57,11 @@
 #include <vector>
 
 #include "gromacs/ewald/pme.h"
+#include "gromacs/gpu_utils/capabilities.h"
 #include "gromacs/hardware/cpuinfo.h"
 #include "gromacs/hardware/detecthardware.h"
 #include "gromacs/hardware/hardwaretopology.h"
 #include "gromacs/hardware/hw_info.h"
-#include "gromacs/math/functions.h"
 #include "gromacs/mdlib/gmx_omp_nthreads.h"
 #include "gromacs/mdrunutility/multisim.h"
 #include "gromacs/mdtypes/inputrec.h"
@@ -72,6 +72,7 @@
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/baseversion.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/logger.h"
 #include "gromacs/utility/mpicomm.h"
@@ -358,6 +359,9 @@ private:
 
 } // namespace
 
+namespace gmx
+{
+
 /* Get the number of MPI ranks to use for thread-MPI based on how many
  * were requested, which algorithms we're using,
  * and how many particles there are.
@@ -372,7 +376,7 @@ int get_nthreads_mpi(const gmx_hw_info_t* hwinfo,
                      bool                 pmeOnGpu,
                      const t_inputrec*    inputrec,
                      const gmx_mtop_t&    mtop,
-                     const gmx::MDLogger& mdlog,
+                     const MDLogger&      mdlog,
                      bool                 doMembed)
 {
     int nthreads_hw, nthreads_tot_max, nrank, ngpu;
@@ -384,7 +388,7 @@ int get_nthreads_mpi(const gmx_hw_info_t* hwinfo,
     if (pmeOnGpu)
     {
         GMX_RELEASE_ASSERT((usingPme(inputrec->coulombtype) || usingLJPme(inputrec->vdwtype))
-                                   && pme_gpu_supports_build(nullptr)
+                                   && gmx::GpuConfigurationCapabilities::Pme
                                    && pme_gpu_supports_input(*inputrec, nullptr),
                            "PME can't be on GPUs unless we are using PME");
 
@@ -588,8 +592,8 @@ int get_nthreads_mpi(const gmx_hw_info_t* hwinfo,
 
 void check_resource_division_efficiency(const gmx_hw_info_t* hwinfo,
                                         bool                 willUsePhysicalGpu,
-                                        const gmx::MpiComm*  mpiCommMySim,
-                                        const gmx::MDLogger& mdlog)
+                                        const MpiComm*       mpiCommMySim,
+                                        const MDLogger&      mdlog)
 {
     GMX_UNUSED_VALUE(hwinfo);
 #if GMX_OPENMP && GMX_MPI
@@ -685,11 +689,11 @@ static void print_hw_opt(FILE* fp, const gmx_hw_opt_t* hw_opt)
             hw_opt->userGpuTaskAssignment.c_str());
 }
 
-void checkAndUpdateHardwareOptions(const gmx::MDLogger& mdlog,
-                                   gmx_hw_opt_t*        hw_opt,
-                                   const bool           isSimulationMainRank,
-                                   const int            nPmeRanks,
-                                   const t_inputrec*    inputrec)
+void checkAndUpdateHardwareOptions(const MDLogger&   mdlog,
+                                   gmx_hw_opt_t*     hw_opt,
+                                   const bool        isSimulationMainRank,
+                                   const int         nPmeRanks,
+                                   const t_inputrec* inputrec)
 {
     /* Currently hw_opt only contains default settings or settings supplied
      * by the user on the command line.
@@ -869,7 +873,7 @@ void checkAndUpdateHardwareOptions(const gmx::MDLogger& mdlog,
 
 void checkAndUpdateRequestedNumOpenmpThreads(gmx_hw_opt_t*         hw_opt,
                                              const gmx_hw_info_t&  hwinfo,
-                                             const gmx::MpiComm&   mpiCommMySim,
+                                             const MpiComm&        mpiCommMySim,
                                              const gmx_multisim_t* ms,
                                              int                   numRanksOnThisNode,
                                              PmeRunMode            pmeRunMode,
@@ -970,9 +974,6 @@ void checkAndUpdateRequestedNumOpenmpThreads(gmx_hw_opt_t*         hw_opt,
         print_hw_opt(debug, hw_opt);
     }
 }
-
-namespace gmx
-{
 
 void checkHardwareOversubscription(int                             numThreadsOnThisRank,
                                    int                             rank,

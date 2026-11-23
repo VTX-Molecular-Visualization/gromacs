@@ -39,7 +39,6 @@ function (find_python_module module)
     set(_find_package_module ${module})
     set(_out_var PYTHONMODULE_${_module_upper})
 
-    include(CMakeParseArguments)
     set(_options QUIET REQUIRED)
     cmake_parse_arguments(ARG "${_options}" "" "" ${ARGN})
     if (ARG_UNPARSED_ARGUMENTS)
@@ -71,7 +70,9 @@ function (find_python_module module)
         mark_as_advanced(${_out_var})
     endif()
     include(FindPackageHandleStandardArgs)
-    find_package_handle_standard_args(
-        ${_find_package_module} DEFAULT_MSG
-        ${_out_var} PYTHON_EXECUTABLE)
+    # NAME_MISMATCHED, because this is also called from find modules of other
+    # packages, e.g. FindSphinx.cmake for the extensions Sphinx needs.
+    find_package_handle_standard_args(${_find_package_module}
+        REQUIRED_VARS ${_out_var} PYTHON_EXECUTABLE
+        NAME_MISMATCHED)
 endfunction()

@@ -53,8 +53,8 @@
 
 #include "gromacs/correlationfunctions/integrate.h"
 #include "gromacs/fileio/xvgr.h"
-#include "gromacs/math/functions.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/futil.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/real.h"
@@ -106,14 +106,8 @@ int effnNparams(int effn)
 
 const char* effnDescription(int effn)
 {
-    if ((0 <= effn) && (effn < effnNR))
-    {
-        return longs_ffn[effn];
-    }
-    else
-    {
-        return nullptr;
-    }
+    GMX_RELEASE_ASSERT((0 <= effn) && (effn < effnNR), "Invalid fitting function index");
+    return longs_ffn[effn];
 }
 
 int sffn2effn(const char** sffn)
@@ -438,7 +432,7 @@ static void initiate_fit_params(int eFitFn, double params[])
                 GMX_ASSERT(params[2] >= 0, "parameters should be >= 0");
                 /* In order to maintain params[2] >= params[0] in the final
                  * result, we fit the difference between the two, that is
-                 * params[2]-params[0] and in the add add in params[0]
+                 * params[2]-params[0] and in the add in params[0]
                  * again.
                  */
                 params[2] = std::max(std::fabs(params[2]) - params[0], params[0]);

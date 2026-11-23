@@ -45,7 +45,6 @@
 #include "gromacs/fileio/pdbio.h"
 #include "gromacs/gmxpreprocess/pdb2top.h"
 #include "gromacs/gmxpreprocess/toputil.h"
-#include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
 #include "gromacs/math/utilities.h"
 #include "gromacs/topology/atoms.h"
@@ -55,8 +54,12 @@
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/vec.h"
+
+namespace gmx
+{
 
 static int in_strings(char* key, int nstr, const char** str)
 {
@@ -132,7 +135,7 @@ static bool chk_hbonds(int i, t_atoms* pdba, rvec x[], const bool ad[], bool hbo
     natom = pdba->nr;
     bHB   = FALSE;
     ri    = pdba->atom[i].resind;
-    dist2 = gmx::square(dist);
+    dist2 = square(dist);
     for (j = 0; (j < natom); j++)
     {
         /* Check whether the other atom is a donor/acceptor and not i */
@@ -147,7 +150,7 @@ static bool chk_hbonds(int i, t_atoms* pdba, rvec x[], const bool ad[], bool hbo
                 d2 = distance2(x[i], x[j]);
                 rvec_sub(x[i], xh, nh);
                 rvec_sub(x[aj], xh, oh);
-                a = gmx::c_rad2Deg * std::acos(cos_angle(nh, oh));
+                a = c_rad2Deg * std::acos(cos_angle(nh, oh));
                 if ((d2 < dist2) && (a > angle))
                 {
                     hbond[i] = TRUE;
@@ -321,3 +324,5 @@ void set_histp(t_atoms* pdba, rvec* x, t_symtab* symtab, real angle, real dist)
     sfree(acceptor);
     sfree(hbond);
 }
+
+} // namespace gmx

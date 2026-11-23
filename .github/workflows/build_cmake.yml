@@ -2,11 +2,14 @@ name: CMake Build Matrix
 
 on: [push, pull_request]
 
+permissions:
+  contents: read
+
 env:
   CMAKE_VERSION: 3.28.0 # Oldest supported
   NINJA_VERSION: 1.12.1 # Latest
   BUILD_TYPE: Release
-  CCACHE_VERSION: 4.10.2 # Latest
+  CCACHE_VERSION: 4.12.3 # Latest
   NINJA_STATUS: "[%f/%t %o/sec] "
 
 jobs:
@@ -26,6 +29,14 @@ jobs:
             openmp_var: "On"
           }
         - {
+            name: "Windows ARM64 MSVC 2026", artifact: "Windows-ARM64-MSVC-2026.7z",
+            os: windows-11-vs2026-arm,
+            cc: "cl", cxx: "cl",
+            environment_script: "C:/Program Files/Microsoft Visual Studio/18/Enterprise/VC/Auxiliary/Build/vcvarsarm64.bat",
+            gpu_var: "Off",
+            openmp_var: "On"
+          }
+        - {
             name: "macOS Latest Clang", artifact: "macOS.7z",
             # In a release branch, we should fix this for the lifetime
             # of the branch.
@@ -35,11 +46,11 @@ jobs:
             openmp_var: "Off"
           }
         - {
-            name: "macOS Latest GCC 14 with OpenCL", artifact: "macOS-gcc-OpenCL.7z",
+            name: "macOS Latest GCC 15 with OpenCL", artifact: "macOS-gcc-OpenCL.7z",
             # In a release branch, we should fix this for the lifetime
             # of the branch.
             os: macos-latest,
-            cc: "gcc-14", cxx: "g++-14",
+            cc: "gcc-15", cxx: "g++-15",
             gpu_var: "OpenCL",
             openmp_var: "On"
           }
@@ -53,15 +64,16 @@ jobs:
       ENVIRONMENT_SCRIPT: ${{ matrix.config.environment_script }}
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
       with:
         show-progress: false
+        persist-credentials: false
 
     - name: Download Ninja, CMake, and CCache
       run: cmake -P .github/scripts/download-ninja-cmake.cmake
 
     - name: ccache cache files
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: .ccache
         key: ${{ matrix.config.name }}-ccache-${{ github.sha }}

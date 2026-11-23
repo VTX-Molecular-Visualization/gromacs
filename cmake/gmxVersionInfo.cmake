@@ -253,7 +253,7 @@ set(REGRESSIONTEST_BRANCH "main")
 # directory name within the regressiontests tarball, which affects the
 # md5sum of the tarball. The matching md5sum has to go here, and if it
 # isn't right the real release workflow will report a failure.
-set(REGRESSIONTEST_MD5SUM "08714044b8fdcd45f0103fdb73afc9f7" CACHE INTERNAL "MD5 sum of the regressiontests tarball for this GROMACS version")
+set(REGRESSIONTEST_MD5SUM "2efca4799115329160ccaf84ce442baf" CACHE INTERNAL "MD5 sum of the regressiontests tarball for this GROMACS version")
 
 # If you are making a custom fork of GROMACS, please describe your
 # fork, perhaps with its version number, in the value of
@@ -433,7 +433,6 @@ unset(GMX_VERSION_CENTRAL_BASE_HASH)
 # The main user-visible interface to the machinery.
 # See documentation at the top of the script.
 function (gmx_configure_version_file INFILE OUTFILE)
-    include(CMakeParseArguments)
     set(_options REMOTE_HASH)
     set(_one_value_args COMMENT TARGET)
     set(_multi_value_args EXTRA_VARS)

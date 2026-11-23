@@ -47,6 +47,7 @@
 #include "gromacs/commandline/pargs.h"
 #include "gromacs/commandline/viewit.h"
 #include "gromacs/fileio/filetypes.h"
+#include "gromacs/fileio/timecontrol.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/fileio/xvgr.h"
 #include "gromacs/gmxana/gmx_ana.h"
@@ -196,7 +197,8 @@ static void calc_electron_density(const char*             fn,
                                   gmx_bool                bCenter,
                                   int*                    index_center,
                                   int                     ncenter,
-                                  const gmx_output_env_t* oenv)
+                                  const gmx_output_env_t* oenv,
+                                  const gmx::TimeControl& timeControl)
 {
     rvec*        x0;  /* coordinates without pbc */
     matrix       box; /* box (3x3) */
@@ -213,14 +215,15 @@ static void calc_electron_density(const char*             fn,
     double       averageBoxSize;
     gmx_rmpbc_t  gpbc = nullptr;
 
-    real t, z;
+    double t;
+    real   z;
 
     if (axis < 0 || axis >= DIM)
     {
         gmx_fatal(FARGS, "Invalid axes. Terminating\n");
     }
 
-    if ((natoms = read_first_x(oenv, &status, fn, &t, &x0, box)) == 0)
+    if ((natoms = read_first_x(oenv, &status, fn, &t, &x0, box, &timeControl)) == 0)
     {
         gmx_fatal(FARGS, "Could not read coordinates from statusfile\n");
     }
@@ -351,6 +354,7 @@ static void calc_density(const char*             fn,
                          int*                    index_center,
                          int                     ncenter,
                          const gmx_output_env_t* oenv,
+                         const gmx::TimeControl& timeControl,
                          const char**            dens_opt)
 {
     rvec*        x0;  /* coordinates without pbc */
@@ -360,7 +364,8 @@ static void calc_density(const char*             fn,
     t_trxstatus* status;
     int          i, n;
     int          nr_frames = 0;
-    real         t, z;
+    double       t;
+    real         z;
     real*        den_val; /* values from which the density is calculated */
     int          sliceIndex;
     real         boxSize;
@@ -373,7 +378,7 @@ static void calc_density(const char*             fn,
         gmx_fatal(FARGS, "Invalid axes. Terminating\n");
     }
 
-    if ((natoms = read_first_x(oenv, &status, fn, &t, &x0, box)) == 0)
+    if ((natoms = read_first_x(oenv, &status, fn, &t, &x0, box, &timeControl)) == 0)
     {
         gmx_fatal(FARGS, "Could not read coordinates from statusfile\n");
     }
@@ -631,14 +636,15 @@ int gmx_density(int argc, char* argv[])
         "",
     };
 
-    gmx_output_env_t*  oenv;
-    static const char* dens_opt[]  = { nullptr, "mass", "number", "charge", "electron", nullptr };
-    static int         axis        = 2; /* normal to memb. default z  */
-    static const char* axtitle     = "Z";
-    static int         nslices     = 50; /* nr of slices defined       */
-    static int         ngrps       = 1;  /* nr. of groups              */
-    static gmx_bool    bSymmetrize = FALSE;
-    static gmx_bool    bCenter     = FALSE;
+    gmx_output_env_t* oenv;
+    gmx::TimeControl  timeControl;
+    const char*       dens_opt[]  = { nullptr, "mass", "number", "charge", "electron", nullptr };
+    int               axis        = 2; /* normal to memb. default z  */
+    const char*       axtitle     = "Z";
+    int               nslices     = 50; /* nr of slices defined       */
+    int               ngrps       = 1;  /* nr. of groups              */
+    gmx_bool          bSymmetrize = FALSE;
+    gmx_bool          bCenter     = FALSE;
 
     t_pargs pa[] = {
         { "-d",
@@ -691,8 +697,19 @@ int gmx_density(int argc, char* argv[])
 
 #define NFILE asize(fnm)
 
-    if (!parse_common_args(
-                &argc, argv, PCA_CAN_VIEW | PCA_CAN_TIME, NFILE, fnm, asize(pa), pa, asize(desc), desc, asize(bugs), bugs, &oenv))
+    if (!parse_common_args(&argc,
+                           argv,
+                           PCA_CAN_VIEW | PCA_CAN_TIME,
+                           NFILE,
+                           fnm,
+                           asize(pa),
+                           pa,
+                           asize(desc),
+                           desc,
+                           asize(bugs),
+                           bugs,
+                           &oenv,
+                           &timeControl))
     {
         return 0;
     }
@@ -751,7 +768,8 @@ int gmx_density(int argc, char* argv[])
                               bCenter,
                               index_center,
                               ncenter,
-                              oenv);
+                              oenv,
+                              timeControl);
     }
     else
     {
@@ -769,6 +787,7 @@ int gmx_density(int argc, char* argv[])
                      index_center,
                      ncenter,
                      oenv,
+                     timeControl,
                      dens_opt);
     }
 

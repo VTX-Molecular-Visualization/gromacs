@@ -35,7 +35,9 @@ gmx_add_unit_test(NbnxmTests nbnxm-test
     OPENMP_THREADS
         2
     CPP_SOURCE_FILES
+        exclusionchecker.cpp
         exclusions.cpp
+        grid.cpp
         kernel_test.cpp
         kernelsetup.cpp
         plainpairlist.cpp
@@ -81,6 +83,7 @@ target_link_libraries(
     math
     mdlib
     mdtypes
+    nbnxm
     pbcutil
     tables
     testutils

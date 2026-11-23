@@ -126,17 +126,16 @@ typedef struct
  * molblock from the global atom nr. */
 static int get_mol_id(int at, const gmx_mtop_t& mtop, int* type, int* block)
 {
-    int mol_id = 0;
-    int i;
-    int atnr_mol;
+    MTopLookUp mTopLookUp(mtop);
+    const auto mbai = mTopLookUp.getMolblockAtomIndex(at);
 
-    *block = 0;
-    mtopGetMolblockIndex(mtop, at, block, &mol_id, &atnr_mol);
-    for (i = 0; i < *block; i++)
+    int mol_id = 0;
+    for (int i = 0; i < *block; i++)
     {
         mol_id += mtop.molblock[i].nmol;
     }
-    *type = mtop.molblock[*block].type;
+    *type  = mtop.molblock[mbai.molBlock].type;
+    *block = mbai.molBlock;
 
     return mol_id;
 }
@@ -369,10 +368,10 @@ static real est_prot_area(pos_ins_t* pos_ins, rvec* r, t_block* ins_at, mem_t* m
     memmin = mem_p->zmin + 0.1 * (mem_p->zmax - mem_p->zmin);
     memmax = mem_p->zmax - 0.1 * (mem_p->zmax - mem_p->zmin);
 
-    //NOLINTNEXTLINE(clang-analyzer-security.FloatLoopCounter)
+    // NOLINTNEXTLINE(clang-analyzer-security.FloatLoopCounter)
     for (x = pos_ins->xmin[XX]; x < pos_ins->xmax[XX]; x += dx)
     {
-        //NOLINTNEXTLINE(clang-analyzer-security.FloatLoopCounter)
+        // NOLINTNEXTLINE(clang-analyzer-security.FloatLoopCounter)
         for (y = pos_ins->xmin[YY]; y < pos_ins->xmax[YY]; y += dy)
         {
             c   = 0;
@@ -1001,6 +1000,7 @@ static void top_update(const char* topfile, rm_t* rm_p, gmx_mtop_t* mtop)
         }
     }
 
+    gmx_ffclose(fpin);
     gmx_ffclose(fpout);
     /* use gmx_ffopen to generate backup of topinout */
     fpout = gmx_ffopen(topfile, "w");

@@ -50,13 +50,18 @@
 
 #include <gtest/gtest.h>
 
+#include "gromacs/fileio/h5md/binary_information.h"
+#include "gromacs/fileio/h5md/exceptions.h"
 #include "gromacs/fileio/h5md/h5md_attribute.h"
+#include "gromacs/fileio/h5md/h5md_compression.h"
 #include "gromacs/fileio/h5md/h5md_guard.h"
 #include "gromacs/fileio/h5md/h5md_type.h"
 #include "gromacs/fileio/h5md/tests/h5mdtestbase.h"
-#include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/stringutil.h"
 #include "gromacs/utility/vectypes.h"
+
+#include "testutils/testasserts.h"
+#include "testutils/testmatchers.h"
 
 namespace gmx
 {
@@ -106,9 +111,9 @@ void PrintTo(const DataSetDimensions& info, std::ostream* os)
         }
     };
 
-    *os << "Dims {" << gmx::formatAndJoin(info.dims_, ", ", toString) << "}" << ", "
-        << "MaxDims {" << gmx::formatAndJoin(info.maxDims_, ", ", toString) << "}" << ", "
-        << "ChunkDims {" << gmx::formatAndJoin(info.chunkDims_, ", ", toString) << "}" << ", "
+    *os << "Dims {" << formatAndJoin(info.dims_, ", ", toString) << "}" << ", "
+        << "MaxDims {" << formatAndJoin(info.maxDims_, ", ", toString) << "}" << ", "
+        << "ChunkDims {" << formatAndJoin(info.chunkDims_, ", ", toString) << "}" << ", "
         << "ExpectedResult = " << (info.expectedResult_ ? "true" : "false");
 }
 
@@ -160,7 +165,7 @@ std::string nameOfTest(const ::testing::TestParamInfo<DataSetDimensions>& info)
         partNames.push_back(partName);
     }
 
-    std::string testName = gmx::joinStrings(partNames.cbegin(), partNames.cend(), "_");
+    std::string testName = joinStrings(partNames.cbegin(), partNames.cend(), "_");
     // Note that the returned names must be unique and may use only
     // alphanumeric ASCII characters. It's not supposed to contain
     // underscores (see the GoogleTest FAQ
@@ -185,12 +190,12 @@ class H5mdDataSetBuilderTestBase : public H5mdTestBase, public ::testing::WithPa
 };
 
 //! Parametrized test suite for data sets of simple primitives
-using Primitive = H5mdDataSetBuilderTestBase<int32_t>;
+using PrimitiveType = H5mdDataSetBuilderTestBase<int32_t>;
 
 //! Parametrized test suite for data sets of BasicVector<T>
-using BasicVector = H5mdDataSetBuilderTestBase<gmx::BasicVector<float>>;
+using BasicVectorType = H5mdDataSetBuilderTestBase<BasicVector<float>>;
 
-TEST_P(Primitive, Works)
+TEST_P(PrimitiveType, Works)
 {
     const DataSetDimensions& testParam = GetParam();
 
@@ -205,7 +210,7 @@ TEST_P(Primitive, Works)
 
         // Check in order:
         // data type, data set dimensions, max dimensions and chunk dimensions
-        EXPECT_TRUE(valueTypeIsDataType<int32_t>(dataSet.dataType()))
+        EXPECT_TRUE(valueTypeIsDataType<int32_t>(dataSet.storedDataType()))
                 << "Incorrect data type in data set";
 
         const auto [dataSpace, dataSpaceGuard] = makeH5mdDataSpaceGuard(H5Dget_space(dataSet.id()));
@@ -250,11 +255,11 @@ TEST_P(Primitive, Works)
     }
     else
     {
-        EXPECT_THROW(builder.build(), gmx::FileIOError);
+        EXPECT_THROW_GMX(builder.build(), H5mdError);
     }
 }
 
-TEST_P(BasicVector, Works)
+TEST_P(BasicVectorType, Works)
 {
     const DataSetDimensions& testParam = GetParam();
 
@@ -263,18 +268,18 @@ TEST_P(BasicVector, Works)
     // primitive types but the expected dims is the input testParam.dims_ + [3],
     // and so on for maxDims_ and chunkDims_.
 
-    H5mdDataSetBuilder<gmx::BasicVector<float>> builder(this->fileid(), "testDataSet");
+    H5mdDataSetBuilder<BasicVector<float>> builder(this->fileid(), "testDataSet");
     builder.withDimension(testParam.dims_);
     builder.withMaxDimension(testParam.maxDims_);
     builder.withChunkDimension(testParam.chunkDims_);
 
     if (testParam.expectedResult_)
     {
-        const H5mdDataSetBase<gmx::BasicVector<float>> dataSet = builder.build();
+        const H5mdDataSetBase<BasicVector<float>> dataSet = builder.build();
 
         // Check in order:
         // data type, data set dimensions, max dimensions and chunk dimensions
-        EXPECT_TRUE(valueTypeIsDataType<float>(dataSet.dataType()))
+        EXPECT_TRUE(valueTypeIsDataType<float>(dataSet.storedDataType()))
                 << "Incorrect data type in data set";
 
         const auto [dataSpace, dataSpaceGuard] = makeH5mdDataSpaceGuard(H5Dget_space(dataSet.id()));
@@ -334,7 +339,7 @@ TEST_P(BasicVector, Works)
     }
     else
     {
-        EXPECT_THROW(builder.build(), gmx::FileIOError);
+        EXPECT_THROW_GMX(builder.build(), H5mdError);
     }
 }
 
@@ -406,15 +411,15 @@ const DataSetDimensions g_invalidDimensionCombinations[] = {
  */
 //! {
 INSTANTIATE_TEST_SUITE_P(H5mdDataSetBuilderValidDims,
-                         Primitive,
+                         PrimitiveType,
                          ::testing::ValuesIn(g_validDataSetDimensions),
                          nameOfTest);
 INSTANTIATE_TEST_SUITE_P(H5mdDataSetBuilderValidDimCombinations,
-                         Primitive,
+                         PrimitiveType,
                          ::testing::ValuesIn(g_validDimensionCombinations),
                          nameOfTest);
 INSTANTIATE_TEST_SUITE_P(H5mdDataSetBuilderInvalidDimCombinations,
-                         Primitive,
+                         PrimitiveType,
                          ::testing::ValuesIn(g_invalidDimensionCombinations),
                          nameOfTest);
 //! }
@@ -426,15 +431,15 @@ INSTANTIATE_TEST_SUITE_P(H5mdDataSetBuilderInvalidDimCombinations,
  */
 //! {
 INSTANTIATE_TEST_SUITE_P(H5mdDataSetBuilderValidDims,
-                         BasicVector,
+                         BasicVectorType,
                          ::testing::ValuesIn(g_validDataSetDimensions),
                          nameOfTest);
 INSTANTIATE_TEST_SUITE_P(H5mdDataSetBuilderValidDimCombinations,
-                         BasicVector,
+                         BasicVectorType,
                          ::testing::ValuesIn(g_validDimensionCombinations),
                          nameOfTest);
 INSTANTIATE_TEST_SUITE_P(H5mdDataSetBuilderInvalidDimCombinations,
-                         BasicVector,
+                         BasicVectorType,
                          ::testing::ValuesIn(g_invalidDimensionCombinations),
                          nameOfTest);
 //! }
@@ -445,82 +450,85 @@ using H5mdDataSetBuilderTest = H5mdTestBase;
 TEST_F(H5mdDataSetBuilderTest, MakeStringDataset)
 {
     {
-        SCOPED_TRACE("Check the builder for fixed sized string data set");
+        SCOPED_TRACE("Check the builder for fixed-length string data set");
 
-        EXPECT_NO_THROW(H5mdDataSetBuilder<std::string>(fileid(), "withMaxLength")
-                                .withMaxStringLength(256)
-                                .withDimension({ 0 })
-                                .build());
+        EXPECT_NO_THROW_GMX(H5mdDataSetBuilder<std::string>(fileid(), "withMaxLength")
+                                    .withMaxStringLength(256)
+                                    .withDimension({ 0 })
+                                    .build());
 
         // Check data type
         const auto dataSet = H5mdDataSetBase<std::string>(fileid(), "withMaxLength");
-        EXPECT_EQ(H5Tget_class(dataSet.dataType()), H5T_STRING);
-        EXPECT_EQ(H5Tget_size(dataSet.dataType()), 256)
-                << "Data type should be fixed size string with length 256";
+        EXPECT_EQ(H5Tget_class(dataSet.storedDataType()), H5T_STRING);
+        EXPECT_EQ(H5Tget_size(dataSet.storedDataType()), 256)
+                << "Data type should be fixed-length string with size 256";
     }
 
     {
-        SCOPED_TRACE("Check the builder for variable sized string data set");
+        SCOPED_TRACE("Check the builder for variable-length string data set");
 
-        EXPECT_NO_THROW(H5mdDataSetBuilder<std::string>(fileid(), "withVariableLength")
-                                .withVariableStringLength()
-                                .withDimension({ 0 })
-                                .build());
+        EXPECT_NO_THROW_GMX(H5mdDataSetBuilder<std::string>(fileid(), "withVariableLength")
+                                    .withVariableStringLength()
+                                    .withDimension({ 0 })
+                                    .build());
 
         // Check data type
         const auto dataSet = H5mdDataSetBase<std::string>(fileid(), "withVariableLength");
-        EXPECT_EQ(H5Tget_class(dataSet.dataType()), H5T_STRING);
-        EXPECT_TRUE(H5Tis_variable_str(dataSet.dataType()))
+        EXPECT_EQ(H5Tget_class(dataSet.storedDataType()), H5T_STRING);
+        EXPECT_TRUE(H5Tis_variable_str(dataSet.storedDataType()))
                 << "Data type should be variable length string";
     }
 }
 
 TEST_F(H5mdDataSetBuilderTest, NoThrowForDefaultStringType)
 {
-    EXPECT_NO_THROW(H5mdDataSetBuilder<std::string>(fileid(), "NoMaxLength").withDimension({ 0 }).build());
+    EXPECT_NO_THROW_GMX(
+            H5mdDataSetBuilder<std::string>(fileid(), "NoMaxLength").withDimension({ 0 }).build());
     const auto dataSet = H5mdDataSetBase<std::string>(fileid(), "NoMaxLength");
-    EXPECT_TRUE(H5Tis_variable_str(dataSet.dataType())) << "By default, use variable length string";
+    EXPECT_TRUE(H5Tis_variable_str(dataSet.storedDataType()))
+            << "By default, use variable length string";
 }
 
 TEST_F(H5mdDataSetBuilderTest, ThrowsForNonPositiveMaxStringLength)
 {
-    // NOTE: H5Tset_size accepts only positive values for fixed-size strings.
-    EXPECT_THROW(H5mdDataSetBuilder<std::string>(fileid(), "ZeroMaxLength")
-                         .withMaxStringLength(0)
-                         .withDimension({ 0 })
-                         .build(),
-                 gmx::FileIOError);
+    // NOTE: H5Tset_size accepts only positive values for fixed-length strings.
+    EXPECT_THROW_GMX(H5mdDataSetBuilder<std::string>(fileid(), "ZeroMaxLength")
+                             .withMaxStringLength(0)
+                             .withDimension({ 0 })
+                             .build(),
+                     H5mdError);
 
-    EXPECT_THROW(H5mdDataSetBuilder<std::string>(fileid(), "NegativeMaxLength")
-                         .withMaxStringLength(-1)
-                         .withDimension({ 0 })
-                         .build(),
-                 gmx::FileIOError);
+    EXPECT_THROW_GMX(H5mdDataSetBuilder<std::string>(fileid(), "NegativeMaxLength")
+                             .withMaxStringLength(-1)
+                             .withDimension({ 0 })
+                             .build(),
+                     H5mdError);
 }
 
 TEST_F(H5mdDataSetBuilderTest, ThrowsForUnsetDimension)
 {
-    EXPECT_THROW(H5mdDataSetBuilder<int32_t>(fileid(), "testDataSet").build(), gmx::FileIOError);
-    EXPECT_NO_THROW(H5mdDataSetBuilder<int32_t>(fileid(), "testDataSet").withDimension({ 0 }).build());
+    EXPECT_THROW_GMX(H5mdDataSetBuilder<int32_t>(fileid(), "testDataSet").build(), H5mdError);
+    EXPECT_NO_THROW_GMX(H5mdDataSetBuilder<int32_t>(fileid(), "testDataSet").withDimension({ 0 }).build());
 }
 
 TEST_F(H5mdDataSetBuilderTest, ThrowsForDuplicateNameInGroup)
 {
     const std::string sharedName = "testDataSet";
-    ASSERT_NO_THROW(H5mdDataSetBuilder<int32_t>(fileid(), sharedName).withDimension({ 0 }).build());
-    EXPECT_THROW(H5mdDataSetBuilder<int32_t>(fileid(), sharedName).withDimension({ 0 }).build(),
-                 gmx::FileIOError);
+    ASSERT_NO_THROW_GMX(H5mdDataSetBuilder<int32_t>(fileid(), sharedName).withDimension({ 0 }).build());
+    EXPECT_THROW_GMX(H5mdDataSetBuilder<int32_t>(fileid(), sharedName).withDimension({ 0 }).build(),
+                     H5mdError);
 }
 
 TEST_F(H5mdDataSetBuilderTest, ThrowsForEmptyName)
 {
-    EXPECT_THROW(H5mdDataSetBuilder<int32_t>(fileid(), "").withDimension({ 0 }).build(), gmx::FileIOError);
+    EXPECT_THROW_GMX(H5mdDataSetBuilder<int32_t>(fileid(), "").withDimension({ 0 }).build(), H5mdError);
 }
 
 TEST_F(H5mdDataSetBuilderTest, ThrowsForInvalidContainer)
 {
-    EXPECT_THROW(H5mdDataSetBuilder<int32_t>(H5I_INVALID_HID, "testDataSet").withDimension({ 0 }).build(),
-                 gmx::FileIOError);
+    EXPECT_THROW_GMX(
+            H5mdDataSetBuilder<int32_t>(H5I_INVALID_HID, "testDataSet").withDimension({ 0 }).build(),
+            H5mdError);
 }
 
 TEST_F(H5mdDataSetBuilderTest, UnitAttributeNotSetByDefault)
@@ -544,10 +552,8 @@ TEST_F(H5mdDataSetBuilderTest, WithUnitAttribute)
                         .withUnit(std::string{ unit })
                         .build();
 
-        const std::optional<std::string> unitAttribute =
-                getAttribute<std::string>(dataSet.id(), "unit");
-        ASSERT_TRUE(unitAttribute.has_value()) << "Unit attribute was not set";
-        EXPECT_EQ(unitAttribute.value(), unit) << "Incorrect unit attribute";
+        EXPECT_THAT(getAttribute<std::string>(dataSet.id(), "unit"),
+                    ::testing::Optional(::testing::StrEq(unit)));
     }
     {
         SCOPED_TRACE("Unit as const char*");
@@ -558,10 +564,8 @@ TEST_F(H5mdDataSetBuilderTest, WithUnitAttribute)
                         .withUnit(unit)
                         .build();
 
-        const std::optional<std::string> unitAttribute =
-                getAttribute<std::string>(dataSet.id(), "unit");
-        ASSERT_TRUE(unitAttribute.has_value()) << "Unit attribute was not set";
-        EXPECT_EQ(unitAttribute.value(), unit) << "Incorrect unit attribute";
+        EXPECT_THAT(getAttribute<std::string>(dataSet.id(), "unit"),
+                    ::testing::Optional(::testing::StrEq(unit)));
     }
 }
 
@@ -574,54 +578,75 @@ TEST_F(H5mdDataSetBuilderTest, UncompressedByDefault)
             makeH5mdPropertyListGuard(H5Dget_create_plist(dataSet.id()));
 
     EXPECT_EQ(H5Pget_nfilters(propertyList), 0);
-    // H5Pget_filter_by_id2 returns: >=0 if the filter (second argument) is set, else <0
-    EXPECT_LT(H5Pget_filter_by_id2(
-                      propertyList, H5Z_FILTER_DEFLATE, nullptr, nullptr, nullptr, 0, nullptr, nullptr),
-              0);
-    EXPECT_LT(H5Pget_filter_by_id2(
-                      propertyList, H5Z_FILTER_SHUFFLE, nullptr, nullptr, nullptr, 0, nullptr, nullptr),
-              0);
 }
 
-TEST_F(H5mdDataSetBuilderTest, WithLosslessCompression)
+//! Test fixture which checks that SZ3 compression is only used for RVec-like data
+template<typename ValueType>
+class H5mdDataSetBuilderSz3CompressionTypeTest : public H5mdTestBase
 {
-    const H5mdDataSetBase<int32_t> dataSet = H5mdDataSetBuilder<int32_t>(fileid(), "testDataSet")
-                                                     .withDimension({ 0 })
-                                                     .withCompression(H5mdCompression::LosslessNoShuffle)
-                                                     .build();
+};
 
-    const auto [propertyList, propertyListGuard] =
-            makeH5mdPropertyListGuard(H5Dget_create_plist(dataSet.id()));
+using Sz3TestTypes =
+        ::testing::Types<int32_t, int64_t, float, double, std::string, BasicVector<float>, BasicVector<double>>;
+TYPED_TEST_SUITE(H5mdDataSetBuilderSz3CompressionTypeTest, Sz3TestTypes);
 
-    EXPECT_EQ(H5Pget_nfilters(propertyList), 1);
-    // H5Pget_filter_by_id2 returns: >=0 if the filter (second argument) is set, else <0
-    EXPECT_GE(H5Pget_filter_by_id2(
-                      propertyList, H5Z_FILTER_DEFLATE, nullptr, nullptr, nullptr, 0, nullptr, nullptr),
-              0);
-    EXPECT_LT(H5Pget_filter_by_id2(
-                      propertyList, H5Z_FILTER_SHUFFLE, nullptr, nullptr, nullptr, 0, nullptr, nullptr),
-              0);
-}
-
-TEST_F(H5mdDataSetBuilderTest, WithLosslessShuffleCompression)
+TYPED_TEST(H5mdDataSetBuilderSz3CompressionTypeTest, WithSz3CompressionThrowsForNonRvecLikeDataTypes)
 {
-    const H5mdDataSetBase<int32_t> dataSet = H5mdDataSetBuilder<int32_t>(fileid(), "testDataSet")
-                                                     .withDimension({ 0 })
-                                                     .withCompression(H5mdCompression::LosslessShuffle)
-                                                     .build();
+    if (!sz3CompressionIsAvailable())
+    {
+        GTEST_SKIP() << "GROMACS is not built with SZ3 support";
+    }
 
-    const auto [propertyList, propertyListGuard] =
-            makeH5mdPropertyListGuard(H5Dget_create_plist(dataSet.id()));
+    constexpr double              absoluteError = 1.0;
+    H5mdDataSetBuilder<TypeParam> builder(this->fileid(), "testDataSet");
 
-    EXPECT_EQ(H5Pget_nfilters(propertyList), 2);
-    // H5Pget_filter_by_id2 returns: >=0 if the filter (second argument) is set, else <0
-    EXPECT_GE(H5Pget_filter_by_id2(
-                      propertyList, H5Z_FILTER_DEFLATE, nullptr, nullptr, nullptr, 0, nullptr, nullptr),
-              0);
-    EXPECT_GE(H5Pget_filter_by_id2(
-                      propertyList, H5Z_FILTER_SHUFFLE, nullptr, nullptr, nullptr, 0, nullptr, nullptr),
-              0);
+    if constexpr (std::is_same_v<TypeParam, BasicVector<float>>
+                  || std::is_same_v<TypeParam, BasicVector<double>>)
+    {
+        EXPECT_NO_THROW_GMX(builder.withCompression(H5mdCompression::LossySz3BioMD, absoluteError));
+    }
+    else
+    {
+        EXPECT_THROW_GMX(builder.withCompression(H5mdCompression::LossySz3BioMD, absoluteError), H5mdError);
+    }
 }
+
+//! Test fixture which checks that the dimensions of data sets are compatible with SZ3
+class H5mdDataSetBuilderSz3CompressionNumDimsTest :
+    public H5mdTestBase,
+    public ::testing::WithParamInterface<int>
+{
+};
+
+TEST_P(H5mdDataSetBuilderSz3CompressionNumDimsTest, InputNumDimsMustEqual2)
+{
+    if (!sz3CompressionIsAvailable())
+    {
+        GTEST_SKIP() << "GROMACS is not built with SZ3 support";
+    }
+
+    const int         numDims = GetParam();
+    const DataSetDims dims(numDims, 0);
+
+    H5mdDataSetBuilder<RVec> builder(fileid(), "testDataSet");
+    builder.withCompression(H5mdCompression::LossySz3BioMD, 5e-4);
+    builder.withDimension(dims);
+
+    // SZ3 requires the primitive data to be of shape [numFrames][numParticles][3].
+    // Since only RVec-like compiled ValueTypes are allowed, for which the call
+    // to build() appends the innermost dimension (=3), the input to .withDimension(dims)
+    // must be exactly 2 values
+    if (numDims == 2)
+    {
+        EXPECT_NO_THROW_GMX(builder.build()) << "Must not throw for numDims == 2";
+    }
+    else
+    {
+        EXPECT_THROW_GMX(builder.build(), H5mdError) << "Must throw numDims != 2";
+    }
+}
+
+INSTANTIATE_TEST_SUITE_P(Works, H5mdDataSetBuilderSz3CompressionNumDimsTest, ::testing::Values(0, 1, 2, 3));
 
 } // namespace
 } // namespace test

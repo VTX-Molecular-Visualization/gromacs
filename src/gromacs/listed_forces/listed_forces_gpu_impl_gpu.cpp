@@ -48,7 +48,7 @@
 #include "gromacs/gpu_utils/device_context.h"
 #include "gromacs/gpu_utils/device_stream.h"
 #include "gromacs/gpu_utils/devicebuffer.h"
-#include "gromacs/hardware/device_information.h"
+#include "gromacs/hardware/device_management.h"
 #include "gromacs/mdlib/gmx_omp_nthreads.h"
 #include "gromacs/mdtypes/enerdata.h"
 #include "gromacs/nbnxm/gpu_types_common.h"
@@ -62,37 +62,16 @@ namespace gmx
 {
 // ---- ListedForcesGpu::Impl
 
-static int chooseSubGroupSizeForDevice(const DeviceInformation& deviceInfo)
-{
-    if (deviceInfo.supportedSubGroupSizes.size() == 1)
-    {
-        return deviceInfo.supportedSubGroupSizes[0];
-    }
-    else if (deviceInfo.supportedSubGroupSizes.size() > 1)
-    {
-        switch (deviceInfo.deviceVendor)
-        {
-            case DeviceVendor::Intel: return 32;
-            case DeviceVendor::PoclCpu: return 32;
-            default:
-                GMX_RELEASE_ASSERT(false, "Flexible sub-groups only supported for Intel GPUs");
-                return 0;
-        }
-    }
-    else
-    {
-        GMX_RELEASE_ASSERT(false, "Device has no known supported sub-group sizes");
-        return 0;
-    }
-}
-
 ListedForcesGpu::Impl::Impl(const gmx_ffparams_t& ffparams,
                             const float           electrostaticsScaleFactor,
                             const int             numEnergyGroupsForListedForces,
                             const DeviceContext&  deviceContext,
                             const DeviceStream&   deviceStream,
                             gmx_wallcycle*        wcycle) :
-    deviceContext_(deviceContext), deviceStream_(deviceStream)
+    deviceContext_(deviceContext),
+    deviceStream_(deviceStream),
+    vTot_{ static_cast<int>(InteractionFunction::Count),
+           HostAllocationPolicy{ deviceContext, PinningPolicy::PinnedIfSupported } }
 {
     GMX_RELEASE_ASSERT(numEnergyGroupsForListedForces == 1,
                        "Only a single energy group is supported with listed forces on GPU");
@@ -107,6 +86,13 @@ ListedForcesGpu::Impl::Impl(const gmx_ffparams_t& ffparams,
 
     wcycle_ = wcycle;
 
+    // Fill the array with host memory than can be pinned when allocated
+    const HostAllocationPolicy hostAllocationPolicy{ deviceContext, PinningPolicy::PinnedIfSupported };
+    for (HostInteractionList& list : iLists_)
+    {
+        list.iatoms = HostVector<int>(0, hostAllocationPolicy);
+    }
+
     allocateDeviceBuffer(&d_forceParams_, ffparams.numTypes(), deviceContext_);
     // This could be an async transfer (if the source is pinned), so
     // long as it uses the same stream as the kernels and we are happy
@@ -118,34 +104,29 @@ ListedForcesGpu::Impl::Impl(const gmx_ffparams_t& ffparams,
                        deviceStream_,
                        GpuApiCallBehavior::Sync,
                        nullptr);
-    vTot_.resize(static_cast<int>(InteractionFunction::Count));
     allocateDeviceBuffer(&d_vTot_, static_cast<int>(InteractionFunction::Count), deviceContext_);
     clearDeviceBufferAsync(&d_vTot_, 0, static_cast<int>(InteractionFunction::Count), deviceStream_);
 
     kernelParams_.electrostaticsScaleFactor = electrostaticsScaleFactor;
     kernelBuffers_.d_forceParams            = d_forceParams_;
     kernelBuffers_.d_vTot                   = d_vTot_;
-    for (int i = 0; i < numFTypesOnGpu; i++)
+    for (int i = 0; i < sc_numFunctionTypesOnGpu; i++)
     {
-        kernelBuffers_.d_iatoms[i]       = nullptr;
-        kernelParams_.fTypeRangeStart[i] = 0;
-        kernelParams_.fTypeRangeEnd[i]   = -1;
+        kernelBuffers_.d_iatoms[i]              = nullptr;
+        kernelParams_.functionTypeRangeStart[i] = 0;
+        kernelParams_.functionTypeRangeEnd[i]   = -1;
     }
 
     const DeviceInformation& deviceInfo = deviceContext.deviceInfo();
-    deviceSubGroupSize_                 = chooseSubGroupSizeForDevice(deviceInfo);
-    GMX_RELEASE_ASSERT(std::find(deviceInfo.supportedSubGroupSizes.begin(),
-                                 deviceInfo.supportedSubGroupSizes.end(),
-                                 deviceSubGroupSize_)
-                               != deviceInfo.supportedSubGroupSizes.end(),
-                       "Device does not support selected sub-group size");
+    deviceSubGroupSize_                 = chooseSubGroupSizeForDevice(deviceInfo, 32);
 
-    int fTypeRangeEnd = kernelParams_.fTypeRangeEnd[numFTypesOnGpu - 1];
+    int functionTypeRangeEnd = kernelParams_.functionTypeRangeEnd[sc_numFunctionTypesOnGpu - 1];
 
     kernelLaunchConfig_.blockSize[0] = c_threadsBondedPerBlock;
     kernelLaunchConfig_.blockSize[1] = 1;
     kernelLaunchConfig_.blockSize[2] = 1;
-    kernelLaunchConfig_.gridSize[0] = (fTypeRangeEnd + c_threadsBondedPerBlock) / c_threadsBondedPerBlock;
+    kernelLaunchConfig_.gridSize[0] =
+            (functionTypeRangeEnd + c_threadsBondedPerBlock) / c_threadsBondedPerBlock;
     kernelLaunchConfig_.gridSize[1]      = 1;
     kernelLaunchConfig_.gridSize[2]      = 1;
     kernelLaunchConfig_.sharedMemorySize = c_numShiftVectors * sizeof(Float3);
@@ -156,9 +137,9 @@ ListedForcesGpu::Impl::~Impl()
     try
     {
         deviceStream_.synchronize();
-        for (InteractionFunction fType : fTypesOnGpu)
+        for (const InteractionFunction functionType : sc_functionTypesOnGpu)
         {
-            const int ft = static_cast<int>(fType);
+            const int ft = static_cast<int>(functionType);
             if (d_iAtoms_[ft])
             {
                 freeDeviceBuffer(&d_iAtoms_[ft]);
@@ -175,24 +156,24 @@ ListedForcesGpu::Impl::~Impl()
     }
 }
 
-//! Return whether function type \p fType in \p idef has perturbed interactions
-static bool fTypeHasPerturbedEntries(const InteractionDefinitions& idef, int fType)
+//! Return whether function type \p functionType in \p idef has perturbed interactions
+static bool functionTypeHasPerturbedEntries(const InteractionDefinitions& idef, int functionType)
 {
     GMX_ASSERT(idef.ilsort == ilsortNO_FE || idef.ilsort == ilsortFE_SORTED,
                "Perturbed interactions should be sorted here");
 
-    const InteractionList& ilist = idef.il[fType];
+    const InteractionList& ilist = idef.il[functionType];
 
-    return (idef.ilsort != ilsortNO_FE && idef.numNonperturbedInteractions[fType] != ilist.size());
+    return (idef.ilsort != ilsortNO_FE && idef.numNonperturbedInteractions[functionType] != ilist.size());
 }
 
-//! Converts \p src with atom indices in state order to \p dest in nbnxn order
-static void convertIlistToNbnxnOrder(const InteractionList& src,
+//! Converts \p src with atom indices in state order to \p dest in nbnxm order
+static void convertIlistToNbnxmOrder(const InteractionList& src,
                                      HostInteractionList*   dest,
                                      int                    numAtomsPerInteraction,
-                                     ArrayRef<const int>    nbnxnAtomOrder)
+                                     ArrayRef<const int>    nbnxmAtomOrder)
 {
-    GMX_ASSERT(src.empty() || !nbnxnAtomOrder.empty(), "We need the nbnxn atom order");
+    GMX_ASSERT(src.empty() || !nbnxmAtomOrder.empty(), "We need the nbnxm atom order");
 
     dest->iatoms.resize(src.size());
 
@@ -202,7 +183,7 @@ static void convertIlistToNbnxnOrder(const InteractionList& src,
         dest->iatoms[i] = src.iatoms[i];
         for (int a = 0; a < numAtomsPerInteraction; a++)
         {
-            dest->iatoms[i + 1 + a] = nbnxnAtomOrder[src.iatoms[i + 1 + a]];
+            dest->iatoms[i + 1 + a] = nbnxmAtomOrder[src.iatoms[i + 1 + a]];
         }
     }
 }
@@ -225,14 +206,14 @@ void ListedForcesGpu::Impl::updateHaveInteractions(const InteractionDefinitions&
 {
     haveInteractions_ = false;
 
-    for (InteractionFunction fType : fTypesOnGpu)
+    for (const InteractionFunction functionType : sc_functionTypesOnGpu)
     {
         /* Perturbation is not implemented in the GPU bonded kernels.
          * But instead of doing all interactions on the CPU, we can
          * still easily handle the types that have no perturbed
          * interactions on the GPU. */
-        const int ft = static_cast<int>(fType);
-        if (!idef.il[ft].empty() && !fTypeHasPerturbedEntries(idef, ft))
+        const int ft = static_cast<int>(functionType);
+        if (!idef.il[ft].empty() && !functionTypeHasPerturbedEntries(idef, ft))
         {
             haveInteractions_ = true;
             return;
@@ -254,30 +235,30 @@ void ListedForcesGpu::Impl::updateHaveInteractions(const InteractionDefinitions&
  *  (thread index) of each interaction type are stored in kernelParams_. Pointers to the relevant
  *  data structures on the GPU are also stored in kernelParams_.
  */
-void ListedForcesGpu::Impl::updateInteractionListsAndDeviceBuffers(ArrayRef<const int> nbnxnAtomOrder,
+void ListedForcesGpu::Impl::updateInteractionListsAndDeviceBuffers(ArrayRef<const int> nbnxmAtomOrder,
                                                                    const InteractionDefinitions& idef,
                                                                    DeviceBuffer<Float4> d_xqPtr,
                                                                    DeviceBuffer<RVec>   d_fPtr,
                                                                    DeviceBuffer<RVec>   d_fShiftPtr)
 {
     wallcycle_sub_start(wcycle_, WallCycleSubCounter::GpuBondedListUpdate);
-    bool haveGpuInteractions = false;
-    int  fTypesCounter       = 0;
+    bool haveGpuInteractions  = false;
+    int  functionTypesCounter = 0;
 
-    for (InteractionFunction fType : fTypesOnGpu)
+    for (const InteractionFunction functionType : sc_functionTypesOnGpu)
     {
-        const int ft    = static_cast<int>(fType);
+        const int ft    = static_cast<int>(functionType);
         auto&     iList = iLists_[ft];
 
         /* Perturbation is not implemented in the GPU bonded kernels.
          * But instead of doing all interactions on the CPU, we can
          * still easily handle the types that have no perturbed
          * interactions on the GPU. */
-        if (!idef.il[ft].empty() && !fTypeHasPerturbedEntries(idef, ft))
+        if (!idef.il[ft].empty() && !functionTypeHasPerturbedEntries(idef, ft))
         {
             haveGpuInteractions = true;
 
-            convertIlistToNbnxnOrder(idef.il[ft], &iList, NRAL(fType), nbnxnAtomOrder);
+            convertIlistToNbnxmOrder(idef.il[ft], &iList, NRAL(functionType), nbnxmAtomOrder);
         }
         else
         {
@@ -302,37 +283,40 @@ void ListedForcesGpu::Impl::updateInteractionListsAndDeviceBuffers(ArrayRef<cons
                                GpuApiCallBehavior::Async,
                                nullptr);
         }
-        kernelParams_.fTypesOnGpu[fTypesCounter] = static_cast<InteractionFunction>(ft);
+        kernelParams_.functionTypesOnGpu[functionTypesCounter] = static_cast<InteractionFunction>(ft);
         int numBonds = iList.size() / (interaction_function[ft].nratoms + 1);
-        kernelParams_.numFTypeBonds[fTypesCounter] = numBonds;
-        kernelBuffers_.d_iatoms[fTypesCounter]     = d_iAtoms_[ft];
-        if (fTypesCounter == 0)
+        kernelParams_.numFTypeBonds[functionTypesCounter] = numBonds;
+        kernelBuffers_.d_iatoms[functionTypesCounter]     = d_iAtoms_[ft];
+        if (functionTypesCounter == 0)
         {
-            kernelParams_.fTypeRangeStart[fTypesCounter] = 0;
+            kernelParams_.functionTypeRangeStart[functionTypesCounter] = 0;
         }
         else
         {
-            kernelParams_.fTypeRangeStart[fTypesCounter] =
-                    kernelParams_.fTypeRangeEnd[fTypesCounter - 1] + 1;
+            kernelParams_.functionTypeRangeStart[functionTypesCounter] =
+                    kernelParams_.functionTypeRangeEnd[functionTypesCounter - 1] + 1;
         }
-        kernelParams_.fTypeRangeEnd[fTypesCounter] = kernelParams_.fTypeRangeStart[fTypesCounter]
-                                                     + roundUpToFactor(numBonds, deviceSubGroupSize_) - 1;
+        kernelParams_.functionTypeRangeEnd[functionTypesCounter] =
+                kernelParams_.functionTypeRangeStart[functionTypesCounter]
+                + roundUpToFactor(numBonds, deviceSubGroupSize_) - 1;
 
         GMX_ASSERT(numBonds > 0
-                           || kernelParams_.fTypeRangeEnd[fTypesCounter]
-                                      <= kernelParams_.fTypeRangeStart[fTypesCounter],
+                           || kernelParams_.functionTypeRangeEnd[functionTypesCounter]
+                                      <= kernelParams_.functionTypeRangeStart[functionTypesCounter],
                    "Invalid GPU listed forces setup. numBonds must be > 0 if there are threads "
                    "allocated to do work on that interaction function type.");
         GMX_ASSERT(
-                kernelParams_.fTypeRangeStart[fTypesCounter] % deviceSubGroupSize_ == 0
-                        && (kernelParams_.fTypeRangeEnd[fTypesCounter] + 1) % deviceSubGroupSize_ == 0,
+                kernelParams_.functionTypeRangeStart[functionTypesCounter] % deviceSubGroupSize_ == 0
+                        && (kernelParams_.functionTypeRangeEnd[functionTypesCounter] + 1) % deviceSubGroupSize_
+                                   == 0,
                 "The bonded interactions must be assigned to the GPU in blocks of sub-group size.");
 
-        fTypesCounter++;
+        functionTypesCounter++;
     }
 
-    int fTypeRangeEnd = kernelParams_.fTypeRangeEnd[numFTypesOnGpu - 1];
-    kernelLaunchConfig_.gridSize[0] = (fTypeRangeEnd + c_threadsBondedPerBlock) / c_threadsBondedPerBlock;
+    int functionTypeRangeEnd = kernelParams_.functionTypeRangeEnd[sc_numFunctionTypesOnGpu - 1];
+    kernelLaunchConfig_.gridSize[0] =
+            (functionTypeRangeEnd + c_threadsBondedPerBlock) / c_threadsBondedPerBlock;
 
     d_xq_     = d_xqPtr;
     d_f_      = d_fPtr;
@@ -387,10 +371,11 @@ void ListedForcesGpu::Impl::waitAccumulateEnergyTerms(gmx_enerdata_t* enerd)
     deviceStream_.synchronize();
     wallcycle_stop(wcycle_, WallCycleCounter::WaitGpuBonded);
 
-    for (InteractionFunction fType : fTypesOnGpu)
+    for (const InteractionFunction functionType : sc_functionTypesOnGpu)
     {
-        const int ft = static_cast<int>(fType);
-        if (fType != InteractionFunction::LennardJones14 && fType != InteractionFunction::Coulomb14)
+        const int ft = static_cast<int>(functionType);
+        if (functionType != InteractionFunction::LennardJones14
+            && functionType != InteractionFunction::Coulomb14)
         {
             enerd->term[ft] += vTot_[ft];
         }
@@ -432,12 +417,12 @@ void ListedForcesGpu::updateHaveInteractions(const InteractionDefinitions& idef)
     impl_->updateHaveInteractions(idef);
 }
 
-void ListedForcesGpu::updateInteractionListsAndDeviceBuffers(ArrayRef<const int> nbnxnAtomOrder,
+void ListedForcesGpu::updateInteractionListsAndDeviceBuffers(ArrayRef<const int> nbnxmAtomOrder,
                                                              const InteractionDefinitions& idef,
                                                              NBAtomDataGpu* nbnxmAtomDataGpu)
 {
     impl_->updateInteractionListsAndDeviceBuffers(
-            nbnxnAtomOrder, idef, nbnxmAtomDataGpu->xq, nbnxmAtomDataGpu->f, nbnxmAtomDataGpu->fShift);
+            nbnxmAtomOrder, idef, nbnxmAtomDataGpu->xq, nbnxmAtomDataGpu->f, nbnxmAtomDataGpu->fShift);
 }
 
 void ListedForcesGpu::setPbc(PbcType pbcType, const matrix box, bool canMoleculeSpanPbc)

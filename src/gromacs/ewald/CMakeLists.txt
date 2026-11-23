@@ -56,9 +56,7 @@ if (GMX_GPU_CUDA)
         # CUDA-specific sources
         pme_gpu_program_impl.cu
         pme_pp_comm_gpu_impl_gpu.cpp
-        pme_pp_comm_gpu_impl_gpu.cu
         pme_force_sender_gpu_impl_gpu.cpp
-        pme_force_sender_gpu_impl_gpu.cu
         pme_coordinate_receiver_gpu_impl_gpu.cpp
         pme_gpu_grid.cu
         # GPU-specific sources
@@ -117,11 +115,8 @@ elseif (GMX_GPU_HIP)
         pme_gpu_timings.cpp
         pme_solve_hip.cpp
         pme_spread_hip.cpp
-        pme_pp_comm_gpu_impl_gpu_hip.cpp
-        pme_force_sender_gpu_impl_gpu_hip.cpp
         pme_pp_comm_gpu_impl_gpu.cpp
         pme_force_sender_gpu_impl_gpu.cpp
-        pme_force_sender_gpu_impl_gpu_hip.cpp
         pme_coordinate_receiver_gpu_impl_gpu.cpp
         )
     _gmx_add_files_to_property(HIP_SOURCES
@@ -131,12 +126,9 @@ elseif (GMX_GPU_HIP)
         pme_gpu_internal.cpp
         pme_gpu_program.cpp
         pme_gpu_program_impl_hip.cpp
-        pme_gpu_3dfft_hip.cpp
         pme_gpu_timings.cpp
         pme_pp_comm_gpu_impl_gpu.cpp
-        pme_pp_comm_gpu_impl_gpu_hip.cpp
         pme_force_sender_gpu_impl_gpu.cpp
-        pme_force_sender_gpu_impl_gpu_hip.cpp
         pme_coordinate_receiver_gpu_impl_gpu.cpp
         pme_solve_hip.cpp
         pme_spread_hip.cpp
@@ -152,11 +144,8 @@ elseif (GMX_GPU_SYCL)
         pme_gpu_timings.cpp
         pme_solve_sycl.cpp
         pme_spread_sycl.cpp
-        pme_pp_comm_gpu_impl_gpu_sycl.cpp
-        pme_force_sender_gpu_impl_gpu_sycl.cpp
         pme_pp_comm_gpu_impl_gpu.cpp
         pme_force_sender_gpu_impl_gpu.cpp
-        pme_force_sender_gpu_impl_gpu_sycl.cpp
         pme_coordinate_receiver_gpu_impl_gpu.cpp
         )
     _gmx_add_files_to_property(SYCL_SOURCES
@@ -165,12 +154,9 @@ elseif (GMX_GPU_SYCL)
         pme_gpu_internal.cpp
         pme_gpu_program.cpp
         pme_gpu_program_impl_sycl.cpp
-        pme_gpu_3dfft_sycl.cpp
         pme_gpu_timings.cpp
         pme_pp_comm_gpu_impl_gpu.cpp
-        pme_pp_comm_gpu_impl_gpu_sycl.cpp
         pme_force_sender_gpu_impl_gpu.cpp
-        pme_force_sender_gpu_impl_gpu_sycl.cpp
         pme_coordinate_receiver_gpu_impl_gpu.cpp
         pme_solve_sycl.cpp
         pme_spread_sycl.cpp
@@ -223,6 +209,7 @@ if(GMX_NVSHMEM AND GMX_GPU_CUDA)
             PRIVATE_TARGET_DEPENDENCIES
                 utility
                 math
+                timing
         )
         # Link the separable library to the main ewald library
         target_link_libraries(ewald INTERFACE ewald_pme_gather_gpu)

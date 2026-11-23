@@ -50,13 +50,13 @@
 #include "gromacs/fileio/matio.h"
 #include "gromacs/fileio/oenv.h"
 #include "gromacs/fileio/rgb.h"
+#include "gromacs/fileio/timecontrol.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/fileio/xvgr.h"
 #include "gromacs/gmxana/cmat.h"
 #include "gromacs/gmxana/gmx_ana.h"
 #include "gromacs/gmxana/princ.h"
 #include "gromacs/math/do_fit.h"
-#include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
 #include "gromacs/math/utilities.h"
 #include "gromacs/pbcutil/rmpbc.h"
@@ -69,6 +69,7 @@
 #include "gromacs/utility/arraysize.h"
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/futil.h"
 #include "gromacs/utility/pleasecite.h"
 #include "gromacs/utility/real.h"
@@ -159,11 +160,10 @@ int gmx_rms(int argc, char* argv[])
         "analogously to the [TT]-m[tt] option. Only bonds between atoms in the",
         "comparison group are considered."
     };
-    static gmx_bool bPBC = TRUE, bFitAll = TRUE, bSplit = FALSE;
-    static gmx_bool bDeltaLog = FALSE;
-    static int      prev = 0, freq = 1, freq2 = 1, nlevels = 80, avl = 0;
-    static real     rmsd_user_max = -1, rmsd_user_min = -1, bond_user_max = -1, bond_user_min = -1,
-                delta_maxy = 0.0;
+    gmx_bool bPBC = TRUE, bFitAll = TRUE, bSplit = FALSE;
+    gmx_bool bDeltaLog = FALSE;
+    int      prev = 0, freq = 1, freq2 = 1, nlevels = 80, avl = 0;
+    real rmsd_user_max = -1, rmsd_user_min = -1, bond_user_max = -1, bond_user_min = -1, delta_maxy = 0.0;
     /* strings and things for selecting difference method */
     enum
     {
@@ -188,12 +188,12 @@ int gmx_rms(int argc, char* argv[])
         efNone,
         efNR
     };
-    int             efit;
-    const char*     fit[efNR + 1] = { nullptr, "rot+trans", "translation", "none", nullptr };
-    const char*     fitgraphlabel[efNR + 1] = { nullptr, "lsq fit", "translational fit", "no fit" };
-    static int      nrms                    = 1;
-    static gmx_bool bMassWeighted           = TRUE;
-    t_pargs         pa[]                    = {
+    int         efit;
+    const char* fit[efNR + 1]           = { nullptr, "rot+trans", "translation", "none", nullptr };
+    const char* fitgraphlabel[efNR + 1] = { nullptr, "lsq fit", "translational fit", "no fit" };
+    int         nrms                    = 1;
+    gmx_bool    bMassWeighted           = TRUE;
+    t_pargs     pa[]                    = {
         { "-what", FALSE, etENUM, { what }, "Structural difference measure" },
         { "-pbc", FALSE, etBOOL, { &bPBC }, "PBC check" },
         { "-fit", FALSE, etENUM, { fit }, "Fit to reference structure" },
@@ -217,7 +217,8 @@ int gmx_rms(int argc, char* argv[])
     int j, m;
 #define NFRAME 5000
     int        maxframe = NFRAME, maxframe2 = NFRAME;
-    real       t, *w_rls, *w_rms, *w_rls_m = nullptr, *w_rms_m = nullptr;
+    double     t;
+    real *     w_rls, *w_rms, *w_rls_m = nullptr, *w_rms_m = nullptr;
     gmx_bool   bNorm, bAv, bFreq2, bFile2, bMat, bBond, bDelta, bMirror, bMass;
     gmx_bool   bFit, bReset;
     t_topology top;
@@ -242,6 +243,7 @@ int gmx_rms(int argc, char* argv[])
     char *   gn_fit, **gn_rms;
     t_rgb    rlo, rhi;
     gmx_output_env_t* oenv;
+    gmx::TimeControl  timeControl;
     gmx_rmpbc_t       gpbc = nullptr;
 
     t_filenm fnm[] = {
@@ -265,7 +267,8 @@ int gmx_rms(int argc, char* argv[])
                            desc,
                            0,
                            nullptr,
-                           &oenv))
+                           &oenv,
+                           &timeControl))
     {
         return 0;
     }
@@ -330,11 +333,9 @@ int gmx_rms(int argc, char* argv[])
 
     if (bFile2 && !bMat && !bBond)
     {
-        fprintf(stderr,
-                "WARNING: second trajectory (-f2) useless when not calculating matrix (-m/-bm),\n"
-                "         will not read from %s\n",
-                opt2fn("-f2", NFILE, fnm));
-        bFile2 = FALSE;
+        gmx_fatal(FARGS,
+                  "A second trajectory (-f2) should only be supplied if -m and/or -bm options are "
+                  "supplied.\n");
     }
 
     if (bDelta)
@@ -356,10 +357,7 @@ int gmx_rms(int argc, char* argv[])
 
     if (!bTop && bBond)
     {
-        fprintf(stderr,
-                "WARNING: Need a run input file for bond angle matrix,\n"
-                "         will not calculate bond angle matrix.\n");
-        bBond = FALSE;
+        gmx_fatal(FARGS, "A .tpr input (-s) is required to compute the bond matrix (-bm).\n");
     }
 
     if (bReset)
@@ -482,7 +480,7 @@ int gmx_rms(int argc, char* argv[])
     }
 
     /* read first frame */
-    natoms_trx = read_first_x(oenv, &status, opt2fn("-f", NFILE, fnm), &t, &x, box);
+    natoms_trx = read_first_x(oenv, &status, opt2fn("-f", NFILE, fnm), &t, &x, box, &timeControl);
     if (natoms_trx != top.atoms.nr)
     {
         fprintf(stderr, "\nWARNING: topology has %d atoms, whereas trajectory has %d\n", top.atoms.nr, natoms_trx);
@@ -717,7 +715,7 @@ int gmx_rms(int argc, char* argv[])
 
         fprintf(stderr, "\nWill read second trajectory file\n");
         snew(mat_x2, NFRAME);
-        natoms_trx2 = read_first_x(oenv, &status, opt2fn("-f2", NFILE, fnm), &t, &x, box);
+        natoms_trx2 = read_first_x(oenv, &status, opt2fn("-f2", NFILE, fnm), &t, &x, box, &timeControl);
         if (natoms_trx2 != natoms_trx)
         {
             gmx_fatal(FARGS,
@@ -1001,7 +999,8 @@ int gmx_rms(int argc, char* argv[])
                 fprintf(stderr, "Min and Max value set to resp. %f and %f\n", rmsd_min, rmsd_max);
             }
             sprintf(buf, "%s %s matrix", gn_rms[0], whatname[ewhat]);
-            write_xpm(opt2FILE("-m", NFILE, fnm, "w"),
+            FILE* matrixFile = opt2FILE("-m", NFILE, fnm, "w");
+            write_xpm(matrixFile,
                       0,
                       buf,
                       whatlabel[ewhat],
@@ -1017,6 +1016,7 @@ int gmx_rms(int argc, char* argv[])
                       rlo,
                       rhi,
                       &nlevels);
+            gmx_ffclose(matrixFile);
             /* Print the distribution of RMSD values */
             if (opt2bSet("-dist", NFILE, fnm))
             {
@@ -1133,7 +1133,8 @@ int gmx_rms(int argc, char* argv[])
             rhi.g = 0;
             rhi.b = 0;
             sprintf(buf, "%s av. bond angle deviation", gn_rms[0]);
-            write_xpm(opt2FILE("-bm", NFILE, fnm, "w"),
+            FILE* bondMatrixFile = opt2FILE("-bm", NFILE, fnm, "w");
+            write_xpm(bondMatrixFile,
                       0,
                       buf,
                       "degrees",
@@ -1149,6 +1150,7 @@ int gmx_rms(int argc, char* argv[])
                       rlo,
                       rhi,
                       &nlevels);
+            gmx_ffclose(bondMatrixFile);
         }
     }
 

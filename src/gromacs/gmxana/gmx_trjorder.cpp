@@ -45,6 +45,7 @@
 #include "gromacs/commandline/pargs.h"
 #include "gromacs/fileio/confio.h"
 #include "gromacs/fileio/filetypes.h"
+#include "gromacs/fileio/timecontrol.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/fileio/xvgr.h"
 #include "gromacs/gmxana/gmx_ana.h"
@@ -118,23 +119,23 @@ int gmx_trjorder(int argc, char* argv[])
         "With option [TT]-nshell[tt] the number of molecules within a shell",
         "of radius [TT]-r[tt] around the reference group are printed."
     };
-    static int      na = 3, ref_a = 1;
-    static real     rcut = 0;
-    static gmx_bool bCOM = FALSE, bZ = FALSE;
-    t_pargs         pa[] = {
+    int      na = 3, ref_a = 1;
+    real     rcut = 0;
+    gmx_bool bCOM = FALSE, bZ = FALSE;
+    t_pargs  pa[] = {
         { "-na", FALSE, etINT, { &na }, "Number of atoms in a molecule" },
         { "-da", FALSE, etINT, { &ref_a }, "Atom used for the distance calculation, 0 is COM" },
         { "-com",
-                  FALSE,
-                  etBOOL,
-                  { &bCOM },
-                  "Use the distance to the center of mass of the reference group" },
+           FALSE,
+           etBOOL,
+           { &bCOM },
+           "Use the distance to the center of mass of the reference group" },
         { "-r",
-                  FALSE,
-                  etREAL,
-                  { &rcut },
-                  "Cutoff used for the distance calculation when computing the number of molecules in a "
-                          "shell around e.g. a protein" },
+           FALSE,
+           etREAL,
+           { &rcut },
+           "Cutoff used for the distance calculation when computing the number of molecules in a "
+            "shell around e.g. a protein" },
         { "-z", FALSE, etBOOL, { &bZ }, "Order molecules on z-coordinate" }
     };
     FILE*             fp;
@@ -147,12 +148,14 @@ int gmx_trjorder(int argc, char* argv[])
     matrix            box;
     t_pbc             pbc;
     gmx_rmpbc_t       gpbc;
-    real              t, totmass, mass, rcut2 = 0, n2;
+    double            t;
+    real              totmass, mass, rcut2 = 0, n2;
     int               natoms, nwat, ncut;
     char**            grpname;
     int               i, j, d, *isize, isize_ref      = 0, isize_sol;
     int               sa, sr, *swi, **index, *ind_ref = nullptr, *ind_sol;
     gmx_output_env_t* oenv;
+    gmx::TimeControl  timeControl;
     t_filenm          fnm[] = { { efTRX, "-f", nullptr, ffREAD },
                                 { efTPS, nullptr, nullptr, ffREAD },
                                 { efNDX, nullptr, nullptr, ffOPTRD },
@@ -161,7 +164,7 @@ int gmx_trjorder(int argc, char* argv[])
 #define NFILE asize(fnm)
 
     if (!parse_common_args(
-                &argc, argv, PCA_CAN_TIME, NFILE, fnm, asize(pa), pa, asize(desc), desc, 0, nullptr, &oenv))
+                &argc, argv, PCA_CAN_TIME, NFILE, fnm, asize(pa), pa, asize(desc), desc, 0, nullptr, &oenv, &timeControl))
     {
         return 0;
     }
@@ -189,7 +192,7 @@ int gmx_trjorder(int argc, char* argv[])
         ind_sol   = index[0];
     }
 
-    natoms = read_first_x(oenv, &status, ftp2fn(efTRX, NFILE, fnm), &t, &x, box);
+    natoms = read_first_x(oenv, &status, ftp2fn(efTRX, NFILE, fnm), &t, &x, box, &timeControl);
     if (natoms > top.atoms.nr)
     {
         gmx_fatal(FARGS, "Number of atoms in the run input file is larger than in the trajectory");

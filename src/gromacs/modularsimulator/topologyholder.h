@@ -62,6 +62,7 @@ namespace gmx
 {
 class Constraints;
 class MDAtoms;
+class SimulationWorkload;
 class VirtualSitesHandler;
 
 /*! \internal
@@ -81,8 +82,10 @@ public:
                    const t_commrec*                    cr,
                    const t_inputrec*                   inputrec,
                    t_forcerec*                         fr,
+                   real                                massLambda,
                    MDAtoms*                            mdAtoms,
                    Constraints*                        constr,
+                   const SimulationWorkload&           simulationWork,
                    VirtualSitesHandler*                vsite);
 
     //! Get global topology

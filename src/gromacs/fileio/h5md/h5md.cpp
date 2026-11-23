@@ -57,17 +57,22 @@
 #include "gromacs/trajectory/trajectoryframe.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/baseversion.h"
+#include "gromacs/utility/futil.h"
+#include "gromacs/utility/keyvaluetreebuilder.h"
 #include "gromacs/utility/stringutil.h"
-#include "gromacs/utility/sysinfo.h"
 
 #if GMX_USE_HDF5
 #    include <hdf5.h>
 
+#    include "binary_information.h"
+#    include "exceptions.h"
 #    include "h5md_attribute.h"
-#    include "h5md_error.h"
+#    include "h5md_compression.h"
 #    include "h5md_framedatasetbuilder.h"
 #    include "h5md_group.h"
 #    include "h5md_guard.h"
+#    include "h5md_kvtree_writer.h"
+#    include "h5md_mdparameters.h"
 #    include "h5md_particleblock.h"
 #    include "h5md_timedatablock.h"
 #    include "h5md_topologyutils.h"
@@ -118,12 +123,16 @@ constexpr char c_h5mdCreatorGroupName[] = "creator";
 constexpr char c_h5mdModulesGroupName[] = "modules";
 //! \brief Attribute name for the author or creator (program) name.
 constexpr char c_h5mdNameAttributeKey[] = "name";
+//! \brief Attribute name for the author email address.
+constexpr char c_h5mdEmailAttributeKey[] = "email";
 //! \brief Attribute name for a version specification.
 constexpr char c_h5mdVersionAttributeKey[] = "version";
+//! \brief Path to the group of the system topology from the file root.
+constexpr char c_h5mdTopologyGroupPath[] = "/topology";
 //! \brief Path to H5MD connectivity group from the file root.
 constexpr char c_h5mdConnectivityGroupPath[] = "/connectivity";
-//! \brief Maximum length of author names (used to allocate memory).
-constexpr int c_maxUserNameLength = 4096;
+//! \brief Path to the group of the MD parameters from the file root.
+constexpr char c_h5mdParametersGroupPath[] = "/parameters";
 //! \brief Unit for position data for simulations produced by mdrun.
 constexpr char c_positionUnit[] = "nm";
 //! \brief Unit for velocity data for simulations produced by mdrun.
@@ -188,6 +197,124 @@ static void setupUnitsModule(const hid_t modulesGroup, const char* unitSystem = 
     setAttribute(group, "system", unitSystem);
     setAttribute(group, c_urlAttributeKey, url);
 }
+
+/*! \brief Set up the biophysics module with metadata in \p modulesGroup.
+ *
+ * Creates a module group with name "biophysics", which declares that the file follows
+ * the H5MD biophysics specification, and writes its version and a URL to it.
+ */
+static void setupBiophysicsModule(const hid_t modulesGroup)
+{
+    // Only the major and minor versions are stored: files following version
+    // 1.0.0-alpha.1 of the specification carry { 1, 0 }
+    constexpr char name[]    = "biophysics";
+    constexpr int  version[] = { 1, 0 };
+    constexpr char url[]     = "https://gromacs.gitlab.io/h5md-biophysics/";
+
+    const auto [group, groupGuard] = makeH5mdGroupGuard(createGroup(modulesGroup, name));
+    setAttributeVector(group, c_h5mdVersionAttributeKey, constArrayRefFromArray(version, 2));
+    setAttribute(group, c_urlAttributeKey, url);
+}
+
+/*! \brief Return the number of particles for the block at \c /particles/selectionName.
+ *
+ * \note Does not check consistency of trajectory data sets in the block.
+ *
+ * \param[in] fileid        Handle to H5md file.
+ * \param[in] selectionName Name of particle group.
+ *
+ * \returns The number of particles of trajectory data inside the block,
+ * or std::nullopt if no trajectory data exists for the block.
+ *
+ * \throws H5mdError if there was an error reading the number of particles
+ * from an existing data set.
+ */
+static std::optional<int64_t> calcNumParticlesForSelection(const hid_t fileid, const char* selectionName)
+{
+    const auto [particlesGroup, particlesGroupGuard] =
+            makeH5mdGroupGuard(openGroup(fileid, c_particlesGroupPath));
+    const auto [selectionGroup, selectionGroupGuard] =
+            makeH5mdGroupGuard(openGroup(particlesGroup, selectionName));
+
+    for (const char* dataGroupName : { c_positionGroupName, c_velocityGroupName, c_forceGroupName })
+    {
+        const std::string valueDataSetPath = joinStrings({ dataGroupName, c_valueName }, "/");
+        if (objectExists(selectionGroup, valueDataSetPath.c_str()))
+        {
+            const H5mdFrameDataSet<RVec> valueDataSet(selectionGroup, valueDataSetPath.c_str());
+            GMX_H5MD_THROW_UPON_ERROR(
+                    valueDataSet.frameDims().empty(),
+                    formatString(
+                            "Incorrect dimensions for data set at '%s': must not be 0-dimensional",
+                            joinStrings({ c_particlesGroupPath, selectionName, dataGroupName, c_valueName },
+                                        "/")
+                                    .c_str()));
+            return valueDataSet.frameDims()[0];
+        }
+    }
+    return std::nullopt;
+}
+
+/*! \brief Return the PbcType for the block at \c /particles/selectionName/box.
+ *
+ * \param[in] fileid        Handle to H5md file.
+ * \param[in] selectionName Name of particle group.
+ *
+ * \returns The PbcType or std::nullopt if it does not exist.
+ *
+ * \throws H5mdError if the simulation box group at \c /particles/selectionName/box
+ * exists but the PbcType could not be determined from it.
+ */
+static std::optional<PbcType> getPbcForSelection(const hid_t fileid, const char* selectionName)
+{
+    const auto [particlesGroup, particlesGroupGuard] =
+            makeH5mdGroupGuard(openGroup(fileid, c_particlesGroupPath));
+    const auto [selectionGroup, selectionGroupGuard] =
+            makeH5mdGroupGuard(openGroup(particlesGroup, selectionName));
+
+    if (!objectExists(selectionGroup, c_boxGroupName))
+    {
+        return std::nullopt;
+    }
+    const auto [boxGroup, boxGroupGuard] = makeH5mdGroupGuard(openGroup(selectionGroup, c_boxGroupName));
+
+    const std::optional<std::vector<std::string>> boundary =
+            getAttributeVector<std::string>(boxGroup, c_boxBoundaryAttributeKey);
+    GMX_H5MD_THROW_UPON_ERROR(!boundary.has_value(),
+                              formatString("Cannot read periodicity for group '%s': required "
+                                           "'boundary' attribute does not exist",
+                                           getHandlePath(boxGroup).value_or("<unknown_path>").c_str()));
+
+    const std::vector<std::string>& pbc = boundary.value();
+    GMX_H5MD_THROW_UPON_ERROR(
+            pbc.size() != DIM,
+            formatString("Cannot read periodicity for group '%s': required 'boundary' "
+                         "attribute must have 3 values for periodicity",
+                         getHandlePath(boxGroup).value_or("<unknown_path>").c_str()));
+    constexpr char periodicValue[] = "periodic";
+    constexpr char noneValue[]     = "none";
+
+    if (pbc[XX] == periodicValue && pbc[YY] == periodicValue && pbc[ZZ] == periodicValue)
+    {
+        return PbcType::Xyz;
+    }
+    else if (pbc[XX] == periodicValue && pbc[YY] == periodicValue && pbc[ZZ] == noneValue)
+    {
+        return PbcType::XY;
+    }
+    else if (pbc[XX] == noneValue && pbc[YY] == noneValue && pbc[ZZ] == noneValue)
+    {
+        return PbcType::No;
+    }
+    else
+    {
+        GMX_THROW(
+                H5mdError(formatString("Cannot read periodicity for group '%s': boundary attribute "
+                                       "does not map to GROMACS PBC types",
+                                       getHandlePath(boxGroup).value_or("<unknown path>").c_str())));
+    }
+}
+
 } // namespace
 #endif // GMX_USE_HDF5
 
@@ -198,12 +325,63 @@ H5md::H5md(const std::filesystem::path& fileName, const H5mdFileMode mode)
      * still print error messages. */
     H5Eset_auto2(H5E_DEFAULT, nullptr, nullptr);
 
+    // The SZ3 filter must be registered with HDF5 before it can be used
+    // to read and write data. If this registration fails, we can still
+    // open files with or without SZ3 data, but I/O operations on data
+    // sets with the filter active (if present) will fail. Until we know
+    // how to deal with such cases, we always throw if registration fails.
+    if (sz3CompressionIsAvailable())
+    {
+        GMX_H5MD_THROW_UPON_ERROR(!registerSz3Filter(),
+                                  "GROMACS is built with SZ3 support, but could not register "
+                                  "the SZ3 filter with the HDF5 library");
+    }
+
     switch (mode)
     {
         case H5mdFileMode::Write:
-            file_ = H5Fcreate(
-                    fileName.string().c_str(), H5F_ACC_TRUNC, H5Pcreate(H5P_FILE_CREATE), H5P_DEFAULT);
-            break;
+        {
+            const auto [createPropertyList, createPropertyListGuard] =
+                    makeH5mdPropertyListGuard(H5Pcreate(H5P_FILE_CREATE));
+            make_backup(fileName);
+            file_ = H5Fcreate(fileName.string().c_str(), H5F_ACC_TRUNC, createPropertyList, H5P_DEFAULT);
+
+            /* Set up the H5MD metadata according to the H5md specification:
+             *
+             * /h5md               (H5md metadata group)
+             * \++ version         (H5md specification version attribute)
+             * \-- author          (author group)
+             *     \++ name        (author name, or a dummy name if we cannot get it)
+             *     \++ email       (author email, if available)
+             * \-- creator         (creator group)
+             *     \++ name        (GROMACS)
+             *     \++ version     (GROMACS version)
+             *
+             * These groups and attributes are required by the H5MD specification to exist
+             * in the file. After setting these up we can proceed with the rest of the file.
+             */
+            const auto [group, groupGuard] =
+                    makeH5mdGroupGuard(createGroup(file_, c_h5mdMetaDataGroupName));
+            setAttributeVector<int>(group, c_h5mdVersionAttributeKey, c_h5mdSpecificationVersion);
+
+            const auto [authorGroup, authorGroupGuard] =
+                    makeH5mdGroupGuard(createGroup(group, c_h5mdAuthorGroupName));
+            // Author name and email are optionally set from environment variables,
+            // write if available. The H5MD spec requires a name to be written, so
+            // use a fallback if it is not set.
+            const char* authorName = std::getenv("GMX_AUTHOR_NAME");
+            setAttribute(authorGroup, c_h5mdNameAttributeKey, authorName != nullptr ? authorName : "N/A");
+            if (const char* authorEmail = std::getenv("GMX_AUTHOR_EMAIL"); authorEmail != nullptr)
+            {
+                setAttribute(authorGroup, c_h5mdEmailAttributeKey, authorEmail);
+            }
+
+            const auto [creatorGroup, creatorGroupGuard] =
+                    makeH5mdGroupGuard(createGroup(group, c_h5mdCreatorGroupName));
+            setAttribute(creatorGroup, c_h5mdNameAttributeKey, "GROMACS");
+            setAttribute(creatorGroup, c_h5mdVersionAttributeKey, gmx_version());
+        }
+        break;
         case H5mdFileMode::Read:
             file_ = H5Fopen(fileName.string().c_str(), H5F_ACC_RDONLY, H5P_DEFAULT);
             break;
@@ -229,7 +407,7 @@ H5md::~H5md()
     if (handleIsValid(file_))
     {
         // Do not throw exceptions when flushing from the destructor.
-        flush(false);
+        flush<false>();
         H5Fclose(file_);
     }
 
@@ -244,16 +422,17 @@ hid_t H5md::fileid() const
 #if GMX_USE_HDF5
     return file_;
 #else
-    throw gmx::NotImplementedError(
+    throw NotImplementedError(
             "GROMACS was compiled without HDF5 support, cannot handle this file type");
 #endif
 }
 
 // NOLINTNEXTLINE(readability-convert-member-functions-to-static)
-void H5md::flush(bool throwExceptionUponError)
+template<bool throwExceptionUponError>
+void H5md::flush()
 {
 #if GMX_USE_HDF5
-    if (throwExceptionUponError)
+    if constexpr (throwExceptionUponError)
     {
         GMX_ASSERT(handleIsValid(file_), "Cannot flush an invalid H5MD file.");
         GMX_H5MD_THROW_UPON_ERROR(H5Fflush(file_, H5F_SCOPE_LOCAL) < 0, "Error flushing H5MD.");
@@ -281,13 +460,14 @@ void H5md::flush(bool throwExceptionUponError)
  *
  * \warning Must be called after the position group has been set up.
  *
- * \param[in]  selectionGroup Handle to selection group inside /particles.
- * \param[out] blockBuilder   Builder to assign the simulation box data set to.
+ * \param[in]  fileid        Handle to H5md file.
+ * \param[in]  groupName     Name of particle group.
+ * \param[out] particleBlock Particle block to create box data set for.
  *
- * \throws gmx::FileIOError if there was an error setting up the links to the position
+ * \throws H5mdError if there was an error setting up the links to the position
  * step or time data sets.
  */
-static void setupSimulationBoxDataSet(const hid_t selectionGroup, H5mdParticleBlockBuilder& blockBuilder)
+static void setupSimulationBoxDataSet(const hid_t fileid, const char* groupName, H5mdParticleBlock* particleBlock)
 {
     // TODO: Per the H5md spec we should write the box only once if it is constant.
     // At the time of writing we don't have access to the box values when the H5md
@@ -300,14 +480,17 @@ static void setupSimulationBoxDataSet(const hid_t selectionGroup, H5mdParticleBl
     // write the full matrix.
     // const bool boxIsCubic = (box[XX][YY] == 0.0) && (box[XX][ZZ] == 0.0) && (box[YY][XX] == 0.0)
     //                         && (box[YY][ZZ] == 0.0) && (box[ZZ][XX] == 0.0) && (box[ZZ][YY] == 0.0);
+    const std::string selectionGroupPath = joinStrings({ c_particlesGroupPath, groupName }, "/");
+    const auto [selectionGroup, selectionGroupGuard] =
+            makeH5mdGroupGuard(openGroup(fileid, selectionGroupPath.c_str()));
     const auto [boxGroup, boxGroupGuard] = makeH5mdGroupGuard(openGroup(selectionGroup, c_boxGroupName));
     const auto [edgesGroup, edgesGroupGuard] = makeH5mdGroupGuard(createGroup(boxGroup, c_boxSizeName));
 
     // Matrices are stored as real[DIM][DIM], which is the data set frame dimension
-    blockBuilder.setBox(H5mdFrameDataSetBuilder<real>(edgesGroup, c_valueName)
-                                .withFrameDimension({ DIM, DIM })
-                                .withUnit(c_positionUnit)
-                                .build());
+    particleBlock->addBox(H5mdFrameDataSetBuilder<real>(edgesGroup, c_valueName)
+                                  .withFrameDimension({ DIM, DIM })
+                                  .withUnit(c_positionUnit)
+                                  .build());
 
     const auto [positionGroup, positionGroupGuard] =
             makeH5mdGroupGuard(openGroup(selectionGroup, c_positionGroupName));
@@ -322,8 +505,6 @@ static void setupSimulationBoxDataSet(const hid_t selectionGroup, H5mdParticleBl
 /*! \brief Create the simulation box group inside \p selectionGroup.
  *
  * The simulation box attributes "dimension" and "boundary" are written to the box group.
- *
- * \warning Must be called after the position group has been set up.
  *
  * \param[in] selectionGroup Handle to group in which to create the box group.
  * \param[in] inputRecord    Simulation input record.
@@ -363,37 +544,12 @@ void H5md::setupParticleBlockForGroup(const gmx_mtop_t&   topology,
             makeH5mdGroupGuard(createGroup(particlesGroup, selectionName.c_str()));
     setupSimulationBoxGroup(selectionGroup, inputRecord);
 
-    const hsize_t numAtoms = selectionIndices.empty() ? topology.natoms : selectionIndices.size();
+    const int64_t numParticles = selectionIndices.empty() ? topology.natoms : selectionIndices.size();
     GMX_H5MD_THROW_UPON_ERROR(
-            numAtoms == 0,
+            numParticles == 0,
             formatString("Cannot setup particle group '%s': no atoms in group", selectionName.c_str()));
 
-    const DataSetDims frameDims = numAtoms > 0 ? DataSetDims{ numAtoms } : DataSetDims{};
-
-    H5mdParticleBlockBuilder blockBuilder;
-    if (inputRecord.nstxout > 0)
-    {
-        blockBuilder.setPosition(H5mdTimeDataBlockBuilder<RVec>(selectionGroup, c_positionGroupName)
-                                         .withFrameDimension(frameDims)
-                                         .withUnit(c_positionUnit)
-                                         .build());
-        setupSimulationBoxDataSet(selectionGroup, blockBuilder);
-    }
-    if (inputRecord.nstvout > 0)
-    {
-        blockBuilder.setVelocity(H5mdTimeDataBlockBuilder<RVec>(selectionGroup, c_velocityGroupName)
-                                         .withFrameDimension(frameDims)
-                                         .withUnit(c_velocityUnit)
-                                         .build());
-    }
-    if (inputRecord.nstfout > 0)
-    {
-        blockBuilder.setForce(H5mdTimeDataBlockBuilder<RVec>(selectionGroup, c_forceGroupName)
-                                      .withFrameDimension(frameDims)
-                                      .withUnit(c_forceUnit)
-                                      .build());
-    }
-    particleBlocks_.insert({ selectionName, TrajectoryReadCursor(blockBuilder.build()) });
+    particleBlocks_.insert({ selectionName, TrajectoryReadCursor(H5mdParticleBlock(numParticles)) });
 #else
     GMX_UNUSED_VALUE(topology);
     GMX_UNUSED_VALUE(selectionIndices);
@@ -403,25 +559,24 @@ void H5md::setupParticleBlockForGroup(const gmx_mtop_t&   topology,
 }
 
 // NOLINTNEXTLINE(readability-convert-member-functions-to-static)
-void H5md::setupGromacsTopology(const gmx_mtop_t& topology)
+void H5md::setupSystemTopology(const gmx_mtop_t& topology)
 {
 #if GMX_USE_HDF5
     if (topology.moltype.empty())
     {
         return;
     }
-    // Create the HDF5 group for storing the GROMACS topology
-    constexpr char    c_moduleNameGromacsTopology[] = "gromacs_topology";
-    const std::string pathToGromacsTopology         = joinStrings(
-            { c_h5mdMetaDataGroupName, c_h5mdModulesGroupName, c_moduleNameGromacsTopology }, "/");
-    const auto [gmxTop, gmxTopGuard] =
-            makeH5mdGroupGuard(createGroup(file_, pathToGromacsTopology.c_str()));
+    constexpr char c_totalParticleCountAttributeKey[] = "total_particle_count";
+    constexpr char c_totalResidueCountAttributeKey[]  = "total_residue_count";
 
-    writeMoleculeTypes(gmxTop, makeConstArrayRef(topology.moltype));
-    writeMoleculeBlocks(gmxTop, makeConstArrayRef(topology.molblock));
-    // The h5md_topologyutils module takes care of the versioning of the GROMACS topology
-    labelInternalTopologyVersion(gmxTop);
-    labelTopologyName(gmxTop, *(topology.name));
+    const auto [topologyGroup, topologyGroupGuard] =
+            makeH5mdGroupGuard(createGroup(file_, c_h5mdTopologyGroupPath));
+    labelTopologyName(topologyGroup, *(topology.name));
+    setAttribute<int64_t>(topologyGroup, c_totalParticleCountAttributeKey, topology.natoms);
+    setAttribute<int64_t>(topologyGroup, c_totalResidueCountAttributeKey, gmx_mtop_nres(topology));
+    writeMoleculeBlocksAsCompound(
+            topologyGroup, makeConstArrayRef(topology.molblock), makeConstArrayRef(topology.moltype));
+    writeMoleculeTypesAsCompound(topologyGroup, makeConstArrayRef(topology.moltype));
 #else
     GMX_UNUSED_VALUE(topology);
 #endif
@@ -446,32 +601,16 @@ void H5md::setupBondConnectivity(const gmx_mtop_t& topology)
 #endif
 }
 
-
 // NOLINTNEXTLINE(readability-convert-member-functions-to-static)
-void H5md::setupMetadataGroup()
+void H5md::setupModules()
 {
 #if GMX_USE_HDF5
-    const auto [group, groupGuard] = makeH5mdGroupGuard(createGroup(file_, c_h5mdMetaDataGroupName));
-    setAttributeVector<int>(group, c_h5mdVersionAttributeKey, c_h5mdSpecificationVersion);
-
-    const auto [authorGroup, authorGroupGuard] =
-            makeH5mdGroupGuard(createGroup(group, c_h5mdAuthorGroupName));
-    std::string username(c_maxUserNameLength, '\0');
-    if (gmx_getusername(username.data(), c_maxUserNameLength) != 0)
-    {
-        username = "<unknown author>";
-    }
-    setAttribute(authorGroup, c_h5mdNameAttributeKey, username);
-
-    const auto [creatorGroup, creatorGroupGuard] =
-            makeH5mdGroupGuard(createGroup(group, c_h5mdCreatorGroupName));
-    setAttribute(creatorGroup, c_h5mdNameAttributeKey, "GROMACS");
-    setAttribute(creatorGroup, c_h5mdVersionAttributeKey, gmx_version());
-
+    const auto [group, groupGuard] = makeH5mdGroupGuard(openGroup(file_, c_h5mdMetaDataGroupName));
     const auto [modulesGroup, modulesGroupGuard] =
             makeH5mdGroupGuard(createGroup(group, c_h5mdModulesGroupName));
     setupGromacsModule(modulesGroup);
     setupUnitsModule(modulesGroup);
+    setupBiophysicsModule(modulesGroup);
 #endif
 }
 
@@ -479,10 +618,7 @@ void H5md::setupMetadataGroup()
 void H5md::setupFileFromInput(const gmx_mtop_t& topology, const t_inputrec& inputRecord)
 {
 #if GMX_USE_HDF5
-    setupMetadataGroup();
-    setupParticleBlockForGroup(topology, {}, c_fullSystemGroupName, inputRecord);
-    setupGromacsTopology(topology);
-    setupBondConnectivity(topology);
+    setupFileFromInput(topology, inputRecord, {}, c_fullSystemGroupName);
 #else
     GMX_UNUSED_VALUE(topology);
     GMX_UNUSED_VALUE(inputRecord);
@@ -490,25 +626,87 @@ void H5md::setupFileFromInput(const gmx_mtop_t& topology, const t_inputrec& inpu
 }
 
 // NOLINTNEXTLINE(readability-convert-member-functions-to-static)
+void H5md::setupFileFromInput(const gmx_mtop_t&   topology,
+                              const t_inputrec&   inputRecord,
+                              ArrayRef<const int> selectionInds,
+                              const char*         selectionName)
+{
+#if GMX_USE_HDF5
+    setupModules();
+    setupParticleBlockForGroup(topology, selectionInds, selectionName, inputRecord);
+    setupSystemTopology(topology);
+    setupBondConnectivity(topology);
+#else
+    GMX_UNUSED_VALUE(topology);
+    GMX_UNUSED_VALUE(inputRecord);
+    GMX_UNUSED_VALUE(selectionInds);
+    GMX_UNUSED_VALUE(selectionName);
+#endif
+}
+
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static)
+void H5md::setupMDParameters(const t_inputrec& inputRecord, const gmx_mtop_t& topology, const bool isRerun)
+{
+#if GMX_USE_HDF5
+    KeyValueTreeBuilder       builder;
+    KeyValueTreeObjectBuilder root = builder.rootObject();
+    buildMdParameterTree(&root, inputRecord, topology, isRerun);
+
+    const auto [parametersGroup, parametersGroupGuard] =
+            makeH5mdGroupGuard(createGroup(file_, c_h5mdParametersGroupPath));
+    writeKeyValueTreeToH5md(parametersGroup, builder.build());
+#else
+    GMX_UNUSED_VALUE(inputRecord);
+    GMX_UNUSED_VALUE(topology);
+    GMX_UNUSED_VALUE(isRerun);
+#endif
+}
+
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static)
+void H5md::setupFromOtherFile(const H5md& other, const ArrayRef<const int> selectionInds, const char* selectionName)
+{
+#if GMX_USE_HDF5
+    const std::optional<int64_t> numParticles =
+            calcNumParticlesForSelection(other.fileid(), selectionName);
+    GMX_H5MD_THROW_UPON_ERROR(!numParticles.has_value(),
+                              formatString("Cannot read number of particles from input H5MD file"));
+    gmx_mtop_t topology;
+    topology.natoms = numParticles.value();
+
+    const std::optional<PbcType> pbcType = getPbcForSelection(other.fileid(), selectionName);
+    GMX_H5MD_THROW_UPON_ERROR(!pbcType.has_value(), "Cannot read PbcType from input H5MD file");
+    t_inputrec inputRecord;
+    inputRecord.pbcType = pbcType.value();
+
+    // NOTE: Only copy over the topology data if the new file contains data
+    // for the same number of particles. Until we figure out how to deal with
+    // sub group selections we should ensure that the topology represents all
+    // trajectory data.
+    const bool copyTopology = selectionInds.empty() || numParticles.value() == gmx::ssize(selectionInds);
+    copyMetaDataFromFile(other, copyTopology);
+    setupParticleBlockForGroup(topology, selectionInds, selectionName, inputRecord);
+#else
+    GMX_UNUSED_VALUE(other);
+    GMX_UNUSED_VALUE(selectionInds);
+    GMX_UNUSED_VALUE(selectionName);
+#endif
+}
+
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static)
 void H5md::setupParticleBlockForGroupFromExistingFile(const std::string& selectionName,
                                                       const std::optional<int64_t> restartingFromStep,
-                                                      const std::optional<int64_t> expectedNumParticles)
+                                                      const int64_t numParticles)
 {
 #if GMX_USE_HDF5
     const auto [particlesGroup, particlesGroupGuard] =
             makeH5mdGroupGuard(openGroup(file_, c_particlesGroupPath));
-    GMX_H5MD_THROW_UPON_INVALID_HID(particlesGroup, "H5md trajectory file has no /particles group");
     const auto [selectionGroup, selectionGroupGuard] =
             makeH5mdGroupGuard(openGroup(particlesGroup, selectionName.c_str()));
-    GMX_H5MD_THROW_UPON_INVALID_HID(selectionGroup, "No trajectory data found for system group");
 
-    H5mdParticleBlockBuilder blockBuilder;
-
-    // We don't have access to t_inputrec from the trajectory file opening framework,
-    // so open all available data sets (opening handles only is cheap).
+    H5mdParticleBlock particleBlock(numParticles);
     if (objectExists(selectionGroup, c_positionGroupName))
     {
-        blockBuilder.setPosition(H5mdTimeDataBlock<RVec>(selectionGroup, c_positionGroupName));
+        particleBlock.addPosition(H5mdTimeDataBlock<RVec>(selectionGroup, c_positionGroupName));
 
         // Right now we always write the box size for every position frame
         // and thus must always find a corresponding data set here.
@@ -519,38 +717,28 @@ void H5md::setupParticleBlockForGroupFromExistingFile(const std::string& selecti
         const std::string boxSizeGroupPath = joinStrings({ c_boxGroupName, c_boxSizeName }, "/");
         const auto [boxSizeGroup, boxSizeGroupGuard] =
                 makeH5mdGroupGuard(openGroup(selectionGroup, boxSizeGroupPath.c_str()));
-        blockBuilder.setBox(H5mdFrameDataSet<real>(boxSizeGroup, c_valueName));
+        particleBlock.addBox(H5mdFrameDataSet<real>(boxSizeGroup, c_valueName));
     }
     if (objectExists(selectionGroup, c_velocityGroupName))
     {
-        blockBuilder.setVelocity(H5mdTimeDataBlock<RVec>(selectionGroup, c_velocityGroupName));
+        particleBlock.addVelocity(H5mdTimeDataBlock<RVec>(selectionGroup, c_velocityGroupName));
     }
     if (objectExists(selectionGroup, c_forceGroupName))
     {
-        blockBuilder.setForce(H5mdTimeDataBlock<RVec>(selectionGroup, c_forceGroupName));
+        particleBlock.addForce(H5mdTimeDataBlock<RVec>(selectionGroup, c_forceGroupName));
     }
-    particleBlocks_.insert({ selectionName, TrajectoryReadCursor(blockBuilder.build()) });
 
     if (restartingFromStep.has_value())
     {
-        particleBlocks_.at(selectionName).block().trimDataSetsFromStep(restartingFromStep.value());
+        particleBlock.trimDataSetsFromStep(restartingFromStep.value());
     }
 
-    if (expectedNumParticles.has_value())
-    {
-        const int64_t numParticlesInBlock = particleBlocks_.at(selectionName).block().numParticles();
-        GMX_H5MD_THROW_UPON_ERROR(
-                expectedNumParticles.value() != numParticlesInBlock,
-                formatString(
-                        "System contains %lld atoms but the H5md file is set up for %lld atoms",
-                        static_cast<long long>(expectedNumParticles.value()),
-                        static_cast<long long>(numParticlesInBlock)));
-    }
+    particleBlocks_.insert({ selectionName, TrajectoryReadCursor(std::move(particleBlock)) });
 
 #else
     GMX_UNUSED_VALUE(selectionName);
+    GMX_UNUSED_VALUE(numParticles);
     GMX_UNUSED_VALUE(restartingFromStep);
-    GMX_UNUSED_VALUE(expectedNumParticles);
 #endif
 }
 
@@ -558,7 +746,15 @@ void H5md::setupParticleBlockForGroupFromExistingFile(const std::string& selecti
 void H5md::setupFromExistingFile()
 {
 #if GMX_USE_HDF5
-    setupParticleBlockForGroupFromExistingFile(c_fullSystemGroupName, std::nullopt, std::nullopt);
+    const std::optional<int64_t> numParticles =
+            calcNumParticlesForSelection(fileid(), c_fullSystemGroupName);
+    GMX_H5MD_THROW_UPON_ERROR(
+            !numParticles.has_value(),
+            formatString(
+                    "Cannot set up particle block for group '%s': no trajectory data is available",
+                    c_fullSystemGroupName));
+
+    setupParticleBlockForGroupFromExistingFile(c_fullSystemGroupName, std::nullopt, numParticles.value());
 #endif
 }
 
@@ -574,34 +770,65 @@ void H5md::setupFromExistingFileForAppending(const int64_t restartingFromStep, c
 }
 
 // NOLINTNEXTLINE(readability-convert-member-functions-to-static)
+void H5md::copyMetaDataFromFile(const H5md& other, const bool copyTopology)
+{
+#if GMX_USE_HDF5
+    // Helper to create full paths to a H5MD module from its name,
+    // i.e. from '<name>' to '/h5md/modules/<name>'
+    auto pathToModule = [&](const char* moduleName) -> std::string
+    { return joinStrings({ c_h5mdMetaDataGroupName, c_h5mdModulesGroupName, moduleName }, "/"); };
+
+    std::vector<std::string> objectsToCopy = {
+        pathToModule("gromacs"),
+        pathToModule("units"),
+        pathToModule("biophysics"),
+        c_h5mdParametersGroupPath,
+    };
+
+    if (copyTopology)
+    {
+        objectsToCopy.push_back(c_h5mdTopologyGroupPath);
+        objectsToCopy.push_back(c_h5mdConnectivityGroupPath);
+    }
+
+    // To copy nested paths we need to set the option to create intermediate
+    // groups to the link creation property list (lcpl_id in the HDF5 docs).
+    const auto [linkCreationPropertyList, linkCreationPropertyListGuard] =
+            makeH5mdPropertyListGuard(H5Pcreate(H5P_LINK_CREATE));
+    H5Pset_create_intermediate_group(linkCreationPropertyList, 1);
+
+    for (const std::string& path : objectsToCopy)
+    {
+        if (objectExists(other.fileid(), path.c_str()))
+        {
+            GMX_H5MD_THROW_UPON_ERROR(
+                    H5Ocopy(other.fileid(), path.c_str(), fileid(), path.c_str(), H5P_DEFAULT, linkCreationPropertyList)
+                            < 0,
+                    formatString("Encountered error when copying object at '%s'.", path.c_str()));
+        }
+    }
+
+#else
+    GMX_UNUSED_VALUE(other);
+    GMX_UNUSED_VALUE(copyTopology);
+#endif
+}
+
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static)
 bool H5md::readNextFrame(t_trxframe* frame, const std::string& selectionName)
 {
 #if GMX_USE_HDF5
     bool frameWasRead = false;
 
-    // TODO: We should check this in the file (and use appropriate conversion when reading)
-    //
-    // The current data set opening framework does not support opening double-precision `real`
-    // data as single-precision (this results in a throw during setup). So for now bDouble
-    // always matches the build precision.
-    //
-    // Since reading trajectory data from any-precision builds is wanted we need to expand
-    // this and then set bDouble from the actual precision stored in the data sets.
-    //
-    // See issue #5474
-#    if GMX_DOUBLE
-    frame->bDouble = true;
-#    else
-    frame->bDouble = false;
-#    endif
     frame->bLambda = false;
-    // TODO: This should be read from the file
-    frame->bPrec = false;
-    frame->prec  = 0.0;
+    // TODO: Due to current limitations, time is currently always read from double
+    // precision data sets, but after this is addressed we need to read this from
+    // the open file. See #5474.
+    frame->timeIsDouble = true;
 
     TrajectoryReadCursor& readCursor = particleBlocks_.at(selectionName);
     if (readCursor.nextFrameContents(
-                &frame->bX, &frame->bV, &frame->bF, &frame->bBox, &frame->bStep, &frame->bTime))
+                &frame->bX, &frame->bV, &frame->bF, &frame->bBox, &frame->bStep, &frame->bTime, &frame->bPrec, &frame->prec))
     {
         ArrayRef<RVec> positions{};
         ArrayRef<RVec> velocities{};
@@ -624,19 +851,13 @@ bool H5md::readNextFrame(t_trxframe* frame, const std::string& selectionName)
             forces = arrayRefFromArray(reinterpret_cast<RVec*>(frame->f), frame->natoms);
         }
 
-        double timeAsDouble;
         frameWasRead = readCursor.readNextFrame(
-                positions, velocities, forces, frame->box, &frame->step, &timeAsDouble);
-
-        if (frame->bTime)
-        {
-            frame->time = timeAsDouble;
-        }
+                positions, velocities, forces, frame->box, &frame->step, &frame->time);
     }
 
     return frameWasRead;
 #else
-    throw gmx::NotImplementedError(
+    throw NotImplementedError(
             "GROMACS was compiled without HDF5 support, cannot handle this file type");
     GMX_UNUSED_VALUE(frame);
     GMX_UNUSED_VALUE(selectionName);
@@ -644,31 +865,68 @@ bool H5md::readNextFrame(t_trxframe* frame, const std::string& selectionName)
 }
 
 // NOLINTNEXTLINE(readability-convert-member-functions-to-static)
-void H5md::writeNextFrame(ArrayRef<const RVec> positions,
-                          ArrayRef<const RVec> velocities,
-                          ArrayRef<const RVec> forces,
-                          const matrix         box,
-                          const int64_t        step,
-                          const double         time)
+void H5md::writeNextFrame(ArrayRef<const RVec>      positions,
+                          ArrayRef<const RVec>      velocities,
+                          ArrayRef<const RVec>      forces,
+                          const matrix              box,
+                          const int64_t             step,
+                          const double              time,
+                          const std::optional<real> positionPrecision)
 {
 #if GMX_USE_HDF5
-    // Helper for error message creation when writing each array to the data sets
-    const auto blockNotFoundError = [&](const char* blockType)
-    {
-        return gmx::formatString(
-                "Cannot write %s for group '%s': no data set exists", blockType, c_fullSystemGroupName);
-    };
-
     // We don't want to do a try-catch block or expensive search for every write,
     // since we should always find the desired block after the H5md file has been set up.
     // For extra debugging we leave this assert as a bread crumb.
     GMX_ASSERT(particleBlocks_.find(c_fullSystemGroupName) != particleBlocks_.cend(),
                "Could not find particle block when writing trajectory data");
 
+    const auto createTimeDataBlock = [&](const char*                name,
+                                         const char*                unit,
+                                         const ArrayRef<const RVec> values,
+                                         const H5mdCompression      compression,
+                                         const double               absoluteError)
+    {
+        const std::string selectionGroupPath =
+                joinStrings({ c_particlesGroupPath, c_fullSystemGroupName }, "/");
+        const auto [selectionGroup, selectionGroupGuard] =
+                makeH5mdGroupGuard(openGroup(fileid(), selectionGroupPath.c_str()));
+        return H5mdTimeDataBlockBuilder<RVec>(selectionGroup, name)
+                .withCompression(compression, absoluteError)
+                .withFrameDimension({ values.size() })
+                .withUnit(unit)
+                .build();
+    };
+
+    const auto createTimeDataBlockUncompressed =
+            [&](const char* name, const char* unit, const ArrayRef<const RVec> values)
+    { return createTimeDataBlock(name, unit, values, H5mdCompression::Uncompressed, 0.0); };
+
     H5mdParticleBlock& particleBlock = particleBlocks_.at(c_fullSystemGroupName).block();
     if (!positions.empty())
     {
-        GMX_H5MD_THROW_UPON_ERROR(!particleBlock.hasPosition(), blockNotFoundError("positions"));
+        if (!particleBlock.hasPosition())
+        {
+            // Check this before creating the time data block to not fill
+            // the file with garbage in case the numbers do not match (also below)
+            GMX_H5MD_THROW_UPON_ERROR(
+                    gmx::ssize(positions) != particleBlock.numParticles(),
+                    "Number of positions does not match number of particles in block");
+            if (positionPrecision.has_value())
+            {
+                GMX_H5MD_THROW_UPON_ERROR(positionPrecision.value() <= 0.0,
+                                          "Input precision for lossy compression must be positive");
+                const double absoluteError = 1.0 / (2.0 * positionPrecision.value());
+                particleBlock.addPosition(createTimeDataBlock(
+                        c_positionGroupName, c_positionUnit, positions, H5mdCompression::LossySz3BioMD, absoluteError));
+            }
+            else
+            {
+                particleBlock.addPosition(createTimeDataBlockUncompressed(
+                        c_positionGroupName, c_positionUnit, positions));
+            }
+            setupSimulationBoxDataSet(fileid(), c_fullSystemGroupName, &particleBlock);
+        }
+
         particleBlock.position()->writeNextFrame(positions, step, time);
         if (particleBlock.hasBox())
         {
@@ -678,12 +936,27 @@ void H5md::writeNextFrame(ArrayRef<const RVec> positions,
     }
     if (!velocities.empty())
     {
-        GMX_H5MD_THROW_UPON_ERROR(!particleBlock.hasVelocity(), blockNotFoundError("velocities"));
+        if (!particleBlock.hasVelocity())
+        {
+            GMX_H5MD_THROW_UPON_ERROR(
+                    gmx::ssize(velocities) != particleBlock.numParticles(),
+                    "Number of velocities does not match number of particles in block");
+            particleBlock.addVelocity(createTimeDataBlockUncompressed(
+                    c_velocityGroupName, c_velocityUnit, velocities));
+        }
+
         particleBlock.velocity()->writeNextFrame(velocities, step, time);
     }
     if (!forces.empty())
     {
-        GMX_H5MD_THROW_UPON_ERROR(!particleBlock.hasForce(), blockNotFoundError("forces"));
+        if (!particleBlock.hasForce())
+        {
+            GMX_H5MD_THROW_UPON_ERROR(
+                    gmx::ssize(forces) != particleBlock.numParticles(),
+                    "Number of forces does not match number of particles in block");
+            particleBlock.addForce(createTimeDataBlockUncompressed(c_forceGroupName, c_forceUnit, forces));
+        }
+
         particleBlock.force()->writeNextFrame(forces, step, time);
     }
 #else
@@ -693,6 +966,7 @@ void H5md::writeNextFrame(ArrayRef<const RVec> positions,
     GMX_UNUSED_VALUE(box);
     GMX_UNUSED_VALUE(step);
     GMX_UNUSED_VALUE(time);
+    GMX_UNUSED_VALUE(positionPrecision);
 #endif
 }
 
@@ -703,7 +977,9 @@ bool H5md::TrajectoryReadCursor::nextFrameContents(bool* hasPosition,
                                                    bool* hasForce,
                                                    bool* hasBox,
                                                    bool* hasStep,
-                                                   bool* hasTime)
+                                                   bool* hasTime,
+                                                   bool* hasCompressedPosition,
+                                                   real* positionPrecision)
 {
     const std::optional<int64_t> positionStep =
             block_.hasPosition() ? block_.position()->readStepAtIndex(nextPositionFrameToRead_)
@@ -740,6 +1016,13 @@ bool H5md::TrajectoryReadCursor::nextFrameContents(bool* hasPosition,
         *hasTime     = (*hasPosition && block_.position()->hasTime())
                    || (*hasVelocity && block_.velocity()->hasTime())
                    || (*hasForce && block_.force()->hasTime());
+
+        *hasCompressedPosition = *hasPosition && block_.position()->absoluteError().has_value();
+        if (*hasCompressedPosition)
+        {
+            *positionPrecision = 1.0 / (2.0 * block_.position()->absoluteError().value());
+        }
+
         return true;
     }
     else
@@ -759,7 +1042,7 @@ bool H5md::TrajectoryReadCursor::readNextFrame(ArrayRef<RVec> positions,
     // Helper for error message creation when writing each array to the data sets
     const auto blockNotFoundError = [&](const char* blockType)
     {
-        return gmx::formatString(
+        return formatString(
                 "Cannot read %s for group '%s': no data set exists", blockType, c_fullSystemGroupName);
     };
 
@@ -811,7 +1094,7 @@ bool H5md::TrajectoryReadCursor::readNextFrame(ArrayRef<RVec> positions,
 
 H5md* makeH5md(const std::filesystem::path& fileName, H5mdFileMode mode)
 {
-    return new gmx::H5md(fileName, mode);
+    return new H5md(fileName, mode);
 }
 
 void setupFileFromInput(H5md* h5md, const gmx_mtop_t& topology, const t_inputrec& inputRecord)
@@ -819,20 +1102,26 @@ void setupFileFromInput(H5md* h5md, const gmx_mtop_t& topology, const t_inputrec
     h5md->setupFileFromInput(topology, inputRecord);
 }
 
+void setupMDParameters(H5md* h5md, const t_inputrec& inputRecord, const gmx_mtop_t& topology, const bool isRerun)
+{
+    h5md->setupMDParameters(inputRecord, topology, isRerun);
+}
+
 void setupFromExistingFileForAppending(H5md* h5md, const int64_t restartingFromStep, const int64_t numParticles)
 {
     h5md->setupFromExistingFileForAppending(restartingFromStep, numParticles);
 }
 
-void writeNextFrame(H5md*                h5md,
-                    ArrayRef<const RVec> positions,
-                    ArrayRef<const RVec> velocities,
-                    ArrayRef<const RVec> forces,
-                    const matrix         box,
-                    const int64_t        step,
-                    const double         time)
+void writeNextFrame(H5md*                     h5md,
+                    ArrayRef<const RVec>      positions,
+                    ArrayRef<const RVec>      velocities,
+                    ArrayRef<const RVec>      forces,
+                    const matrix              box,
+                    const int64_t             step,
+                    const double              time,
+                    const std::optional<real> positionPrecision)
 {
-    h5md->writeNextFrame(positions, velocities, forces, box, step, time);
+    h5md->writeNextFrame(positions, velocities, forces, box, step, time, positionPrecision);
 }
 
 //! Deallocate \c h5md

@@ -247,10 +247,7 @@ static void lambda_components_add(lambda_components_t* lc, const char* name, siz
         srenew(lc->names, lc->Nalloc);
     }
     snew(lc->names[lc->N], name_length + 1);
-    // GCC 12.1 has a false positive about the missing \0. But it is already there, nothing to worry about.
-    GCC_DIAGNOSTIC_IGNORE("-Wstringop-truncation")
     std::strncpy(lc->names[lc->N], name, name_length);
-    GCC_DIAGNOSTIC_RESET
     lc->N++;
 }
 
@@ -3041,8 +3038,6 @@ static void read_barsim_edr(const char* fn, real* temp, sim_data_t* sd)
 {
     ener_file_t    fp;
     t_enxframe*    fr;
-    int            nre;
-    gmx_enxnm_t*   enm           = nullptr;
     double         first_t       = -1;
     double         last_t        = -1;
     samples_t**    samples_rawdh = nullptr; /* contains samples for raw delta_h  */
@@ -3053,8 +3048,8 @@ static void read_barsim_edr(const char* fn, real* temp, sim_data_t* sd)
     int            nsamples = 0;
     lambda_vec_t   start_lambda;
 
-    fp = open_enx(fn, "r");
-    do_enxnms(fp, &nre, &enm);
+    fp                                 = open_enx(fn, "r");
+    const std::vector<gmx_enxnm_t> enm = readEnxNames(fp);
     snew(fr, 1);
 
     snew(native_lambda, 1);
@@ -3296,6 +3291,7 @@ static void read_barsim_edr(const char* fn, real* temp, sim_data_t* sd)
             }
         }
     }
+    done_ener_file(fp);
     /* Now store all our extant sample collections */
     for (int i = 0; i < nsamples; i++)
     {
@@ -3337,7 +3333,7 @@ static void read_barsim_edr(const char* fn, real* temp, sim_data_t* sd)
 
 int gmx_bar(int argc, char* argv[])
 {
-    static const char* desc[] = {
+    const char* desc[] = {
         "[THISMODULE] calculates free energy difference estimates through ",
         "Bennett's acceptance ratio method (BAR). It also automatically",
         "adds series of individual free energies obtained with BAR into",
@@ -3442,11 +3438,11 @@ int gmx_bar(int argc, char* argv[])
         "[TT]-oh[tt] option to write series of histograms, together with the ",
         "[TT]-nbin[tt] option.[PAR]"
     };
-    static real begin = 0, end = -1, temp = -1;
-    int         nd = 2, nbmin = 5, nbmax = 5;
-    int         nbin     = 100;
-    gmx_bool    use_dhdl = FALSE;
-    t_pargs     pa[]     = {
+    real     begin = 0, end = -1, temp = -1;
+    int      nd = 2, nbmin = 5, nbmax = 5;
+    int      nbin     = 100;
+    gmx_bool use_dhdl = FALSE;
+    t_pargs  pa[]     = {
         { "-b", FALSE, etREAL, { &begin }, "Begin time for BAR" },
         { "-e", FALSE, etREAL, { &end }, "End time for BAR" },
         { "-temp", FALSE, etREAL, { &temp }, "Temperature (K)" },
@@ -3455,10 +3451,10 @@ int gmx_bar(int argc, char* argv[])
         { "-nbmax", FALSE, etINT, { &nbmax }, "Maximum number of blocks for error estimation" },
         { "-nbin", FALSE, etINT, { &nbin }, "Number of bins for histogram output" },
         { "-extp",
-                  FALSE,
-                  etBOOL,
-                  { &use_dhdl },
-                  "Whether to linearly extrapolate dH/dl values to use as energies" }
+               FALSE,
+               etBOOL,
+               { &use_dhdl },
+               "Whether to linearly extrapolate dH/dl values to use as energies" }
     };
 
     t_filenm fnm[] = { { efXVG, "-f", "dhdl", ffOPTRDMULT },
@@ -3492,7 +3488,7 @@ int gmx_bar(int argc, char* argv[])
     double   stat_err          = 0.; /* statistical error */
 
     if (!parse_common_args(
-                &argc, argv, PCA_CAN_VIEW, NFILE, fnm, asize(pa), pa, asize(desc), desc, 0, nullptr, &oenv))
+                &argc, argv, PCA_CAN_VIEW, NFILE, fnm, asize(pa), pa, asize(desc), desc, 0, nullptr, &oenv, nullptr))
     {
         return 0;
     }

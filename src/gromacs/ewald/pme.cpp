@@ -96,7 +96,6 @@
 #include "gromacs/gpu_utils/hostallocator.h"
 #include "gromacs/hardware/hw_info.h"
 #include "gromacs/math/boxmatrix.h"
-#include "gromacs/math/functions.h"
 #include "gromacs/math/gmxcomplex.h"
 #include "gromacs/math/units.h"
 #include "gromacs/mdtypes/forcerec.h"
@@ -115,6 +114,7 @@
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/gmxmpi.h"
 #include "gromacs/utility/gmxomp.h"
@@ -122,7 +122,6 @@
 #include "gromacs/utility/message_string_collector.h"
 #include "gromacs/utility/real.h"
 #include "gromacs/utility/stringutil.h"
-#include "gromacs/utility/unique_cptr.h"
 #include "gromacs/utility/vec.h"
 #include "gromacs/utility/vectypes.h"
 
@@ -138,28 +137,20 @@
 
 struct gmx_parallel_3dfft;
 
-bool pme_gpu_supports_build(std::string* error)
+gmx::PmeStepWorkload::PmeStepWorkload(const StepWorkload& stepWork) :
+    computeEnergyAndVirial(stepWork.computeEnergy || stepWork.computeVirial),
+    computeForces(stepWork.computeForces),
+    useGpuPmeFReduction(stepWork.useGpuPmeFReduction)
 {
-    gmx::MessageStringCollector errorReasons;
-    // Before changing the prefix string, make sure that it is not searched for in regression tests.
-    errorReasons.startContext("PME GPU does not support:");
-    errorReasons.appendIf(GMX_DOUBLE, "Double-precision build of GROMACS.");
-#ifdef __APPLE__
-#    if defined(__aarch64__)
-    // OpenCL compiler silently fails on macOS when using clFFT backend.
-    errorReasons.appendIf(GMX_GPU_OPENCL && !GMX_GPU_FFT_VKFFT, "macOS build using clFFT.");
-#    else
-    errorReasons.appendIf(true, "macOS build for x86 architecture.");
-#    endif
-#endif
-    errorReasons.appendIf(!GMX_GPU, "Non-GPU build of GROMACS.");
-    errorReasons.appendIf(!gmx::GpuConfigurationCapabilities::Pme, "Current GPU backend.");
-    errorReasons.finishContext();
-    if (error != nullptr)
-    {
-        *error = errorReasons.toString();
-    }
-    return errorReasons.isEmpty();
+}
+
+gmx::PmeOnlySimulationWorkload::PmeOnlySimulationWorkload(const SimulationWorkload& simulationWork) :
+    useGpu(simulationWork.useGpuPme),
+    useGpuPmePpCommunication(simulationWork.useGpuPmePpCommunication),
+    useNvshmem(simulationWork.useNvshmem),
+    useGpuHaloExchange(simulationWork.useGpuHaloExchange),
+    useMdGpuGraph(simulationWork.useMdGpuGraph)
+{
 }
 
 bool pme_gpu_supports_input(const t_inputrec& ir, std::string* error)
@@ -213,8 +204,7 @@ static bool pme_gpu_check_restrictions(const gmx_pme_t* pme, std::string* error)
                           "2D PME decomposition (use GMX_PMEONEDD to force 1D).");
     errorReasons.appendIf((pme->pme_order != 4), "interpolation orders other than 4.");
     errorReasons.appendIf(pme->doLJ, "Lennard-Jones PME.");
-    errorReasons.appendIf(GMX_DOUBLE, "Double precision build of GROMACS.");
-    errorReasons.appendIf(!GMX_GPU, "Non-GPU build of GROMACS.");
+    errorReasons.appendIf(!gmx::GpuConfigurationCapabilities::Pme, "current build of GROMACS.");
     errorReasons.finishContext();
     if (error != nullptr)
     {
@@ -227,11 +217,6 @@ PmeRunMode pme_run_mode(const gmx_pme_t* pme)
 {
     GMX_ASSERT(pme != nullptr, "Expecting valid PME data pointer");
     return pme->runMode;
-}
-
-gmx::PinningPolicy pme_get_pinning_policy()
-{
-    return gmx::PinningPolicy::PinnedIfSupported;
 }
 
 /*! \brief Number of bytes in a cache line.
@@ -269,6 +254,34 @@ static void setup_coordinate_communication(PmeAtomComm* atc)
 static int mult_up(int n, int f)
 {
     return gmx::divideRoundUp(n, f) * f;
+}
+
+static EwaldBoxZScaler makePmeBoxScaler(const t_inputrec& ir)
+{
+    return EwaldBoxZScaler(inputrecPbcXY2Walls(&ir), ir.wall_ewald_zfac);
+}
+
+static PmeUnitCell makePmeUnitCell(const matrix recipbox, real boxVolume)
+{
+    GMX_ASSERT(boxVolume != 0, "Zero volume of the unit cell");
+    PmeUnitCell unitCell;
+    copy_mat(recipbox, unitCell.recipbox);
+    unitCell.boxVolume = boxVolume;
+
+    return unitCell;
+}
+
+PmeUnitCell makePmeUnitCell(const EwaldBoxZScaler& boxScaler, const matrix box)
+{
+    matrix scaledBox;
+    boxScaler.scaleBox(box, scaledBox);
+
+    const real boxVolume = scaledBox[XX][XX] * scaledBox[YY][YY] * scaledBox[ZZ][ZZ];
+
+    matrix recipbox;
+    gmx::invertBoxMatrix(scaledBox, recipbox);
+
+    return makePmeUnitCell(recipbox, boxVolume);
 }
 
 /*! \brief Return estimate of the load imbalance from the PME grid not being a good match for the number of PME ranks */
@@ -580,7 +593,8 @@ bool gmx_pme_check_restrictions(int  pme_order,
 static void initGrids(gmx::ArrayRef<PmeAndFftGrids>                   gridsSet,
                       const gmx_pme_t&                                pme,
                       const bool                                      requestReproducibility,
-                      gmx::ArrayRef<std::vector<AlignedVector<real>>> gridsStorage)
+                      gmx::ArrayRef<std::vector<AlignedVector<real>>> gridsStorage,
+                      const gmx::HostAllocationPolicy*                hostAllocationPolicy)
 {
     GMX_RELEASE_ASSERT(gridsStorage.size() == gridsSet.size(),
                        "size of storage should match the grids");
@@ -610,11 +624,8 @@ static void initGrids(gmx::ArrayRef<PmeAndFftGrids>                   gridsSet,
                       pme.overlap[1].s2g1[pme.nodeid_minor] - pme.overlap[1].s2g0[pme.nodeid_minor + 1],
                       *gridsStorageIt);
         /* This routine will allocate the grid data to fit the FFTs */
-        const auto  allocateRealGridForGpu = (pme.runMode == PmeRunMode::Mixed)
-                                                     ? gmx::PinningPolicy::PinnedIfSupported
-                                                     : gmx::PinningPolicy::CannotBePinned;
-        real*&      fftgrid                = grids.fftgrid;
-        t_complex*& cfftgrid               = grids.cfftgrid;
+        real*&      fftgrid  = grids.fftgrid;
+        t_complex*& cfftgrid = grids.cfftgrid;
 
         gmx_parallel_3dfft* pfftSetupPtr;
         gmx_parallel_3dfft_init(&pfftSetupPtr,
@@ -624,7 +635,7 @@ static void initGrids(gmx::ArrayRef<PmeAndFftGrids>                   gridsSet,
                                 const_cast<MPI_Comm*>(&pme.mpi_comm_d[0]),
                                 requestReproducibility,
                                 pme.nthread,
-                                allocateRealGridForGpu);
+                                hostAllocationPolicy);
 
         grids.pfft_setup.reset(pfftSetupPtr);
     }
@@ -642,31 +653,49 @@ gmx_pme_t::gmx_pme_t(const gmx::MpiComm* mpiComm) :
 
 //! @endcond
 
-gmx_pme_t* gmx_pme_init(const gmx_domdec_t*              dd,
-                        const NumPmeDomains&             numPmeDomains,
-                        const t_inputrec*                ir,
-                        const matrix                     box,
-                        real                             haloExtentForAtomDisplacement,
-                        gmx_bool                         bFreeEnergy_q,
-                        gmx_bool                         bFreeEnergy_lj,
-                        gmx_bool                         bReproducible,
-                        real                             ewaldcoeff_q,
-                        real                             ewaldcoeff_lj,
-                        int                              nthread,
-                        PmeRunMode                       runMode,
-                        PmeGpu*                          pmeGpu,
-                        const DeviceContext*             deviceContext,
-                        const DeviceStream*              deviceStream,
-                        const PmeGpuProgram*             pmeGpuProgram,
-                        const gmx::MDLogger&             mdlog,
-                        std::shared_ptr<PmeGridsStorage> pmeGridsStoragePtr)
+gmx_pme_t::~gmx_pme_t() = default;
+
+/*! \brief Construct PME data
+ *
+ * \throws   gmx::InconsistentInputError if input grid sizes/PME order are inconsistent.
+ * \returns  Pointer to newly allocated and initialized PME data.
+ *
+ * \p pmeGpu can be passed in an reused, a new object is created when necessary
+ * \p pmeGridsStorage can be nullptr, in which case new PmeGridsStorage is allocated.
+ * When \p pmeGridsStorage is not a nullptr, grid storage is taken from there.
+ * The caller is responsible for supplying the current \p unitCell, pre-scaled
+ * according to the Ewald wall factor when applicable.
+ *
+ * \todo We should evolve something like a \c GpuManager that holds \c
+ * DeviceInformation* and \c PmeGpuProgram* and perhaps other
+ * related things whose lifetime can/should exceed that of a task (or
+ * perhaps task manager). See Issue #2522.
+ */
+static std::unique_ptr<gmx_pme_t> pmeInitWithStorage(const gmx_domdec_t*  dd,
+                                                     const NumPmeDomains& numPmeDomains,
+                                                     const t_inputrec*    ir,
+                                                     const PmeUnitCell&   unitCell,
+                                                     real       haloExtentForAtomDisplacement,
+                                                     gmx_bool   bFreeEnergy_q,
+                                                     gmx_bool   bFreeEnergy_lj,
+                                                     gmx_bool   bReproducible,
+                                                     real       ewaldcoeff_q,
+                                                     real       ewaldcoeff_lj,
+                                                     int        nthread,
+                                                     PmeRunMode runMode,
+                                                     std::unique_ptr<PmeGpu>&& pmeGpu,
+                                                     const DeviceContext*      deviceContext,
+                                                     const DeviceStream*       deviceStream,
+                                                     const PmeGpuProgram*      pmeGpuProgram,
+                                                     const gmx::MDLogger&      mdlog,
+                                                     std::shared_ptr<PmeGridsStorage> pmeGridsStoragePtr)
 {
     if (debug)
     {
         fprintf(debug, "Creating PME data structures.\n");
     }
 
-    gmx::unique_cptr<gmx_pme_t, gmx_pme_destroy> pme(new gmx_pme_t(dd ? &dd->mpiComm() : nullptr));
+    std::unique_ptr<gmx_pme_t> pme = std::make_unique<gmx_pme_t>(dd ? &dd->mpiComm() : nullptr);
 
     /* When pmeGridsStorage!=nullptr we reuse storage for the PME grids.
      * We would like to reuse the fft grids, but that's harder
@@ -800,8 +829,9 @@ gmx_pme_t* gmx_pme_init(const gmx_domdec_t*              dd,
 
     // The box requires scaling with nwalls = 2, we store that condition as well
     // as the scaling factor
-    pme->boxScaler = std::make_unique<EwaldBoxZScaler>(
-            EwaldBoxZScaler(inputrecPbcXY2Walls(ir), ir->wall_ewald_zfac));
+    pme->boxScaler = std::make_unique<EwaldBoxZScaler>(makePmeBoxScaler(*ir));
+
+    pme->unitCell = unitCell;
 
     if (runMode != PmeRunMode::CPU && pme->ndecompdim >= 1)
     {
@@ -813,9 +843,9 @@ gmx_pme_t* gmx_pme_init(const gmx_domdec_t*              dd,
         else
         {
             // if ir doesn't have valid fourier_spacing value
-            // calculate it from simulation box and grid dimension
+            // calculate it from reciprocal box and grid dimension
             matrix scaledBox;
-            pme->boxScaler->scaleBox(box, scaledBox);
+            gmx::invertBoxMatrix(unitCell.recipbox, scaledBox);
 
             ivec gridDim = { ir->nkx, ir->nky, ir->nkz };
             gridSpacing  = getGridSpacingFromBox(scaledBox, gridDim);
@@ -823,8 +853,23 @@ gmx_pme_t* gmx_pme_init(const gmx_domdec_t*              dd,
 
         GMX_RELEASE_ASSERT(gridSpacing > 0, "Computed value of grid spacing is 0");
 
-        const int pmeGpuGridHalo = numGridLinesForExtendedHaloRegion(
+        int pmeGpuGridHalo = numGridLinesForExtendedHaloRegion(
                 ir->pme_order, haloExtentForAtomDisplacement, gridSpacing);
+
+        // PP domain boundaries are at uniform fractions of the box, whereas the PME slabs
+        // start at grid lines rounded down (see init_overlap_comm()). When the grid size
+        // is not a multiple of the number of PME domains, a PP domain can therefore extend
+        // up to one grid line beyond the upper end of its PME slab, so we need one more
+        // halo line. The lower side does not need this line: spreading goes upward from
+        // the atom's grid line and the halo is the same on both sides, so the lower side
+        // already has pme_order - 1 spare lines.
+        const bool haveSlabBoundaryOffGridLine =
+                (pme->nnodes_major > 1 && pme->nkx % pme->nnodes_major != 0)
+                || (pme->nnodes_minor > 1 && pme->nky % pme->nnodes_minor != 0);
+        if (haveSlabBoundaryOffGridLine)
+        {
+            pmeGpuGridHalo += 1;
+        }
 
         if (debug)
         {
@@ -884,10 +929,14 @@ gmx_pme_t* gmx_pme_init(const gmx_domdec_t*              dd,
         }
     }
 
+    const int pmeGridAlignedNz  = pmeGridAlignedZSize(pme->nkz, pme->pme_order);
+    const int majorOverlapYSize = gmx::divideRoundUp(pme->nky, pme->nnodes_minor) + pme->pme_order;
+
     /* For non-divisible grid we need pme_order iso pme_order-1 */
-    /* In sum_qgrid_dd x overlap is copied in place: take padding into account.
-     * y is always copied through a buffer: we don't need padding in z,
-     * but we do need the overlap in x because of the communication order.
+    /* In sum_qgrid_dd x overlap is copied through a contiguous buffer using the
+     * aligned local z stride. y is copied through an offset buffer and only
+     * needs the physical z grid size, but it does need the overlap in x
+     * because of the communication order.
      */
     init_overlap_comm(&pme->overlap[0],
                       pme->pme_order,
@@ -895,8 +944,7 @@ gmx_pme_t* gmx_pme_init(const gmx_domdec_t*              dd,
                       pme->nnodes_major,
                       pme->nodeid_major,
                       pme->nkx,
-                      (gmx::divideRoundUp(pme->nky, pme->nnodes_minor) + pme->pme_order)
-                              * (pme->nkz + pme->pme_order - 1));
+                      majorOverlapYSize * pmeGridAlignedNz);
 
     /* Along overlap dim 1 we can send in multiple pulses in sum_fftgrid_dd.
      * We do this with an offset buffer of equal size, so we need to allocate
@@ -924,17 +972,13 @@ gmx_pme_t* gmx_pme_init(const gmx_domdec_t*              dd,
     pme->bsp_mod[YY].resize(pme->nky);
     pme->bsp_mod[ZZ].resize(pme->nkz);
 
-    pme->gpu     = pmeGpu; /* Carrying over the single GPU structure */
-    pme->runMode = runMode;
-
     /* The required size of the interpolation grid, including overlap.
      * The allocated size (pmegrid_n?) might be slightly larger.
      */
     pme->pmegrid_nx = pme->overlap[0].s2g1[pme->nodeid_major] - pme->overlap[0].s2g0[pme->nodeid_major];
     pme->pmegrid_ny = pme->overlap[1].s2g1[pme->nodeid_minor] - pme->overlap[1].s2g0[pme->nodeid_minor];
-    pme->pmegrid_nz_base = pme->nkz;
-    pme->pmegrid_nz      = pme->pmegrid_nz_base + pme->pme_order - 1;
-    set_grid_alignment(&pme->pmegrid_nz, pme->pme_order);
+    pme->pmegrid_nz_base  = pme->nkz;
+    pme->pmegrid_nz       = pmeGridAlignedNz;
     pme->pmegrid_start_ix = pme->overlap[0].s2g0[pme->nodeid_major];
     pme->pmegrid_start_iy = pme->overlap[1].s2g0[pme->nodeid_minor];
     pme->pmegrid_start_iz = 0;
@@ -950,57 +994,6 @@ gmx_pme_t* gmx_pme_init(const gmx_domdec_t*              dd,
             pme->nkz, pme->pmegrid_start_iz, pme->pmegrid_nz_base, checkRoundingAtBoundary);
 
     pme->spline_work = std::make_unique<pme_spline_work>(pme->pme_order);
-
-    if (pme->doCoulomb)
-    {
-        pme->gridsCoulomb.resize(bFreeEnergy_q ? 2 : 1);
-
-        if (pmeGridsStorage.coulomb.empty())
-        {
-            pmeGridsStorage.coulomb.resize(pme->gridsCoulomb.size());
-        }
-        else
-        {
-            GMX_RELEASE_ASSERT(pmeGridsStorage.coulomb.size() == pme->gridsCoulomb.size(),
-                               "Storage grid count should match the grid count");
-        }
-
-        initGrids(pme->gridsCoulomb, *pme, bReproducible, pmeGridsStorage.coulomb);
-
-        int i = 0;
-        for (auto& grids : pme->gridsCoulomb)
-        {
-            pme->gridsRefs.push_back({ grids, true, i });
-            i++;
-        }
-    }
-    if (pme->doLJ)
-    {
-        const bool combRuleIsLB = (ir->ljpme_combination_rule == LongRangeVdW::LB);
-        pme->gridsLJ.resize(combRuleIsLB ? sc_numGridsLJLB : (bFreeEnergy_lj ? 2 : 1));
-
-        if (pmeGridsStorage.lj.empty())
-        {
-            pmeGridsStorage.lj.resize(pme->gridsLJ.size());
-        }
-        else
-        {
-            GMX_RELEASE_ASSERT(pmeGridsStorage.lj.size() == pme->gridsLJ.size(),
-                               "Storage grid count should match the grid count");
-        }
-
-        initGrids(pme->gridsLJ, *pme, bReproducible, pmeGridsStorage.lj);
-
-        if (!combRuleIsLB)
-        {
-            int i = 0;
-            for (auto& grids : pme->gridsLJ)
-            {
-                pme->gridsRefs.push_back({ grids, false, i });
-                i++;
-            }
-        }
-    }
 
     if (!pme->bP3M)
     {
@@ -1025,44 +1018,166 @@ gmx_pme_t* gmx_pme_init(const gmx_domdec_t*              dd,
         pme->atc.emplace_back(pme->mpi_comm_d[1], pme->nthread, pme->pme_order, secondDimIndex, doSpread);
     }
 
-    // Initial check of validity of the input for running on the GPU
+    pme->runMode = runMode;
     if (pme->runMode != PmeRunMode::CPU)
     {
+        // Initialize PME GPU before grids storage, because in mixed
+        // run mode they can do pinned host allocations.
+        if (pmeGpu)
+        {
+            // This must be a re-initialization
+            GMX_ASSERT(!pme->gpu, "We expect to have only a single PmeGpu object");
+            std::swap(pme->gpu, pmeGpu); /* Carrying over the single GPU structure */
+        }
+        // Initial check of validity of the input for running on the GPU
         std::string errorString;
         bool        canRunOnGpu = pme_gpu_check_restrictions(pme.get(), &errorString);
         if (!canRunOnGpu)
         {
             GMX_THROW(gmx::NotImplementedError(errorString));
         }
+        if (!pme->gpu)
+        {
+            GMX_RELEASE_ASSERT(deviceContext != nullptr,
+                               "Device context can not be nullptr when setting up PME on GPU.");
+            GMX_RELEASE_ASSERT(deviceStream != nullptr,
+                               "Device stream can not be nullptr when setting up PME on GPU.");
+
+            pme->gpu = std::make_unique<PmeGpu>(*pme, *deviceContext, *deviceStream, pmeGpuProgram);
+        }
+        pme_gpu_update_input_box(pme->gpu.get(), pme->unitCell.boxVolume, pme->unitCell.recipbox);
         const bool useMdGpuGraph = false; // This will be reset later after PP communication
-        pme_gpu_reinit(pme.get(), deviceContext, deviceStream, pmeGpuProgram, useMdGpuGraph, box);
+        pme_gpu_reinit(pme->gpu.get(), pme.get(), useMdGpuGraph);
     }
     else
     {
         GMX_ASSERT(pme->gpu == nullptr, "Should not have PME GPU object when PME is on a CPU.");
     }
 
+    const gmx::HostAllocationPolicy* hostAllocationPolicy =
+            (pme->doCoulomb && pme->runMode == PmeRunMode::Mixed)
+                    ? pme_gpu_host_allocation_policy(pme->gpu.get())
+                    : nullptr;
+    if (pme->doCoulomb)
+    {
+        pme->gridsCoulomb.resize(bFreeEnergy_q ? 2 : 1);
+
+        if (pmeGridsStorage.coulomb.empty())
+        {
+            pmeGridsStorage.coulomb.resize(pme->gridsCoulomb.size());
+        }
+        else
+        {
+            GMX_RELEASE_ASSERT(pmeGridsStorage.coulomb.size() == pme->gridsCoulomb.size(),
+                               "Storage grid count should match the grid count");
+        }
+
+        if (pme->runMode != PmeRunMode::GPU)
+        {
+            initGrids(pme->gridsCoulomb, *pme, bReproducible, pmeGridsStorage.coulomb, hostAllocationPolicy);
+
+            int i = 0;
+            for (auto& grids : pme->gridsCoulomb)
+            {
+                pme->gridsRefs.push_back({ grids, true, i });
+                i++;
+            }
+        }
+    }
+    if (pme->doLJ)
+    {
+        const bool combRuleIsLB = (ir->ljpme_combination_rule == LongRangeVdW::LB);
+        pme->gridsLJ.resize(combRuleIsLB ? sc_numGridsLJLB : (bFreeEnergy_lj ? 2 : 1));
+
+        if (pmeGridsStorage.lj.empty())
+        {
+            pmeGridsStorage.lj.resize(pme->gridsLJ.size());
+        }
+        else
+        {
+            GMX_RELEASE_ASSERT(pmeGridsStorage.lj.size() == pme->gridsLJ.size(),
+                               "Storage grid count should match the grid count");
+        }
+
+        if (pme->runMode != PmeRunMode::GPU)
+        {
+            initGrids(pme->gridsLJ, *pme, bReproducible, pmeGridsStorage.lj, hostAllocationPolicy);
+
+            if (!combRuleIsLB)
+            {
+                int i = 0;
+                for (auto& grids : pme->gridsLJ)
+                {
+                    pme->gridsRefs.push_back({ grids, false, i });
+                    i++;
+                }
+            }
+        }
+    }
+
     pme->pmeSolve = std::make_unique<PmeSolve>(pme->nthread, pme->nkx);
 
     // no exception was thrown during the init, so we hand over the PME structure handle
-    return pme.release();
+    return pme;
 }
 
-void gmx_pme_reinit(struct gmx_pme_t**  pmedata,
-                    const gmx_domdec_t* dd,
-                    struct gmx_pme_t*   pme_src,
-                    const t_inputrec*   ir,
-                    const ivec          grid_size,
-                    real                ewaldcoeff_q,
-                    real                ewaldcoeff_lj)
+std::unique_ptr<gmx_pme_t> gmx_pme_init(const gmx_domdec_t*  dd,
+                                        const NumPmeDomains& numPmeDomains,
+                                        const t_inputrec*    ir,
+                                        const matrix         box,
+                                        real                 haloExtentForAtomDisplacement,
+                                        gmx_bool             bFreeEnergy_q,
+                                        gmx_bool             bFreeEnergy_lj,
+                                        gmx_bool             bReproducible,
+                                        real                 ewaldcoeff_q,
+                                        real                 ewaldcoeff_lj,
+                                        int                  nthread,
+                                        PmeRunMode           runMode,
+                                        const DeviceContext* deviceContext,
+                                        const DeviceStream*  deviceStream,
+                                        const PmeGpuProgram* pmeGpuProgram,
+                                        const gmx::MDLogger& mdlog)
 {
-    GMX_RELEASE_ASSERT(pme_src != nullptr, "Need a source gmx_pme_t object");
+    const PmeUnitCell unitCell = makePmeUnitCell(makePmeBoxScaler(*ir), box);
+
+    return pmeInitWithStorage(dd,
+                              numPmeDomains,
+                              ir,
+                              unitCell,
+                              haloExtentForAtomDisplacement,
+                              bFreeEnergy_q,
+                              bFreeEnergy_lj,
+                              bReproducible,
+                              ewaldcoeff_q,
+                              ewaldcoeff_lj,
+                              nthread,
+                              runMode,
+                              {},
+                              deviceContext,
+                              deviceStream,
+                              pmeGpuProgram,
+                              mdlog,
+                              nullptr);
+}
+
+std::unique_ptr<gmx_pme_t> gmx_pme_reinit(const gmx_domdec_t*       dd,
+                                          const gmx_pme_t&          pmeSrc,
+                                          std::unique_ptr<PmeGpu>&& pmeGpu,
+                                          const t_inputrec*         ir,
+                                          const ivec                grid_size,
+                                          real                      ewaldcoeff_q,
+                                          real                      ewaldcoeff_lj)
+{
+    GMX_ASSERT(pmeSrc.runMode == PmeRunMode::CPU || pmeGpu,
+               "Need a valid PmeGpu object when running PME on GPU");
 
     // Create a copy of t_inputrec fields that are used in gmx_pme_init().
     // TODO: This would be better as just copying a sub-structure that contains
     // all the PME parameters and nothing else.
     t_inputrec irc;
     irc.pbcType                = ir->pbcType;
+    irc.nwall                  = ir->nwall;
+    irc.wall_ewald_zfac        = ir->wall_ewald_zfac;
     irc.coulombtype            = ir->coulombtype;
     irc.vdwtype                = ir->vdwtype;
     irc.efep                   = ir->efep;
@@ -1074,43 +1189,45 @@ void gmx_pme_reinit(struct gmx_pme_t**  pmedata,
     irc.nkz                    = grid_size[ZZ];
     irc.fourier_spacing        = ir->fourier_spacing;
 
+    std::unique_ptr<gmx_pme_t> pmedata;
+
     try
     {
         // This is reinit. Any logging should have been done at first init.
         // Here we should avoid writing notes for settings the user did not
         // set directly.
         const gmx::MDLogger dummyLogger;
-        const matrix        dummyBox = { { 0 } };
-        GMX_ASSERT(pmedata, "Invalid PME pointer");
-        NumPmeDomains numPmeDomains = { pme_src->nnodes_major, pme_src->nnodes_minor };
-        *pmedata                    = gmx_pme_init(dd,
-                                numPmeDomains,
-                                &irc,
-                                dummyBox,
-                                pme_src->haloExtentForAtomDisplacement,
-                                pme_src->bFEP_q,
-                                pme_src->bFEP_lj,
-                                false,
-                                ewaldcoeff_q,
-                                ewaldcoeff_lj,
-                                pme_src->nthread,
-                                pme_src->runMode,
-                                pme_src->gpu,
-                                nullptr,
-                                nullptr,
-                                nullptr,
-                                dummyLogger,
-                                pme_src->pmeGridsStorage);
+        const NumPmeDomains numPmeDomains = { pmeSrc.nnodes_major, pmeSrc.nnodes_minor };
+        pmedata                           = pmeInitWithStorage(dd,
+                                     numPmeDomains,
+                                     &irc,
+                                     pmeSrc.unitCell,
+                                     pmeSrc.haloExtentForAtomDisplacement,
+                                     pmeSrc.bFEP_q,
+                                     pmeSrc.bFEP_lj,
+                                     false,
+                                     ewaldcoeff_q,
+                                     ewaldcoeff_lj,
+                                     pmeSrc.nthread,
+                                     pmeSrc.runMode,
+                                     std::move(pmeGpu),
+                                     nullptr,
+                                     nullptr,
+                                     nullptr,
+                                     dummyLogger,
+                                     pmeSrc.pmeGridsStorage);
         /* When running PME on the CPU not using domain decomposition,
          * the atom data is allocated once only in gmx_pme_(re)init().
          */
-        if (!pme_src->gpu && pme_src->nnodes == 1)
+        if (!pmedata->gpu && pmedata->nnodes == 1)
         {
-            gmx_pme_reinit_atoms(*pmedata, pme_src->atc[0].numAtoms(), {}, {});
+            gmx_pme_reinit_atoms(pmedata.get(), pmeSrc.atc[0].numAtoms(), {}, {});
         }
         // TODO this is mostly passing around current values
     }
     GMX_CATCH_ALL_AND_EXIT_WITH_FATAL_ERROR
+
+    return pmedata;
 }
 
 real gmx_pme_calc_energy(gmx_pme_t* pme, gmx::ArrayRef<const gmx::RVec> x, gmx::ArrayRef<const real> q)
@@ -1165,6 +1282,12 @@ static void calc_next_lb_coeffs(gmx::ArrayRef<real> coefficient, gmx::ArrayRef<c
     }
 }
 
+/*! \brief Return whether an FEP reciprocal grid state has zero force weight */
+static bool hasZeroFepForceWeight(const int stateIndex, const real lambda)
+{
+    return (stateIndex == 0 && lambda == 1.0_real) || (stateIndex == 1 && lambda == 0.0_real);
+}
+
 int gmx_pme_do(struct gmx_pme_t*              pme,
                gmx::ArrayRef<const gmx::RVec> coordinates,
                gmx::ArrayRef<gmx::RVec>       forces,
@@ -1187,7 +1310,7 @@ int gmx_pme_do(struct gmx_pme_t*              pme,
                real                           lambda_lj,
                real*                          dvdlambda_q,
                real*                          dvdlambda_lj,
-               const gmx::StepWorkload&       stepWork)
+               const gmx::PmeStepWorkload&    stepWork)
 {
     GMX_ASSERT(pme->runMode == PmeRunMode::CPU,
                "gmx_pme_do should not be called on the GPU PME run.");
@@ -1226,11 +1349,8 @@ int gmx_pme_do(struct gmx_pme_t*              pme,
         atc.f = forces;
     }
 
-    matrix scaledBox;
-    pme->boxScaler->scaleBox(box, scaledBox);
-
-    gmx::invertBoxMatrix(scaledBox, pme->recipbox);
-    bool bFirst = true;
+    pme->unitCell = makePmeUnitCell(*pme->boxScaler, box);
+    bool bFirst   = true;
 
     /* For simplicity, we construct the splines for all particles if
      * more than one PME calculations is needed. Some optimization
@@ -1252,10 +1372,18 @@ int gmx_pme_do(struct gmx_pme_t*              pme,
 
     std::array<PmeOutput, 2> output; // The second is used for the B state with FEP
 
-    // There's no support for computing energy without virial, or vice versa
-    const bool computeEnergyAndVirial = (stepWork.computeEnergy || stepWork.computeVirial);
+    const bool computeEnergyAndVirial = stepWork.computeEnergyAndVirial;
     for (gmx_pme_t::GridsRef& gridsRef : pme->gridsRefs)
     {
+        // Zero-weight states are only required for computing dV/dlambda (at nstcalcenergy
+        // steps), not for the virial, but PmeStepWorkload currently combines both.
+        if (!computeEnergyAndVirial
+            && ((gridsRef.isCoulomb && pme->bFEP_q) || (!gridsRef.isCoulomb && pme->bFEP_lj))
+            && hasZeroFepForceWeight(gridsRef.gridsIndex, gridsRef.isCoulomb ? lambda_q : lambda_lj))
+        {
+            continue;
+        }
+
         gmx::ArrayRef<const real> coefficient;
         if (gridsRef.isCoulomb)
         {
@@ -1346,21 +1474,16 @@ int gmx_pme_do(struct gmx_pme_t*              pme,
                 if (gridsRef.isCoulomb)
                 {
                     loop_count = pme->pmeSolve->solveCoulombYZX(
-                            *pme,
-                            cfftgrid,
-                            scaledBox[XX][XX] * scaledBox[YY][YY] * scaledBox[ZZ][ZZ],
-                            computeEnergyAndVirial,
-                            thread);
+                            *pme, cfftgrid, pme->unitCell.boxVolume, computeEnergyAndVirial, thread);
                 }
                 else
                 {
-                    loop_count = pme->pmeSolve->solveLJYZX(
-                            *pme,
-                            pme->gridsLJ,
-                            false,
-                            scaledBox[XX][XX] * scaledBox[YY][YY] * scaledBox[ZZ][ZZ],
-                            computeEnergyAndVirial,
-                            thread);
+                    loop_count = pme->pmeSolve->solveLJYZX(*pme,
+                                                           gmx::arrayRefFromArray(&gridsRef.grids, 1),
+                                                           false,
+                                                           pme->unitCell.boxVolume,
+                                                           computeEnergyAndVirial,
+                                                           thread);
                 }
 
                 if (thread == 0)
@@ -1470,6 +1593,11 @@ int gmx_pme_do(struct gmx_pme_t*              pme,
         /* Loop over A- and B-state if we are doing FEP */
         for (int fep_state = 0; fep_state < fep_states_lj; ++fep_state)
         {
+            if (!computeEnergyAndVirial && pme->bFEP_lj && hasZeroFepForceWeight(fep_state, lambda_lj))
+            {
+                continue;
+            }
+
             std::vector<real>         local_c6;
             std::vector<real>         local_sigma;
             gmx::ArrayRef<const real> RedistC6;
@@ -1598,12 +1726,7 @@ int gmx_pme_do(struct gmx_pme_t*              pme,
                     }
 
                     loop_count = pme->pmeSolve->solveLJYZX(
-                            *pme,
-                            pme->gridsLJ,
-                            true,
-                            scaledBox[XX][XX] * scaledBox[YY][YY] * scaledBox[ZZ][ZZ],
-                            computeEnergyAndVirial,
-                            thread);
+                            *pme, pme->gridsLJ, true, pme->unitCell.boxVolume, computeEnergyAndVirial, thread);
                     if (thread == 0)
                     {
                         wallcycle_stop(wcycle, WallCycleCounter::LJPme);
@@ -1793,27 +1916,6 @@ void parallel_3dfft_destroy(gmx_parallel_3dfft* pfft_setup)
     gmx_parallel_3dfft_destroy(pfft_setup);
 }
 
-
-void gmx_pme_destroy(gmx_pme_t* pme)
-{
-    gmx_pme_destroy(pme, true);
-}
-
-void gmx_pme_destroy(gmx_pme_t* pme, bool destroyGpuData)
-{
-    if (!pme)
-    {
-        return;
-    }
-
-    if (pme->gpu != nullptr && destroyGpuData)
-    {
-        pme_gpu_destroy(pme->gpu);
-    }
-
-    delete pme;
-}
-
 void gmx_pme_reinit_atoms(gmx_pme_t*                pme,
                           const int                 numAtoms,
                           gmx::ArrayRef<const real> chargesA,
@@ -1823,7 +1925,8 @@ void gmx_pme_reinit_atoms(gmx_pme_t*                pme,
     {
         GMX_ASSERT(!(pme->bFEP_q && chargesB.empty()),
                    "B state charges must be specified if running Coulomb FEP on the GPU");
-        pme_gpu_reinit_atoms(pme->gpu, numAtoms, chargesA.data(), pme->bFEP_q ? chargesB.data() : nullptr);
+        pme_gpu_reinit_atoms(
+                pme->gpu.get(), numAtoms, chargesA.data(), pme->bFEP_q ? chargesB.data() : nullptr);
     }
     else
     {

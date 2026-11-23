@@ -53,6 +53,9 @@
 #include "gromacs/fileio/h5md/tests/h5mdtestbase.h"
 #include "gromacs/utility/vectypes.h"
 
+#include "testutils/testasserts.h"
+#include "testutils/testmatchers.h"
+
 namespace gmx
 {
 namespace test
@@ -94,7 +97,7 @@ class H5mdBasicVectorFrameDataSetBuilderTest : public H5mdTestBase
 };
 
 using DataTypes =
-        ::testing::Types<int32_t, int64_t, float, double, gmx::BasicVector<float>, gmx::BasicVector<double>>;
+        ::testing::Types<int32_t, int64_t, float, double, BasicVector<float>, BasicVector<double>>;
 TYPED_TEST_SUITE(H5mdFrameDataSetBuilderTest, DataTypes);
 
 using NumericPrimitives = ::testing::Types<int32_t, int64_t, float, double>;
@@ -160,7 +163,7 @@ TEST_F(H5mdStringFrameDataSetBuilderTest, StringDSetWithDefaultFrameNumber)
     {
         SCOPED_TRACE("Check variable length string data set");
 
-        EXPECT_NO_THROW(
+        EXPECT_NO_THROW_GMX(
                 H5mdFrameDataSetBuilder<std::string>(this->fileid(), "DataSetWithVariableLength")
                         .withVariableStringLength()
                         .build());
@@ -168,8 +171,8 @@ TEST_F(H5mdStringFrameDataSetBuilderTest, StringDSetWithDefaultFrameNumber)
         const auto dataSet =
                 H5mdDataSetBase<std::string>(this->fileid(), "DataSetWithVariableLength");
 
-        EXPECT_EQ(H5Tget_class(dataSet.dataType()), H5T_STRING);
-        EXPECT_TRUE(H5Tis_variable_str(dataSet.dataType()));
+        EXPECT_EQ(H5Tget_class(dataSet.storedDataType()), H5T_STRING);
+        EXPECT_TRUE(H5Tis_variable_str(dataSet.storedDataType()));
         EXPECT_EQ(dataSetSize(this->fileid(), "DataSetWithVariableLength"), 0)
                 << "Default number of frames should be 0";
         EXPECT_EQ(dataSetCapacity(this->fileid(), "DataSetWithVariableLength"), H5S_UNLIMITED)
@@ -184,8 +187,8 @@ TEST_F(H5mdStringFrameDataSetBuilderTest, StringDSetWithDefaultFrameNumber)
                         .withMaxStringLength(10)
                         .build();
 
-        EXPECT_EQ(H5Tget_class(dataSet.dataType()), H5T_STRING);
-        EXPECT_EQ(H5Tget_size(dataSet.dataType()), 10);
+        EXPECT_EQ(H5Tget_class(dataSet.storedDataType()), H5T_STRING);
+        EXPECT_EQ(H5Tget_size(dataSet.storedDataType()), 10);
         EXPECT_EQ(dataSetSize(this->fileid(), "DataSetWithMaxLength"), 0)
                 << "Default number of frames should be 0";
         EXPECT_EQ(dataSetCapacity(this->fileid(), "DataSetWithMaxLength"), H5S_UNLIMITED)
@@ -207,8 +210,8 @@ TEST_F(H5mdStringFrameDataSetBuilderTest, StringDataSetWithMaxFrames)
                         .withMaxNumFrames(numFrames)
                         .build();
 
-        EXPECT_EQ(H5Tget_class(dataSet.dataType()), H5T_STRING);
-        EXPECT_EQ(H5Tget_size(dataSet.dataType()), 10);
+        EXPECT_EQ(H5Tget_class(dataSet.storedDataType()), H5T_STRING);
+        EXPECT_EQ(H5Tget_size(dataSet.storedDataType()), 10);
         EXPECT_EQ(dataSetSize(this->fileid(), "DataSetWithMaxLength"), numFrames)
                 << "Default number of frames should be 0";
         EXPECT_EQ(dataSetCapacity(this->fileid(), "DataSetWithMaxLength"), numFrames)
@@ -225,8 +228,8 @@ TEST_F(H5mdStringFrameDataSetBuilderTest, StringDataSetWithMaxFrames)
                         .withMaxNumFrames(numFrames)
                         .build();
 
-        EXPECT_EQ(H5Tget_class(dataSet.dataType()), H5T_STRING);
-        EXPECT_TRUE(H5Tis_variable_str(dataSet.dataType()));
+        EXPECT_EQ(H5Tget_class(dataSet.storedDataType()), H5T_STRING);
+        EXPECT_TRUE(H5Tis_variable_str(dataSet.storedDataType()));
         EXPECT_EQ(dataSetSize(this->fileid(), "DataSetWithVariableLength"), numFrames)
                 << "Default number of frames should be 0";
         EXPECT_EQ(dataSetCapacity(this->fileid(), "DataSetWithVariableLength"), numFrames)
@@ -238,7 +241,7 @@ TYPED_TEST(H5mdNumericPrimitiveFrameDataSetBuilderTest, DataTypeIsCorrect)
 {
     const H5mdDataSetBase<TypeParam> dataSet =
             H5mdFrameDataSetBuilder<TypeParam>(this->fileid(), "testDataSet").build();
-    EXPECT_TRUE(valueTypeIsDataType<TypeParam>(dataSet.dataType()));
+    EXPECT_TRUE(valueTypeIsDataType<TypeParam>(dataSet.storedDataType()));
 }
 
 TYPED_TEST(H5mdNumericPrimitiveFrameDataSetBuilderTest, DefaultDimsIs1d)
@@ -291,16 +294,16 @@ TYPED_TEST(H5mdNumericPrimitiveFrameDataSetBuilderTest, SetFrameDimensionAddsDim
 
 TYPED_TEST(H5mdBasicVectorFrameDataSetBuilderTest, DataTypeIsCorrect)
 {
-    const H5mdDataSetBase<gmx::BasicVector<TypeParam>> dataSet =
-            H5mdFrameDataSetBuilder<gmx::BasicVector<TypeParam>>(this->fileid(), "testDataSet").build();
+    const H5mdDataSetBase<BasicVector<TypeParam>> dataSet =
+            H5mdFrameDataSetBuilder<BasicVector<TypeParam>>(this->fileid(), "testDataSet").build();
     const auto [dataType, dataTypeGuard] = makeH5mdTypeGuard(H5Dget_type(dataSet.id()));
     EXPECT_TRUE(valueTypeIsDataType<TypeParam>(dataType));
 }
 
 TYPED_TEST(H5mdBasicVectorFrameDataSetBuilderTest, DefaultDimsIs2d)
 {
-    const H5mdDataSetBase<gmx::BasicVector<TypeParam>> dataSet =
-            H5mdFrameDataSetBuilder<gmx::BasicVector<TypeParam>>(this->fileid(), "testDataSet").build();
+    const H5mdDataSetBase<BasicVector<TypeParam>> dataSet =
+            H5mdFrameDataSetBuilder<BasicVector<TypeParam>>(this->fileid(), "testDataSet").build();
     const auto [dataSpace, dataSpaceGuard] = makeH5mdDataSpaceGuard(H5Dget_space(dataSet.id()));
     EXPECT_EQ(H5Sget_simple_extent_ndims(dataSpace), 2)
             << "BasicVector data sets should be 2d by default";
@@ -308,9 +311,9 @@ TYPED_TEST(H5mdBasicVectorFrameDataSetBuilderTest, DefaultDimsIs2d)
 
 TYPED_TEST(H5mdBasicVectorFrameDataSetBuilderTest, BasicVectorDimIsInnerDimension)
 {
-    constexpr int                                      numFrames = 5;
-    const H5mdDataSetBase<gmx::BasicVector<TypeParam>> dataSet =
-            H5mdFrameDataSetBuilder<gmx::BasicVector<TypeParam>>(this->fileid(), "testDataSet")
+    constexpr int                                 numFrames = 5;
+    const H5mdDataSetBase<BasicVector<TypeParam>> dataSet =
+            H5mdFrameDataSetBuilder<BasicVector<TypeParam>>(this->fileid(), "testDataSet")
                     .withNumFrames(numFrames)
                     .build();
     const auto [dataSpace, dataSpaceGuard] = makeH5mdDataSpaceGuard(H5Dget_space(dataSet.id()));
@@ -322,10 +325,10 @@ TYPED_TEST(H5mdBasicVectorFrameDataSetBuilderTest, BasicVectorDimIsInnerDimensio
 
 TYPED_TEST(H5mdBasicVectorFrameDataSetBuilderTest, SetFrameDimensionAddsDimensionInCenter1)
 {
-    constexpr int                                      numFrames      = 3;
-    const std::vector<hsize_t>                         frameDimension = { 5 };
-    const H5mdDataSetBase<gmx::BasicVector<TypeParam>> dataSet =
-            H5mdFrameDataSetBuilder<gmx::BasicVector<TypeParam>>(this->fileid(), "testDataSet")
+    constexpr int                                 numFrames      = 3;
+    const std::vector<hsize_t>                    frameDimension = { 5 };
+    const H5mdDataSetBase<BasicVector<TypeParam>> dataSet =
+            H5mdFrameDataSetBuilder<BasicVector<TypeParam>>(this->fileid(), "testDataSet")
                     .withNumFrames(numFrames)
                     .withFrameDimension(frameDimension)
                     .build();
@@ -343,10 +346,10 @@ TYPED_TEST(H5mdBasicVectorFrameDataSetBuilderTest, SetFrameDimensionAddsDimensio
 
 TYPED_TEST(H5mdBasicVectorFrameDataSetBuilderTest, SetFrameDimensionAddsDimensionInCenter2)
 {
-    constexpr int                                      numFrames      = 3;
-    const std::vector<hsize_t>                         frameDimension = { 5, 7 };
-    const H5mdDataSetBase<gmx::BasicVector<TypeParam>> dataSet =
-            H5mdFrameDataSetBuilder<gmx::BasicVector<TypeParam>>(this->fileid(), "testDataSet")
+    constexpr int                                 numFrames      = 3;
+    const std::vector<hsize_t>                    frameDimension = { 5, 7 };
+    const H5mdDataSetBase<BasicVector<TypeParam>> dataSet =
+            H5mdFrameDataSetBuilder<BasicVector<TypeParam>>(this->fileid(), "testDataSet")
                     .withNumFrames(numFrames)
                     .withFrameDimension(frameDimension)
                     .build();
@@ -381,9 +384,8 @@ TYPED_TEST(H5mdFrameDataSetBuilderTest, WithUnitAttribute)
                     .withUnit(unit)
                     .build();
 
-    const std::optional<std::string> unitAttribute = getAttribute<std::string>(dataSet.id(), "unit");
-    ASSERT_TRUE(unitAttribute.has_value()) << "Unit attribute was not set";
-    EXPECT_EQ(unitAttribute.value(), unit) << "Incorrect unit attribute";
+    EXPECT_THAT(getAttribute<std::string>(dataSet.id(), "unit"),
+                ::testing::Optional(::testing::StrEq(unit)));
 }
 
 TYPED_TEST(H5mdFrameDataSetBuilderTest, UncompressedByDefault)

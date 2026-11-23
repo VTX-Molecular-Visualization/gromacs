@@ -38,14 +38,12 @@ The current features with experimental status are:
 * OneAPI graph support, enabled at build with ``-DGMX_SYCL_ENABLE_GRAPHS=ON`` CMake variable
 * Parallel PME over multiple GPUs with the HIP GPU backend targeting AMD GPUs, enabled at build with ``-DGMX_GPU=HIP`` and ``-DGMX_USE_HEFFTE=ON`` CMake variables
 * Direct halo communication, activated by the ``GMX_FILLERS_IN_LOCAL_STATE`` environment variable
-* NBNxM 1x1 non-bonded kernels, activated by the ``GMX_NBNXN_PLAINC_1X1`` environment variable
+* NBNxM 1x1 non-bonded kernels, activated by the ``GMX_NBNXM_PLAINC_1X1`` environment variable
 * H5MD trajectory output, activated by selecting the ``h5md`` type for trajectory file output in mdrun
-* LEaP-compatible dihedral reordering, activated by the ``_FF_AMBER_LEAP_ATOM_REORDERING`` preprocessor define
 * Using wave64 execution on wave32 (RDNA) devices with HIP, activated by passing ``-mwavefrontsize64`` as an additional compilation flag.
 * VkFFT support for evaluating 3D Fast Fourier Transforms (on non-AMD and non-Apple platforms), enabled at build time with ``-DGMX_GPU_FFT_LIBRARY=vkFFT`` CMake variable
 * oneMath support for evaluating 3D Fast Fourier Transforms (on any platform), enabled at build time with ``-DGMX_GPU_FFT_LIBRARY=oneMath`` CMake variable
 * Double-batched FFT library support for evaluating 3D Fast Fourier Transforms, enabled at build time with ``-DGMX_GPU_FFT_LIBRARY=BBFFT`` CMake variable
-* an external Fast-Multipole Method library, enabled at build time with ``-DGMX_USE_EXT_FMM=ON`` CMake variable, and at run time by ``fmm-backend`` .mdp variable
 
 Features with validation pending
 --------------------------------
@@ -78,6 +76,7 @@ The current features with status validation pending are:
 * The Fast Multipole Method interface, enabled at build time by the ``-DGMX_USE_EXT_FMM`` CMake variable
 * AMBER LEaP-compatible dihedral reordering by grompp, activated by the ``_FF_AMBER_LEAP_ATOM_REORDERING`` preprocessor define
 * Non-bonded free-energy calculations on a GPU, activated by the ``-nbfe gpu`` mdrun option
+* Triangle constraints with LINCS on a GPU, activated by setting the ``GMX_GPU_TRIANGLE_CONSTRAINTS`` environment variable.
 
 Feature lifecycle stages
 ------------------------

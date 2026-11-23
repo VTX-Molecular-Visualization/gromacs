@@ -53,8 +53,8 @@
 #include "gromacs/domdec/collect.h"
 #include "gromacs/domdec/domdec.h"
 #include "gromacs/fileio/confio.h"
+#include "gromacs/gpu_utils/device_stream_manager.h"
 #include "gromacs/mdlib/gmx_omp_nthreads.h"
-#include "gromacs/mdlib/mdatoms.h"
 #include "gromacs/mdlib/mdoutf.h"
 #include "gromacs/mdlib/stat.h"
 #include "gromacs/mdlib/update.h"
@@ -64,7 +64,7 @@
 #include "gromacs/mdtypes/forcerec.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
-#include "gromacs/mdtypes/mdatom.h"
+#include "gromacs/mdtypes/mdatoms.h"
 #include "gromacs/mdtypes/mdrunoptions.h"
 #include "gromacs/mdtypes/observablesreducer.h"
 #include "gromacs/mdtypes/state.h"
@@ -101,12 +101,12 @@ public:
     //! Constructor
     ReferenceTemperatureHelper(const t_inputrec*    inputrec,
                                StatePropagatorData* statePropagatorData,
-                               const t_mdatoms*     mdatoms) :
+                               const MDAtoms&       mdAtoms) :
         numTemperatureGroups_(inputrec->opts.ngtc),
         referenceTemperature_(inputrec->opts.ref_t, inputrec->opts.ref_t + inputrec->opts.ngtc),
         velocityScalingFactors_(numTemperatureGroups_),
         statePropagatorData_(statePropagatorData),
-        mdatoms_(mdatoms)
+        mdAtoms_(mdAtoms)
     {
     }
 
@@ -143,7 +143,7 @@ public:
             getThreadAtomRange(nth, threadIndex, statePropagatorData_->localNAtoms_, &startAtom, &endAtom);
             for (int atomIdx = startAtom; atomIdx < endAtom; ++atomIdx)
             {
-                const int temperatureGroup = !mdatoms_->cTC.empty() ? mdatoms_->cTC[atomIdx] : 0;
+                const int temperatureGroup = !mdAtoms_.cTC.empty() ? mdAtoms_.cTC[atomIdx] : 0;
                 velocities[atomIdx] *= velocityScalingFactors_[temperatureGroup];
             }
         }
@@ -161,50 +161,51 @@ private:
     //! Pointer to StatePropagatorData to scale velocities
     StatePropagatorData* statePropagatorData_;
     //! Atom parameters for this domain (temperature group information)
-    const t_mdatoms* mdatoms_;
+    const MDAtoms& mdAtoms_;
 };
 
-StatePropagatorData::StatePropagatorData(int                numAtoms,
-                                         FILE*              fplog,
-                                         const t_commrec*   cr,
-                                         t_state*           globalState,
-                                         t_state*           localState,
-                                         bool               useGPU,
+StatePropagatorData::StatePropagatorData(int                        numAtoms,
+                                         FILE*                      fplog,
+                                         const t_commrec*           cr,
+                                         t_state*                   globalState,
+                                         t_state*                   localState,
+                                         const DeviceStreamManager* deviceStreamManager,
+                                         bool                       useGPU,
                                          bool               canMoleculesBeDistributedOverPBC,
                                          bool               writeFinalConfiguration,
                                          const std::string& finalConfigurationFilename,
                                          const t_inputrec*  inputrec,
-                                         const t_mdatoms*   mdatoms,
+                                         const MDAtoms&     mdAtoms,
                                          const gmx_mtop_t&  globalTop) :
     totalNumAtoms_(numAtoms),
     localNAtoms_(0),
+    x_{ 0, makeHostAllocationPolicy(useGPU, deviceStreamManager) },
+    f_{ false, makeHostAllocationPolicy(useGPU, deviceStreamManager) },
     box_{ { 0 } },
     previousBox_{ { 0 } },
     ddpCount_(0),
     element_(std::make_unique<Element>(this,
                                        fplog,
                                        cr,
-                                       inputrec->nstxout,
-                                       inputrec->nstvout,
-                                       inputrec->nstfout,
-                                       inputrec->nstxout_compressed,
+                                       inputrec->outputControl.nstxout,
+                                       inputrec->outputControl.nstvout,
+                                       inputrec->outputControl.nstfout,
+                                       inputrec->outputControl.nstxout_compressed,
                                        canMoleculesBeDistributedOverPBC,
                                        writeFinalConfiguration,
                                        finalConfigurationFilename,
                                        inputrec,
                                        globalTop)),
-    referenceTemperatureHelper_(std::make_unique<ReferenceTemperatureHelper>(inputrec, this, mdatoms)),
+    referenceTemperatureHelper_(std::make_unique<ReferenceTemperatureHelper>(inputrec, this, mdAtoms)),
     vvResetVelocities_(false),
     isRegularSimulationEnd_(false),
     lastStep_(-1),
     globalState_(globalState)
 {
-    bool stateHasVelocities;
     // Local state only becomes valid now.
     if (cr->dd)
     {
         dd_init_local_state(*cr->dd, globalState, localState);
-        stateHasVelocities = localState->hasEntry(StateEntry::V);
         setLocalState(localState);
     }
     else
@@ -214,14 +215,14 @@ StatePropagatorData::StatePropagatorData(int                numAtoms,
         x_           = globalState->x;
         v_           = globalState->v;
         copy_mat(globalState->box, box_);
-        stateHasVelocities = globalState->hasEntry(StateEntry::V);
         previousX_.resizeWithPadding(localNAtoms_);
         ddpCount_ = globalState->ddp_count;
         copyPosition();
     }
     if (useGPU)
     {
-        changePinningPolicy(&x_, gmx::PinningPolicy::PinnedIfSupported);
+        GMX_RELEASE_ASSERT(deviceStreamManager != nullptr,
+                           "GPU support requires a valid DeviceStreamMananger");
     }
 
     if (cr->dd && cr->commMyGroup.isMainRank())
@@ -232,34 +233,9 @@ StatePropagatorData::StatePropagatorData(int                numAtoms,
         fGlobal_.resizeWithPadding(totalNumAtoms_);
     }
 
-    if (!inputrec->bContinuation)
+    if (!inputrec->bContinuation && inputrec->eI == IntegrationAlgorithm::VV)
     {
-        if (stateHasVelocities)
-        {
-            auto v = velocitiesView().paddedArrayRef();
-            // Set the velocities of vsites, shells and frozen atoms to zero
-            for (int i = 0; i < mdatoms->homenr; i++)
-            {
-                if (mdatoms->ptype[i] == ParticleType::Shell)
-                {
-                    clear_rvec(v[i]);
-                }
-                else if (!mdatoms->cFREEZE.empty())
-                {
-                    for (int m = 0; m < DIM; m++)
-                    {
-                        if (inputrec->opts.nFreeze[mdatoms->cFREEZE[i]][m])
-                        {
-                            v[i][m] = 0;
-                        }
-                    }
-                }
-            }
-        }
-        if (inputrec->eI == IntegrationAlgorithm::VV)
-        {
-            vvResetVelocities_ = true;
-        }
+        vvResetVelocities_ = true;
     }
 }
 
@@ -847,7 +823,8 @@ ISimulatorElement* StatePropagatorData::Element::getElementPointerImpl(
         EnergyData gmx_unused*                             energyData,
         FreeEnergyPerturbationData*                        freeEnergyPerturbationData,
         GlobalCommunicationHelper gmx_unused*              globalCommunicationHelper,
-        ObservablesReducer* /*observablesReducer*/)
+        ObservablesReducer* /*observablesReducer*/,
+        const DeviceStreamManager* /*deviceStreamManager*/)
 {
     statePropagatorData->element()->setFreeEnergyPerturbationData(freeEnergyPerturbationData);
     return statePropagatorData->element();

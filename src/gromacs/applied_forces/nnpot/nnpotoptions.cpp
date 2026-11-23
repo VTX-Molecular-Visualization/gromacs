@@ -42,6 +42,8 @@
 
 #include "nnpotoptions.h"
 
+#include <numeric>
+
 #include "gromacs/domdec/localatomset.h"
 #include "gromacs/domdec/localatomsetmanager.h"
 #include "gromacs/fileio/warninp.h"
@@ -61,10 +63,7 @@
 #include "gromacs/utility/stringutil.h"
 
 #include "nnpot.h"
-
-#if GMX_TORCH
-#    include "gromacs/applied_forces/nnpot/torchmodel.h"
-#endif
+#include "torchmodel.h"
 
 namespace gmx
 {
@@ -96,30 +95,6 @@ const EnumerationArray<NNPotEmbedding, const char*> c_embeddingSchemeNames = {
     { "mechanical", "electrostatic-model" }
 };
 
-/*! \brief User defined input to NN model.
- *
- *  Possible values:
- * - "atom-positions" vector of atom positions
- * - "atom-numbers" vector of atom numbers
- * - "atom-pairs" list of atom pairs within cutoff set by user
- * - "pair-shifts" list of periodic shifts for atom pairs
- * - "box" unit vectors of simulation box
- * - "pbc" boolean vector indicating periodic boundary conditions
- * - "atom-positions-mm" vector of atom positions
- * - "atom-charges-mm" vector of atomic charges
- * - "nnp-charge" charge of the NNP region
- */
-const std::string c_modelInput1Tag_ = "model-input1";
-const std::string c_modelInput2Tag_ = "model-input2";
-const std::string c_modelInput3Tag_ = "model-input3";
-const std::string c_modelInput4Tag_ = "model-input4";
-const std::string c_modelInput5Tag_ = "model-input5";
-const std::string c_modelInput6Tag_ = "model-input6";
-const std::string c_modelInput7Tag_ = "model-input7";
-const std::string c_modelInput8Tag_ = "model-input8";
-const std::string c_modelInput9Tag_ = "model-input9";
-//! \}
-
 /*! \brief Following tags are needed to write parameters generated
  * during preprocessing (grompp) to the .tpr file via KVT
  */
@@ -128,6 +103,12 @@ const std::string c_mmGroupTag_ = "mm-group";
 const std::string c_nnpLinkTag_ = "nnp-link";
 const std::string c_mmLinkTag_  = "mm-link";
 //! \}
+
+/*! \brief Number of model inputs nnpot-model-input1 to 9 of GROMACS 2025 and 2026
+ *
+ * These versions write the keys into every tpr file, so mdrun must still accept them.
+ */
+constexpr int c_numObsoleteModelInputs_ = 9;
 
 /*! \brief Helper function to preprocess topology for NNP
  *
@@ -209,24 +190,6 @@ void NNPotOptions::initMdpTransform(IKeyValueTreeTransformRules* rules)
     addMdpTransformFromString<real>(rules, &fromStdString<real>, NNPotModuleInfo::sc_name, c_pairCutoffTag_);
     addMdpTransformFromString<std::string>(
             rules, stringIdentityTransform, NNPotModuleInfo::sc_name, c_embeddingTag_);
-    addMdpTransformFromString<std::string>(
-            rules, stringIdentityTransform, NNPotModuleInfo::sc_name, c_modelInput1Tag_);
-    addMdpTransformFromString<std::string>(
-            rules, stringIdentityTransform, NNPotModuleInfo::sc_name, c_modelInput2Tag_);
-    addMdpTransformFromString<std::string>(
-            rules, stringIdentityTransform, NNPotModuleInfo::sc_name, c_modelInput3Tag_);
-    addMdpTransformFromString<std::string>(
-            rules, stringIdentityTransform, NNPotModuleInfo::sc_name, c_modelInput4Tag_);
-    addMdpTransformFromString<std::string>(
-            rules, stringIdentityTransform, NNPotModuleInfo::sc_name, c_modelInput5Tag_);
-    addMdpTransformFromString<std::string>(
-            rules, stringIdentityTransform, NNPotModuleInfo::sc_name, c_modelInput6Tag_);
-    addMdpTransformFromString<std::string>(
-            rules, stringIdentityTransform, NNPotModuleInfo::sc_name, c_modelInput7Tag_);
-    addMdpTransformFromString<std::string>(
-            rules, stringIdentityTransform, NNPotModuleInfo::sc_name, c_modelInput8Tag_);
-    addMdpTransformFromString<std::string>(
-            rules, stringIdentityTransform, NNPotModuleInfo::sc_name, c_modelInput9Tag_);
 }
 
 void NNPotOptions::initMdpOptions(IOptionsContainerWithSections* options)
@@ -242,15 +205,12 @@ void NNPotOptions::initMdpOptions(IOptionsContainerWithSections* options)
                               .enumValue(c_embeddingSchemeNames)
                               .store(&params_.embeddingScheme_));
     section.addOption(RealOption(c_nnpChargeTag_.c_str()).store(&params_.nnpCharge_));
-    section.addOption(StringOption(c_modelInput1Tag_.c_str()).store(&params_.modelInput_[0]));
-    section.addOption(StringOption(c_modelInput2Tag_.c_str()).store(&params_.modelInput_[1]));
-    section.addOption(StringOption(c_modelInput3Tag_.c_str()).store(&params_.modelInput_[2]));
-    section.addOption(StringOption(c_modelInput4Tag_.c_str()).store(&params_.modelInput_[3]));
-    section.addOption(StringOption(c_modelInput5Tag_.c_str()).store(&params_.modelInput_[4]));
-    section.addOption(StringOption(c_modelInput6Tag_.c_str()).store(&params_.modelInput_[5]));
-    section.addOption(StringOption(c_modelInput7Tag_.c_str()).store(&params_.modelInput_[6]));
-    section.addOption(StringOption(c_modelInput8Tag_.c_str()).store(&params_.modelInput_[7]));
-    section.addOption(StringOption(c_modelInput9Tag_.c_str()).store(&params_.modelInput_[8]));
+    // Only for reading older tpr files, so there is no mdp transform for these
+    for (int i = 1; i <= c_numObsoleteModelInputs_; i++)
+    {
+        section.addOption(
+                StringOption(formatString("model-input%d", i).c_str()).hidden().storeIsSet(&haveObsoleteModelInput_));
+    }
 }
 
 void NNPotOptions::buildMdpOutput(KeyValueTreeObjectBuilder* builder) const
@@ -273,24 +233,6 @@ void NNPotOptions::buildMdpOutput(KeyValueTreeObjectBuilder* builder) const
                                        NNPotModuleInfo::sc_name,
                                        c_embeddingTag_,
                                        c_embeddingSchemeNames[params_.embeddingScheme_]);
-        addMdpOutputValue<std::string>(
-                builder, NNPotModuleInfo::sc_name, c_modelInput1Tag_, params_.modelInput_[0]);
-        addMdpOutputValue<std::string>(
-                builder, NNPotModuleInfo::sc_name, c_modelInput2Tag_, params_.modelInput_[1]);
-        addMdpOutputValue<std::string>(
-                builder, NNPotModuleInfo::sc_name, c_modelInput3Tag_, params_.modelInput_[2]);
-        addMdpOutputValue<std::string>(
-                builder, NNPotModuleInfo::sc_name, c_modelInput4Tag_, params_.modelInput_[3]);
-        addMdpOutputValue<std::string>(
-                builder, NNPotModuleInfo::sc_name, c_modelInput5Tag_, params_.modelInput_[4]);
-        addMdpOutputValue<std::string>(
-                builder, NNPotModuleInfo::sc_name, c_modelInput6Tag_, params_.modelInput_[5]);
-        addMdpOutputValue<std::string>(
-                builder, NNPotModuleInfo::sc_name, c_modelInput7Tag_, params_.modelInput_[6]);
-        addMdpOutputValue<std::string>(
-                builder, NNPotModuleInfo::sc_name, c_modelInput8Tag_, params_.modelInput_[7]);
-        addMdpOutputValue<std::string>(
-                builder, NNPotModuleInfo::sc_name, c_modelInput9Tag_, params_.modelInput_[8]);
     }
 }
 
@@ -421,6 +363,14 @@ void NNPotOptions::readParamsFromKvt(const KeyValueTreeObject& tree)
         return;
     }
 
+    if (haveObsoleteModelInput_)
+    {
+        GMX_THROW(InconsistentInputError(
+                "This tpr file was written by GROMACS 2025 or 2026, whose neural network potential "
+                "models take the inputs named by nnpot-model-input1 to 9. Models now take a "
+                "dictionary of inputs. Run grompp again with a model in that format."));
+    }
+
     // Try to read input atoms index
     std::string key = moduleName() + "-" + c_inputGroupTag_;
     if (!tree.keyExists(key))
@@ -545,11 +495,14 @@ void NNPotOptions::setWarninp(WarningHandler* wi)
     wi_ = wi;
 }
 
-#if !GMX_TORCH
-[[noreturn]]
-#endif
 void NNPotOptions::checkNNPotModel()
 {
+    if (std::getenv("GMX_NNPOT_SKIP_MODEL_CHECK"))
+    {
+        GMX_LOG(logger().info)
+                .appendText("Skipping NNP model check because GMX_NNPOT_SKIP_MODEL_CHECK is set.");
+        return;
+    }
 #if GMX_TORCH
 
     // try initializing the neural network model
@@ -580,108 +533,129 @@ void NNPotOptions::checkNNPotModel()
     }
 
     // check if model accepts inputs
-    // Prepare dummy input with two atoms in the NN model, so we can check the pairlist inputs
-    std::vector<int>  indices(1, 0);
-    std::vector<RVec> positions(2, RVec({ 0.0, 0.0, 0.0 }));
-    std::vector<int> atomNumbers(2, linkAtomNumber); // to check that the model can accept the link atom type
-    std::vector<int>              atomPairs{ 0, 1 };
-    std::vector<RVec>             pairShifts{ RVec({ 0.0, 0.0, 0.0 }) };
-    std::vector<real>             charges(1, 1.0);
+    // Prepare somewhat realistic dummy input
+    const size_t         numNNPAtoms = params_.nnpIndices_.size();
+    std::vector<int32_t> indices(numNNPAtoms);
+    std::iota(indices.begin(), indices.end(), 0);
+    std::vector<RVec> positions(numNNPAtoms);
+    // set positions to arbitrary values to avoid issues with certain models
+    for (size_t i = 0; i < numNNPAtoms; i++)
+    {
+        // TODO: replace 3 here with DIM (or replacement) when macro conflicts are resolved
+        for (size_t j = 0; j < 3; j++)
+        {
+            positions[i][j] = 0.01 * static_cast<real>(i + 1) * static_cast<real>(j + 1);
+        }
+    }
+    std::vector<int32_t> atomNumbers(
+            numNNPAtoms, linkAtomNumber); // to check that the model can accept the link atom type
+
+    std::vector<int32_t> atomPairs;
+    if (parameters().pairCutoff_ > 0.0)
+    {
+        for (size_t i = 0; i < numNNPAtoms - 1; i++)
+        {
+            for (size_t j = i + 1; j < numNNPAtoms; j++)
+            {
+                atomPairs.insert(atomPairs.end(), { indices[i], indices[j] });
+            }
+        }
+    }
+    std::vector<RVec>             pairShifts(atomPairs.size() / 2, RVec({ 0.0, 0.0, 0.0 }));
+    std::vector<real>             mmCharges(1, 1.0);
+    std::vector<int32_t>          mmIndices(1, 1);
     matrix                        box = { { 1.0, 0.0, 0.0 }, { 0.0, 1.0, 0.0 }, { 0.0, 0.0, 1.0 } };
     PbcType                       pbc = PbcType();
-    std::vector<int>              mmIndices(1, 1);
     std::vector<LinkFrontierAtom> link;
-
-    // check that inputs are not empty
-    if (params_.modelInput_.size() == 0)
-    {
-        GMX_THROW(InconsistentInputError("No inputs to NN model provided."));
-    }
-    // check that sensible cutoff was provided
-    const bool pairlistNeeded =
-            params_.modelNeedsInput("atom-pairs") || params_.modelNeedsInput("pair-shifts");
-    if (pairlistNeeded && (params_.pairCutoff_ <= 0.0))
-    {
-        GMX_THROW(InconsistentInputError(formatString(
-                "List of atom pairs was requested as input to the NNP model, but pair-cutoff is "
-                "%.1f. Please specify a valid cutoff radius or disable pair input.",
-                params_.pairCutoff_)));
-    }
 
     const auto& theLogger = logger();
     // Check that warning handler is valid
     GMX_ASSERT(wi_, "WarningHandler not set.");
-    bool modelOutputsForces = false;
+
+    // Notify the user which inputs are available to the model
+    std::vector<std::string> availableInputs = {
+        "positions", "atomic-numbers", "box", "pbc", "total-charge"
+    };
+    if (parameters().pairCutoff_ > 0.0)
+    {
+        availableInputs.push_back("pairs");
+        availableInputs.push_back("shifts");
+    }
+    if (parameters().embeddingScheme_ == NNPotEmbedding::ElectrostaticModel)
+    {
+        availableInputs.push_back("mm-positions");
+        availableInputs.push_back("mm-charges");
+    }
+    GMX_LOG(theLogger.info)
+            .appendText("Available inputs to the NNP model: " + joinStrings(availableInputs, ", "));
     try
     {
-        // prepare dummy output (1 NNP and 1 MM atom)
-        gmx_enerdata_t    enerd(2, nullptr);
-        std::vector<RVec> forcesVec(2, RVec({ 0.0, 0.0, 0.0 }));
+        // prepare dummy output (NNP Atoms and 1 MM atom)
+        gmx_enerdata_t    enerd(numNNPAtoms + 1, nullptr);
+        std::vector<RVec> forcesVec(numNNPAtoms + 1, RVec({ 0.0, 0.0, 0.0 }));
         ArrayRef<RVec>    forces(forcesVec);
+        ForceWithVirial   fOutput(forces, true);
 
         // might throw a runtime error if the model is not compatible with the dummy input
         model->evaluateModel(&enerd,
-                             forces,
+                             &fOutput,
                              indices,
                              mmIndices,
-                             params_.modelInput_,
                              positions,
                              atomNumbers,
                              atomPairs,
                              pairShifts,
                              positions,
-                             charges,
+                             mmCharges,
                              params_.nnpCharge_,
                              link,
-                             &box,
-                             &pbc);
+                             box,
+                             pbc);
 
-        // check if model outputs forces after forward pass
-        modelOutputsForces = model->outputsForces();
-
-        // log wheter model outputs forces or we need to compute them
-        if (modelOutputsForces)
+        // log whether model outputs forces (and virial) or we need to compute them
+        if (model->outputsForces())
         {
-            GMX_LOG(theLogger.info).appendText("Will use forces from NNP model.");
+            if (model->outputsVirial())
+            {
+                // if the model outputs virial, but no force, autograd will throw an error in evaluateModel
+                GMX_LOG(theLogger.info).appendText("Will use forces and virial from NNP model.");
+            }
+            else
+            {
+                GMX_LOG(theLogger.info).appendText("Will use forces from NNP model.");
+            }
         }
         else
         {
-            if (params_.embeddingScheme_ == NNPotEmbedding::ElectrostaticModel)
-            {
-                GMX_THROW(
-                        InconsistentInputError("NNP model does not output forces, but they are "
-                                               "expected to be computed by the model for "
-                                               "electrostatic embedding scheme."));
-            }
             GMX_LOG(theLogger.info)
                     .appendText(
                             "NNP model does not output forces. They will be computed as gradients "
-                            "of the energy w.r.t. the first input tensor (atom positions).");
+                            "of the energy w.r.t. the atom positions.");
+        }
+        // check if model outputs MM forces
+        if (!model->outputsMMForces() && params_.embeddingScheme_ == NNPotEmbedding::ElectrostaticModel)
+        {
+            GMX_THROW(
+                    InconsistentInputError("NNP model does not output forces, but they are "
+                                           "expected to be computed by the model for "
+                                           "electrostatic embedding scheme."));
         }
     }
     catch (const std::exception& e)
     {
-        // we only issue a warning here instead of throwing an error, as a torch runtime error might
-        // simply be due to mismatched dummy input shapes
-        wi_->addWarning("There was an error while checking NN model with a dummy input: " + std::string(e.what()) + "\n"
-                        "Can't verify that the model works correctly. This might lead to errors during mdrun.");
-    }
-
-    // check if first input is atom-positions
-    if ((params_.modelInput_[0] != "atom-positions") && !modelOutputsForces)
-    {
-        wi_->addWarning("Gradients will be computed with respect to first input to NN model "
-                        + params_.modelInput_[0] + " instead of atom positions. Is this intended?");
-    }
-
-    // check if model might need MM atom positions and/or charges
-    if (params_.embeddingScheme_ == NNPotEmbedding::ElectrostaticModel)
-    {
-        if (!params_.modelNeedsInput("atom-positions-mm") && !params_.modelNeedsInput("atom-charges-mm"))
+        if (std::string(e.what()).find("Expected a value of type 'Tensor' for argument") != std::string::npos)
         {
-            wi_->addWarning(
-                    "Embedding scheme is set to Electrostatic model, but MM positions and/or "
-                    "charges are not requested as model input. Is this intended?");
+            GMX_THROW(InconsistentInputError("NNP model does not take dictionary input."));
+        }
+        else
+        {
+            GMX_THROW(
+                    InconsistentInputError(
+                            "There was an error while checking NN model with a dummy input: "
+                            + std::string(e.what())
+                            + "\n"
+                              "Can't verify that the model works correctly. Make sure that the NNP "
+                              "model and inputs are compatible."));
         }
     }
 

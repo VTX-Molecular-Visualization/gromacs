@@ -7,4 +7,53 @@ Bugs fixed
    Also, please use the syntax :issue:`number` to reference issues on GitLab, without
    a space between the colon and number!
 
+Require at least 100 integration steps for Nose-Hoover thermostat
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 
+The minimum required integration steps for the Nose-Hoover thermostat of 20
+was too low. This could lead to an overestimate of the fluctuation of the
+kinetic energy and temperature by up to 25%. Note that the averages were
+not affected.
+
+:issue:`5783`
+
+PDB with a box of size 1 Angstrom are interpreted as having no PBC
+""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+
+PDB files with structures not determined from X-ray should have a unit-cell with P=1
+and dimensions of 1 Angstrom to indicate no periodic boundary conditions.
+|Gromacs| now interprets such structures as not having PBC.
+
+:issue:`4645`, :issue:`5679`
+
+PDB trajectory output now writes correct per-frame PBC type
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+
+When writing PDB trajectories, the PBC type of the system was ignored
+and instead guessed from the box. As a result, the ``CRYST1`` record
+was written incorrectly for screw PBC (wrong space group and cell length).
+
+Analysis tools now always process time values in double precision
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+
+This avoids picking incorrect frames when times values are large.
+
+Request the MPI thread support required by CP2K
+"""""""""""""""""""""""""""""""""""""""""""""""
+
+With external MPI, setting the new environment variable
+``GMX_USE_MPI_THREAD_MULTIPLE`` to any value requests ``MPI_THREAD_MULTIPLE``.
+The default MPI initialization is unchanged. QM/MM setup checks the linked
+CP2K version and reports a helpful fatal error if it requires
+``MPI_THREAD_MULTIPLE`` but MPI was initialized with insufficient thread support.
+This applies to CP2K 2027 or later, CP2K 2026.2 development builds, and
+unrecognized CP2K versions. Users are instructed to set the environment
+variable before launching |Gromacs|.
+
+Collective variables module (Colvars) fixes
+"""""""""""""""""""""""""""""""""""""""""""
+
+Below are issues fixed in the (`Colvars <https://colvars.github.io>`_) library (also included in the minor versions of the |Gromacs| 2026 release).
+
+- Improved restart consistency and fixes for multi-replica well-tempered metadynamics (Colvars repo pull request `820 <https://github.com/Colvars/colvars/pull/820>`_)
+- Fixed wrapping of extended-system variable coupled to orientationAngle (Colvars repo pull request `943 <https://github.com/Colvars/colvars/pull/943>`_)

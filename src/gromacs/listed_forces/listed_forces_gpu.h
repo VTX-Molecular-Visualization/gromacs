@@ -71,19 +71,20 @@ template<typename>
 class ArrayRef;
 class StepWorkload;
 
-/*! \brief The number on bonded function types supported on GPUs */
-static constexpr int numFTypesOnGpu = 8;
+/*! \brief The number of bonded function types supported on GPUs */
+static constexpr int sc_numFunctionTypesOnGpu = 9;
 
 /*! \brief List of all bonded function types supported on GPUs
  *
  * \note This list should be in sync with the actual GPU code.
  * \note Perturbed interactions are not supported on GPUs.
  * \note The function types in the list are ordered on increasing value.
- * \note Currently bonded are only supported with CUDA and SYCL, not with OpenCL.
+ * \note Currently bonded are only supported on GPUs when not using OpenCL.
  */
-constexpr std::array<InteractionFunction, numFTypesOnGpu> fTypesOnGpu = {
+static constexpr std::array<InteractionFunction, sc_numFunctionTypesOnGpu> sc_functionTypesOnGpu = {
     InteractionFunction::Bonds,
     InteractionFunction::Angles,
+    InteractionFunction::GROMOS96Angles,
     InteractionFunction::UreyBradleyPotential,
     InteractionFunction::ProperDihedrals,
     InteractionFunction::RyckaertBellemansDihedrals,
@@ -151,11 +152,11 @@ public:
      * to device data structures, and updates device buffers that
      * may have been updated after search.
      *
-     * \param[in]     nbnxnAtomOrder   Mapping between rvec and NBNXM formats.
+     * \param[in]     nbnxmAtomOrder   Mapping between rvec and NBNXM formats.
      * \param[in]     idef             List of interactions to compute.
      * \param[in,out] nbnxmAtomDataGpu Nbnxm GPU atom data (XQ and force buffers).
      */
-    void updateInteractionListsAndDeviceBuffers(ArrayRef<const int>           nbnxnAtomOrder,
+    void updateInteractionListsAndDeviceBuffers(ArrayRef<const int>           nbnxmAtomOrder,
                                                 const InteractionDefinitions& idef,
                                                 NBAtomDataGpu*                nbnxmAtomDataGpu);
     /*! \brief

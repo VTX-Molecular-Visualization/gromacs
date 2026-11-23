@@ -65,10 +65,10 @@
 #include "gromacs/ewald/pme_solve.h"
 #include "gromacs/ewald/pme_spread.h"
 #include "gromacs/fft/parallel_3dfft.h"
+#include "gromacs/gpu_utils/capabilities.h"
 #include "gromacs/gpu_utils/device_context.h"
 #include "gromacs/gpu_utils/gpu_utils.h"
 #include "gromacs/gpu_utils/hostallocator.h"
-#include "gromacs/math/boxmatrix.h"
 #include "gromacs/mdtypes/locality.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/pbcutil/pbc.h"
@@ -78,6 +78,7 @@
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/logger.h"
+#include "gromacs/utility/mpicomm.h"
 #include "gromacs/utility/stringutil.h"
 
 #include "testutils/test_hardware_environment.h"
@@ -120,7 +121,7 @@ MessageStringCollector getSkipMessagesIfNecessary(const t_inputrec& inputRec, co
     }
 
     std::string errorMessage;
-    messages.appendIf(!pme_gpu_supports_build(&errorMessage), errorMessage);
+    messages.appendIf(!GpuConfigurationCapabilities::Pme, "this build does not support PME on GPUs");
     messages.appendIf(!pme_gpu_supports_input(inputRec, &errorMessage), errorMessage);
     return messages;
 }
@@ -135,14 +136,14 @@ uint64_t getSplineModuliDoublePrecisionUlps(int splineOrder)
 }
 
 //! PME initialization
-PmeSafePointer pmeInitWrapper(const t_inputrec*    inputRec,
-                              const CodePath       mode,
-                              const DeviceContext* deviceContext,
-                              const DeviceStream*  deviceStream,
-                              const PmeGpuProgram* pmeGpuProgram,
-                              const Matrix3x3&     box,
-                              const real           ewaldCoeff_q,
-                              const real           ewaldCoeff_lj)
+PmePointer pmeInitWrapper(const t_inputrec*    inputRec,
+                          const CodePath       mode,
+                          const DeviceContext* deviceContext,
+                          const DeviceStream*  deviceStream,
+                          const PmeGpuProgram* pmeGpuProgram,
+                          const Matrix3x3&     box,
+                          const real           ewaldCoeff_q,
+                          const real           ewaldCoeff_lj)
 {
     const MDLogger dummyLogger;
     const auto     runMode       = (mode == CodePath::CPU) ? PmeRunMode::CPU : PmeRunMode::Mixed;
@@ -162,39 +163,32 @@ PmeSafePointer pmeInitWrapper(const t_inputrec*    inputRec,
     const char* boxError = check_box(PbcType::Unset, boxTemp);
     GMX_RELEASE_ASSERT(boxError == nullptr, boxError);
 
-    gmx_pme_t*     pmeDataRaw = gmx_pme_init(nullptr,
-                                         numPmeDomains,
-                                         inputRec,
-                                         boxTemp,
-                                         haloExtentForAtomDisplacement,
-                                         false,
-                                         false,
-                                         true,
-                                         ewaldCoeff_q,
-                                         ewaldCoeff_lj,
-                                         1,
-                                         runMode,
-                                         nullptr,
-                                         deviceContext,
-                                         deviceStream,
-                                         pmeGpuProgram,
-                                         dummyLogger,
-                                         nullptr);
-    PmeSafePointer pme(pmeDataRaw); // taking ownership
+    std::unique_ptr<gmx_pme_t> pme = gmx_pme_init(nullptr,
+                                                  numPmeDomains,
+                                                  inputRec,
+                                                  boxTemp,
+                                                  haloExtentForAtomDisplacement,
+                                                  false,
+                                                  false,
+                                                  true,
+                                                  ewaldCoeff_q,
+                                                  ewaldCoeff_lj,
+                                                  1,
+                                                  runMode,
+                                                  deviceContext,
+                                                  deviceStream,
+                                                  pmeGpuProgram,
+                                                  dummyLogger);
 
-    switch (mode)
+    if (mode == CodePath::GPU)
     {
-        case CodePath::CPU: invertBoxMatrix(boxTemp, pme->recipbox); break;
-
-        case CodePath::GPU: pme_gpu_set_testing(pme->gpu, true); break;
-
-        default: GMX_THROW(InternalError("Test not implemented for this mode"));
+        pme_gpu_set_testing(pme->gpu.get(), true);
     }
 
     return pme;
 }
 
-PmeSafePointer pmeInitEmpty(const t_inputrec* inputRec)
+PmePointer pmeInitEmpty(const t_inputrec* inputRec)
 {
     const Matrix3x3 defaultBox = { { 1.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 1.0F } };
     return pmeInitWrapper(inputRec, CodePath::CPU, nullptr, nullptr, nullptr, defaultBox, 0.0F, 0.0F);
@@ -208,8 +202,10 @@ std::unique_ptr<StatePropagatorDataGpu> makeStatePropagatorDataGpu(const gmx_pme
     // TODO: Pin the host buffer and use async memory copies
     // TODO: Special constructor for PME-only rank / PME-tests is used here. There should be a mechanism to
     //       restrict one from using other constructor here.
+    MpiComm        mpiComm{ MpiComm::SingleRank{} };
+    gmx_wallcycle* wcycle = nullptr;
     return std::make_unique<StatePropagatorDataGpu>(
-            deviceStream, *deviceContext, GpuApiCallBehavior::Sync, pme_gpu_get_block_size(&pme), false, nullptr);
+            deviceStream, *deviceContext, GpuApiCallBehavior::Sync, pme_gpu_get_block_size(pme), false, mpiComm, wcycle);
 }
 
 //! PME initialization with atom data
@@ -240,10 +236,10 @@ void pmeInitAtoms(gmx_pme_t*               pme,
             atc->setNumAtoms(atomCount);
             gmx_pme_reinit_atoms(pme, atomCount, charges, {});
 
-            stateGpu->reinit(atomCount, atomCount, MPI_COMM_NULL);
+            stateGpu->reinit(atomCount, atomCount);
             stateGpu->copyCoordinatesToGpu(arrayRefFromArray(coordinates.data(), coordinates.size()),
                                            gmx::AtomLocality::Local);
-            pme_gpu_set_kernelparam_coordinates(pme->gpu, stateGpu->getCoordinates());
+            pme_gpu_set_kernelparam_coordinates(pme->gpu.get(), stateGpu->getCoordinates());
 
             break;
 
@@ -261,8 +257,8 @@ static real* pmeGetRealGridInternal(const gmx_pme_t* pme)
 //! Getting local PME real grid dimensions
 static void pmeGetRealGridSizesInternal(const gmx_pme_t* pme,
                                         CodePath         mode,
-                                        IVec& gridSize,       //NOLINT(google-runtime-references)
-                                        IVec& paddedGridSize) //NOLINT(google-runtime-references)
+                                        IVec& gridSize,       // NOLINT(google-runtime-references)
+                                        IVec& paddedGridSize) // NOLINT(google-runtime-references)
 {
     const size_t gridIndex = 0;
     IVec         gridOffsetUnused;
@@ -274,7 +270,7 @@ static void pmeGetRealGridSizesInternal(const gmx_pme_t* pme,
             break;
 
         case CodePath::GPU:
-            pme_gpu_get_real_grid_sizes(pme->gpu, &gridSize, &paddedGridSize);
+            pme_gpu_get_real_grid_sizes(pme->gpu.get(), &gridSize, &paddedGridSize);
             break;
 
         default: GMX_THROW(InternalError("Test not implemented for this mode"));
@@ -290,8 +286,8 @@ static t_complex* pmeGetComplexGridInternal(gmx_pme_t* pme)
 
 //! Getting local PME complex grid dimensions
 static void pmeGetComplexGridSizesInternal(const gmx_pme_t* pme,
-                                           IVec& gridSize,       //NOLINT(google-runtime-references)
-                                           IVec& paddedGridSize) //NOLINT(google-runtime-references)
+                                           IVec& gridSize, // NOLINT(google-runtime-references)
+                                           IVec& paddedGridSize) // NOLINT(google-runtime-references)
 {
     const size_t gridIndex = 0;
     IVec         gridOffsetUnused, complexOrderUnused;
@@ -306,9 +302,9 @@ static void pmeGetComplexGridSizesInternal(const gmx_pme_t* pme,
 template<typename ValueType>
 static void pmeGetGridAndSizesInternal(gmx_pme_t* /*unused*/,
                                        CodePath /*unused*/,
-                                       ValueType*& /*unused*/, //NOLINT(google-runtime-references)
-                                       IVec& /*unused*/,       //NOLINT(google-runtime-references)
-                                       IVec& /*unused*/) = delete; //NOLINT(google-runtime-references)
+                                       ValueType*& /*unused*/, // NOLINT(google-runtime-references)
+                                       IVec& /*unused*/,       // NOLINT(google-runtime-references)
+                                       IVec& /*unused*/) = delete; // NOLINT(google-runtime-references)
 
 //! Getting the PME real grid memory buffer and its sizes
 template<>
@@ -365,7 +361,7 @@ void pmePerformSplineAndSpread(gmx_pme_t* pme,
             bool                           useGpuDirectComm         = false;
             gmx::PmeCoordinateReceiverGpu* pmeCoordinateReceiverGpu = nullptr;
 
-            pme_gpu_spread(pme->gpu,
+            pme_gpu_spread(pme->gpu.get(),
                            xReadyOnDevice,
                            pme->gridsCoulomb,
                            computeSplines,
@@ -448,7 +444,7 @@ void pmePerformSolve(gmx_pme_t*        pme,
             switch (method)
             {
                 case PmeSolveAlgorithm::Coulomb:
-                    pme_gpu_solve(pme->gpu, gridIndex, h_grid, gridOrdering, computeEnergyAndVirial);
+                    pme_gpu_solve(pme->gpu.get(), gridIndex, h_grid, gridOrdering, computeEnergyAndVirial);
                     break;
 
                 default: GMX_THROW(InternalError("Test not implemented for this mode"));
@@ -492,11 +488,12 @@ void pmePerformGather(gmx_pme_t* pme, CodePath mode, ForcesVector& forces)
         {
             // Variable initialization needs a non-switch scope
             const bool computeEnergyAndVirial = false;
+            const bool markFReadyEvent        = true;
             const real lambdaQ                = 1.0;
             PmeOutput  output = pme_gpu_getOutput(pme, computeEnergyAndVirial, lambdaQ);
             GMX_ASSERT(forces.size() == output.forces_.size(),
                        "Size of force buffers did not match");
-            pme_gpu_gather(pme->gpu, pme->gridsCoulomb, lambdaQ, nullptr, computeEnergyAndVirial);
+            pme_gpu_gather(pme->gpu.get(), pme->gridsCoulomb, lambdaQ, nullptr, computeEnergyAndVirial, markFReadyEvent);
             std::copy(std::begin(output.forces_), std::end(output.forces_), std::begin(forces));
         }
         break;
@@ -513,7 +510,7 @@ void pmeFinalizeTest(const gmx_pme_t* pme, CodePath mode)
     {
         case CodePath::CPU: break;
 
-        case CodePath::GPU: pme_gpu_synchronize(pme->gpu); break;
+        case CodePath::GPU: pme_gpu_synchronize(pme->gpu.get()); break;
 
         default: GMX_THROW(InternalError("Test not implemented for this mode"));
     }
@@ -573,6 +570,11 @@ static int getSplineParamFullIndex(int order, int splineIndex, int dimIndex, int
         case 8:
             indexBase = getSplineParamIndexBase<fixedOrder, 8>(warpIndex, atomWarpIndex);
             result    = getSplineParamIndex<fixedOrder, 8>(indexBase, dimIndex, splineIndex);
+            break;
+
+        case 16:
+            indexBase = getSplineParamIndexBase<fixedOrder, 16>(warpIndex, atomWarpIndex);
+            result    = getSplineParamIndex<fixedOrder, 16>(indexBase, dimIndex, splineIndex);
             break;
 
         default:
@@ -677,7 +679,8 @@ void pmeSetSplineData(const gmx_pme_t*             pme,
 
         case CodePath::GPU:
             std::copy(splineValues.begin(), splineValues.end(), splineBuffer);
-            pme_gpu_transform_spline_atom_data(pme->gpu, atc, type, dimIndex, PmeLayoutTransform::HostToGpu);
+            pme_gpu_transform_spline_atom_data(
+                    pme->gpu.get(), atc, type, dimIndex, PmeLayoutTransform::HostToGpu);
             break;
 
         default: GMX_THROW(InternalError("Test not implemented for this mode"));
@@ -707,7 +710,7 @@ void pmeSetGridLineIndices(gmx_pme_t* pme, CodePath mode, const GridLineIndicesV
     switch (mode)
     {
         case CodePath::GPU:
-            std::memcpy(pme_gpu_staging(pme->gpu).h_gridlineIndices.data(),
+            std::memcpy(pme_gpu_staging(pme->gpu.get()).h_gridlineIndices.data(),
                         gridLineIndices.data(),
                         atomCount * sizeof(gridLineIndices[0]));
             break;
@@ -801,7 +804,8 @@ SplineParamsDimVector pmeGetSplineData(const gmx_pme_t* pme, CodePath mode, PmeS
     switch (mode)
     {
         case CodePath::GPU:
-            pme_gpu_transform_spline_atom_data(pme->gpu, atc, type, dimIndex, PmeLayoutTransform::GpuToHost);
+            pme_gpu_transform_spline_atom_data(
+                    pme->gpu.get(), atc, type, dimIndex, PmeLayoutTransform::GpuToHost);
             result = arrayRefFromArray(sourceBuffer, dimSize);
             break;
 
@@ -825,7 +829,7 @@ GridLineIndicesVector pmeGetGridlineIndices(const gmx_pme_t* pme, CodePath mode)
         case CodePath::GPU:
         {
             auto* gridlineIndicesAsIVec =
-                    reinterpret_cast<IVec*>(pme_gpu_staging(pme->gpu).h_gridlineIndices.data());
+                    reinterpret_cast<IVec*>(pme_gpu_staging(pme->gpu.get()).h_gridlineIndices.data());
             ArrayRef<IVec> gridlineIndicesArrayRef = arrayRefFromArray(gridlineIndicesAsIVec, atomCount);
             gridLineIndices = { gridlineIndicesArrayRef.begin(), gridlineIndicesArrayRef.end() };
         }
@@ -1030,6 +1034,11 @@ ArrayRef<const PmeTestHardwareContext> getPmeTestHardwareContexts()
         }
     }
     return s_pmeTestHardwareContexts;
+}
+
+void pmeResetMinSplineRecalculationAtomCount(gmx_pme_t* pme)
+{
+    pme->gpu->minParticleCountToRecalculateSplines = 0;
 }
 
 void registerTestsDynamically()

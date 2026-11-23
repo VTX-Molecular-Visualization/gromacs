@@ -55,7 +55,6 @@
 #include "gromacs/gmxana/gmx_ana.h"
 #include "gromacs/gmxana/gstat.h"
 #include "gromacs/linearalgebra/matrix.h"
-#include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
 #include "gromacs/math/utilities.h"
 #include "gromacs/statistics/statistics.h"
@@ -63,6 +62,7 @@
 #include "gromacs/utility/arraysize.h"
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/futil.h"
 #include "gromacs/utility/path.h"
 #include "gromacs/utility/pleasecite.h"
@@ -121,7 +121,7 @@ static void power_fit(int n, int nset, real** val, real* t)
         {
             fprintf(stdout, "Will power fit up to point %d, since it is not larger than 0\n", i);
         }
-        lsq_y_ax_b(i, x, y, &a, &b, &r, &quality);
+        gmx::lsq_y_ax_b(i, x, y, &a, &b, &r, &quality);
         fprintf(stdout, "Power fit set %3d:  error %.3f  a %g  b %g\n", s + 1, quality, a, std::exp(b));
     }
 
@@ -183,11 +183,11 @@ static void regression_analysis(int n, gmx_bool bXYdy, real* x, int nset, real**
         real S, a, b, da, db, r = 0;
         if (bXYdy)
         {
-            lsq_y_ax_b_error(n, x, val[0], val[1], &a, &b, &da, &db, &r, &S);
+            gmx::lsq_y_ax_b_error(n, x, val[0], val[1], &a, &b, &da, &db, &r, &S);
         }
         else
         {
-            lsq_y_ax_b(n, x, val[0], &a, &b, &r, &S);
+            gmx::lsq_y_ax_b(n, x, val[0], &a, &b, &r, &S);
         }
         real chi2 = gmx::square((n - 2) * S);
         printf("Chi2                    = %g\n", chi2);
@@ -957,7 +957,7 @@ static void print_fitted_function(const char*       fitfile,
 
 int gmx_analyze(int argc, char* argv[])
 {
-    static const char* desc[] = {
+    const char* desc[] = {
         "[THISMODULE] reads an ASCII file and analyzes data sets.",
         "A line in the input file may start with a time",
         "(see option [TT]-time[tt]) and any number of [IT]y[it]-values may follow.",
@@ -1051,15 +1051,15 @@ int gmx_analyze(int argc, char* argv[])
         "original data and the fitted function to a new data file. The fitting",
         "parameters are stored as comment in the output file."
     };
-    static real     tb = -1, te = -1, frac = 0.5, filtlen = 0, binwidth = 0.1, aver_start = 0;
-    static gmx_bool bHaveT = TRUE, bDer = FALSE, bSubAv = TRUE, bAverCorr = FALSE, bXYdy = FALSE;
-    static gmx_bool bEESEF = FALSE, bEENLC = FALSE, bEeFitAc = FALSE, bPower = FALSE;
-    static gmx_bool bIntegrate = FALSE, bRegression = FALSE, bLuzar = FALSE;
-    static int      nsets_in = 1, d = 1, nb_min = 4, resol = 10;
-    static real     temp = 298.15, fit_start = 1, fit_end = 60;
+    real     tb = -1, te = -1, frac = 0.5, filtlen = 0, binwidth = 0.1, aver_start = 0;
+    gmx_bool bHaveT = TRUE, bDer = FALSE, bSubAv = TRUE, bAverCorr = FALSE, bXYdy = FALSE;
+    gmx_bool bEESEF = FALSE, bEENLC = FALSE, bEeFitAc = FALSE, bPower = FALSE;
+    gmx_bool bIntegrate = FALSE, bRegression = FALSE, bLuzar = FALSE;
+    int      nsets_in = 1, d = 1, nb_min = 4, resol = 10;
+    real     temp = 298.15, fit_start = 1, fit_end = 60;
 
     /* must correspond to enum avbar* declared at beginning of file */
-    static const char* avbar_opt[avbarNR + 1] = { nullptr, "none", "stddev", "error", "90", nullptr };
+    const char* avbar_opt[avbarNR + 1] = { nullptr, "none", "stddev", "error", "90", nullptr };
 
     t_pargs pa[] = {
         { "-time", FALSE, etBOOL, { &bHaveT }, "Expect a time in the input" },
@@ -1178,7 +1178,7 @@ int gmx_analyze(int argc, char* argv[])
     ppa    = add_acf_pargs(&npargs, pa);
 
     if (!parse_common_args(
-                &argc, argv, PCA_CAN_VIEW, NFILE, fnm, npargs, ppa, asize(desc), desc, 0, nullptr, &oenv))
+                &argc, argv, PCA_CAN_VIEW, NFILE, fnm, npargs, ppa, asize(desc), desc, 0, nullptr, &oenv, nullptr))
     {
         sfree(ppa);
         return 0;

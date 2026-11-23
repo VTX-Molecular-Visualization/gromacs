@@ -56,8 +56,13 @@ function(gmx_add_hipcc_flag_if_supported _output_variable_name_to_append_to _fla
     # If the check has already been run, do not re-run it
     if (NOT DEFINED ${_flags_cache_variable_name} AND NOT WIN32)
         message(STATUS "Checking if hipcc accepts flags ${ARGN}")
+        # Compile and link to /dev/null rather than letting hipcc create the
+        # default a.out file in the directory cmakec command was invoked from
+        # (typically the source tree root). We only care whether the flags
+        # are accepted, not about the contents of the resulting executable.
+        # if(NOT WIN32) above allows using /dev/null without reservation.
         execute_process(
-                COMMAND ${HIP_HIPCC_EXECUTABLE} ${ARGN} --offload-arch=gfx90a -Werror "${CMAKE_SOURCE_DIR}/cmake/TestHIP.cpp"
+                COMMAND ${HIP_HIPCC_EXECUTABLE} ${ARGN} -x hip --offload-arch=gfx90a -Werror "${CMAKE_SOURCE_DIR}/cmake/TestHIP.cpp" -o /dev/null
             RESULT_VARIABLE _hip_success
             OUTPUT_QUIET
             ERROR_QUIET
@@ -158,7 +163,7 @@ gmx_hip_check_single_flag("-fcuda-flush-denormals-to-zero")
 gmx_hip_check_single_flag("-fno-slp-vectorize")
 gmx_hip_check_single_flag("-Wno-unused-command-line-argument")
 # currently ROCm 6.2.x spams warnings about missing occupancy targets during the
-# compilation of the GPU kernels. We silence this warning here to prevent builds 
+# compilation of the GPU kernels. We silence this warning here to prevent builds
 # failing because of that.
 gmx_hip_check_single_flag("-Wno-pass-failed")
 
@@ -188,7 +193,6 @@ if(${_cmake_build_type} STREQUAL "RELEASE")
     gmx_hip_check_single_flag("-DNDEBUG")
 elseif(${_cmake_build_type} MATCHES "DEB") # should match all builds that include debug symbols, but exclude other RELWITH* builds
     gmx_hip_check_single_flag("-ggdb")
-    gmx_hip_check_single_flag("-O0")
 endif()
 
 # This helper function creates a temporary scope in which we can set
@@ -197,7 +201,7 @@ endif()
 # We are not using the wrapper that comes with the ROCm toolkit but are
 # relying directly on the built-in support in CMake to do that.
 function(gmx_hip_add_library TARGET)
-    add_definitions(-DHAVE_CONFIG_H)
+    add_compile_definitions(HAVE_CONFIG_H)
 
     # Now add all the compilation options
     gmx_device_target_compile_options(HIP_${TARGET}_CXXFLAGS)

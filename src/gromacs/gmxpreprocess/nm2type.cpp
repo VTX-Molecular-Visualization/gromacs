@@ -44,6 +44,7 @@
 #include <vector>
 
 #include "gromacs/fileio/confio.h"
+#include "gromacs/gmxpreprocess/extendableforcefield.h"
 #include "gromacs/gmxpreprocess/fflibutil.h"
 #include "gromacs/gmxpreprocess/gpp_atomtype.h"
 #include "gromacs/gmxpreprocess/grompp_impl.h"
@@ -62,11 +63,13 @@
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/vec.h"
 
+namespace gmx
+{
+
 static void rd_nm2type_file(const std::filesystem::path& filename, int* nnm, t_nm2type** nmp)
 {
     FILE*      fp;
     bool       bCont;
-    char       libfilename[128];
     char       format[128], f1[128];
     char       buf[1024], elem[16], type[16], nbbuf[16], **newbuf;
     int        i, nb, nnnm, line = 1;
@@ -106,7 +109,7 @@ static void rd_nm2type_file(const std::filesystem::path& filename, int* nnm, t_n
                         std::strcat(f1, "%s%lf");
                         if (sscanf(buf, f1, nbbuf, &(nm2t[nnnm].blen[i])) != 2)
                         {
-                            gmx_fatal(FARGS, "Error on line %d of %s", line, libfilename);
+                            gmx_fatal(FARGS, "Error on line %d of %s", line, filename.string().c_str());
                         }
                         newbuf[i] = gmx_strdup(nbbuf);
                         std::strcat(format, "%*s%*s");
@@ -133,15 +136,39 @@ static void rd_nm2type_file(const std::filesystem::path& filename, int* nnm, t_n
     *nmp = nm2t;
 }
 
-t_nm2type* rd_nm2type(const std::filesystem::path& ffdir, int* nnm)
+t_nm2type* rd_nm2type(const ExtendableForceField& forceField, int* nnm)
 {
-    auto ff       = fflib_search_file_end(ffdir, ".n2t", FALSE);
+    auto ff       = forceField.findAllPathsEndingWith(".n2t");
     *nnm          = 0;
     t_nm2type* nm = nullptr;
     for (const auto& filename : ff)
     {
         rd_nm2type_file(filename, nnm, &nm);
     }
+    return nm;
+}
+
+void free_nm2type(int nnm, t_nm2type* nm2t)
+{
+    for (int i = 0; i < nnm; i++)
+    {
+        sfree(nm2t[i].elem);
+        sfree(nm2t[i].type);
+        for (int j = 0; j < nm2t[i].nbonds; j++)
+        {
+            sfree(nm2t[i].bond[j]);
+        }
+        sfree(nm2t[i].bond);
+        sfree(nm2t[i].blen);
+    }
+    sfree(nm2t);
+}
+
+t_nm2type* rd_nm2type_from_file(const std::filesystem::path& filename, int* nnm)
+{
+    *nnm          = 0;
+    t_nm2type* nm = nullptr;
+    rd_nm2type_file(filename, nnm, &nm);
     return nm;
 }
 
@@ -173,7 +200,7 @@ enum
 static int match_str(const char* atom, const char* template_string)
 {
     if (!atom || !template_string)
-    { // NOLINT bugprone-branch-clone
+    { // NOLINT(bugprone-branch-clone)
         return ematchNone;
     }
     else if (gmx_strcasecmp(atom, template_string) == 0)
@@ -362,6 +389,13 @@ int nm2type(int nnm, t_nm2type nm2t[], t_atoms* atoms, PreprocessingAtomTypes* a
     sfree(bbb);
     sfree(n_mask);
     sfree(m_mask);
+    for (int i = 0; i < maxbond; i++)
+    {
+        sfree(match[i]);
+    }
+    sfree(match);
 
     return nresolved;
 }
+
+} // namespace gmx

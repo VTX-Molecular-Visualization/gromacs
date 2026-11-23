@@ -100,6 +100,8 @@ __launch_bounds__(c_maxThreadsPerBlock) __global__ void lincsKernel(LincsGpuKern
     AmdFastBuffer<const int>   gm_constraintGroupSize{
         kernelParams.d_constraintGroupsSizes
     }; // # of consecutive constraints sharing i-th atom
+    AmdFastBuffer<const int> gm_triangleBits{ kernelParams.d_triangleBits };
+    const bool               hasTriangleConstraints = kernelParams.hasTriangleConstraints;
 
     const int threadIndex = blockIdx.x * c_threadsPerBlock + threadIdx.x;
     const int tid         = threadIdx.x;
@@ -117,7 +119,7 @@ __launch_bounds__(c_maxThreadsPerBlock) __global__ void lincsKernel(LincsGpuKern
     const int       j    = pair.j;
 
     // Mass-scaled Lagrange multiplier
-    float lagrangeScaled = 0.0F;
+    float lagrangeScaled = 0.0f;
 
     float targetLength;
     float inverseMassi;
@@ -131,17 +133,21 @@ __launch_bounds__(c_maxThreadsPerBlock) __global__ void lincsKernel(LincsGpuKern
     // i == -1 indicates dummy constraint at the end of the thread block.
     const bool isDummyThread = (i == -1);
 
+    // Triangle bitmask: bit n set means coupling slot n is a triangle coupling.
+    // Zero for dummy threads and non-triangle constraints.
+    const int triangleBits = isDummyThread ? 0 : gm_triangleBits[threadIndex];
+
     // Everything computed for these dummies will be equal to zero
     if (isDummyThread)
     {
-        targetLength    = 0.0F;
-        inverseMassi    = 0.0F;
-        inverseMassj    = 0.0F;
-        sqrtReducedMass = 0.0F;
+        targetLength    = 0.0f;
+        inverseMassi    = 0.0f;
+        inverseMassj    = 0.0f;
+        sqrtReducedMass = 0.0f;
 
-        xi = make_float3(0.0F, 0.0F, 0.0F);
-        xj = make_float3(0.0F, 0.0F, 0.0F);
-        rc = make_float3(0.0F, 0.0F, 0.0F);
+        xi = make_float3(0.0f, 0.0f, 0.0f);
+        xj = make_float3(0.0f, 0.0f, 0.0f);
+        rc = make_float3(0.0f, 0.0f, 0.0f);
     }
     else
     {
@@ -216,7 +222,7 @@ __launch_bounds__(c_maxThreadsPerBlock) __global__ void lincsKernel(LincsGpuKern
     {
         // Making sure that all sm_rhs are saved before they are accessed in a loop below
         __syncthreads();
-        float mvb = 0.0F;
+        float mvb = 0.0f;
 
         for (int n = 0; n < coupledConstraintsCount; n++)
         {
@@ -231,6 +237,35 @@ __launch_bounds__(c_maxThreadsPerBlock) __global__ void lincsKernel(LincsGpuKern
         sm_rhs[tid + c_threadsPerBlock * ((rec + 1) % 2)] = mvb;
         sol                                               = sol + mvb;
     }
+
+    // Extra expansionOrder iterations for triangle constraints only.
+    // Triangle constraints have higher coupling-matrix eigenvalues (~0.7 vs ~0.4 for bonds),
+    // requiring additional expansion depth to achieve the same accuracy.
+    if (hasTriangleConstraints)
+    {
+        for (int rec = 0; rec < expansionOrder; rec++)
+        {
+            __syncthreads();
+            float mvb = 0.0f;
+            if (triangleBits != 0)
+            {
+                for (int n = 0; n < coupledConstraintsCount; n++)
+                {
+                    if (triangleBits & (1 << n))
+                    {
+                        const int index = n * numConstraintsThreads + threadIndex;
+                        const int c1    = gm_coupledConstraintsIndices[index];
+                        mvb             = mvb
+                              + gm_matrixA[index]
+                                        * sm_rhs[c1 + c_threadsPerBlock * ((expansionOrder + rec) % 2)];
+                    }
+                }
+            }
+            sm_rhs[tid + c_threadsPerBlock * ((expansionOrder + rec + 1) % 2)] = mvb;
+            sol                                                                = sol + mvb;
+        }
+    }
+
     // Current mass-scaled Lagrange multipliers
     lagrangeScaled = sqrtReducedMass * sol;
 
@@ -241,8 +276,8 @@ __launch_bounds__(c_maxThreadsPerBlock) __global__ void lincsKernel(LincsGpuKern
         if (haveValidConstraintGroup)
         {
             const float3 corr = -tmp * inverseMassi;
-            sm_xpi[tid]       = make_float4(xi.x, xi.y, xi.z, 0.f);
-            sm_corr[tid]      = make_float4(corr.x, corr.y, corr.z, 0.f);
+            sm_xpi[tid]       = make_float4(xi.x, xi.y, xi.z, 0.0f);
+            sm_corr[tid]      = make_float4(corr.x, corr.y, corr.z, 0.0f);
         }
 
         __syncthreads();
@@ -262,7 +297,7 @@ __launch_bounds__(c_maxThreadsPerBlock) __global__ void lincsKernel(LincsGpuKern
                 // update the coordinates to lds
                 for (int gc = 0; gc <= constraintGroupSize; gc++)
                 {
-                    sm_xpi[tid + gc] = make_float4(xi.x, xi.y, xi.z, 0.f);
+                    sm_xpi[tid + gc] = make_float4(xi.x, xi.y, xi.z, 0.0f);
                 }
             }
             else if (!haveValidConstraintGroup)
@@ -297,12 +332,12 @@ __launch_bounds__(c_maxThreadsPerBlock) __global__ void lincsKernel(LincsGpuKern
 
         const float3 dx2   = pbcDxAiuc(pbcAiuc, xi, xj);
         const float  len2  = targetLength * targetLength;
-        const float  dlen2 = 2.0F * len2 - gmxDeviceNorm2(dx2);
+        const float  dlen2 = 2.0f * len2 - gmxDeviceNorm2(dx2);
 
         // TODO A little bit more effective but slightly less readable version of the below would be:
         //      float proj = sqrtReducedMass*(targetLength - (dlen2 > 0.0f ? 1.0f : 0.0f)*dlen2*__frsqrt_rn(dlen2));
         float proj;
-        if (dlen2 > 0.0F)
+        if (dlen2 > 0.0f)
         {
             proj = sqrtReducedMass * (targetLength - dlen2 * __frsqrt_rn(dlen2));
         }
@@ -334,6 +369,31 @@ __launch_bounds__(c_maxThreadsPerBlock) __global__ void lincsKernel(LincsGpuKern
             sol2                                              = sol2 + mvb;
         }
 
+        if (hasTriangleConstraints)
+        {
+            for (int rec = 0; rec < expansionOrder; rec++)
+            {
+                __syncthreads();
+                float mvb = 0.0f;
+                if (triangleBits != 0)
+                {
+                    for (int n = 0; n < coupledConstraintsCount; n++)
+                    {
+                        if (triangleBits & (1 << n))
+                        {
+                            const int index = n * numConstraintsThreads + threadIndex;
+                            const int c1    = gm_coupledConstraintsIndices[index];
+                            mvb             = mvb
+                                  + gm_matrixA[index]
+                                            * sm_rhs[c1 + c_threadsPerBlock * ((expansionOrder + rec) % 2)];
+                        }
+                    }
+                }
+                sm_rhs[tid + c_threadsPerBlock * ((expansionOrder + rec + 1) % 2)] = mvb;
+                sol2                                                               = sol2 + mvb;
+            }
+        }
+
         // Add corrections to Lagrange multipliers
         const float sqrtmu_sol2 = sqrtReducedMass * sol2;
         lagrangeScaled += sqrtmu_sol2;
@@ -346,13 +406,13 @@ __launch_bounds__(c_maxThreadsPerBlock) __global__ void lincsKernel(LincsGpuKern
             if (haveValidConstraintGroup)
             {
                 const float3 corr = -tmp * inverseMassi;
-                sm_corr[tid]      = make_float4(corr.x, corr.y, corr.z, 0.f);
+                sm_corr[tid]      = make_float4(corr.x, corr.y, corr.z, 0.0f);
             }
             __syncthreads();
 
             if (haveGroupedConstraints)
             {
-                const float3 sumI = make_float3(0.f, 0.f, 0.f);
+                const float3 sumI = make_float3(0.0f, 0.0f, 0.0f);
                 for (int gc = 0; gc <= constraintGroupSize; gc++)
                 {
                     const float4 r_corr = sm_corr[tid + gc];
@@ -361,7 +421,7 @@ __launch_bounds__(c_maxThreadsPerBlock) __global__ void lincsKernel(LincsGpuKern
                 // update the coordinates to lds
                 for (int gc = 0; gc <= constraintGroupSize; gc++)
                 {
-                    sm_xpi[tid + gc] = make_float4(xi.x, xi.y, xi.z, 0.f);
+                    sm_xpi[tid + gc] = make_float4(xi.x, xi.y, xi.z, 0.0f);
                 }
             }
             else if (!haveValidConstraintGroup)

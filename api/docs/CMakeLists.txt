@@ -48,9 +48,14 @@ if (NOT DOXYGEN_FOUND)
     add_disabled_doxygen_target(gmxapi-cppdocs)
     add_disabled_doxygen_target(gmxapi-cppdocs-dev)
 else ()
-    set(legacy_api_SOURCE_DIR ${CMAKE_SOURCE_DIR}/api/legacy)
     set(legacy_api_BINARY_DIR ${CMAKE_BINARY_DIR}/api/legacy)
-    set(legacy_api_INCLUDE_DIRECTORIES ${legacy_api_SOURCE_DIR}/include ${legacy_api_BINARY_DIR}/include)
+    # The legacy API headers now live in the include/ directory of their
+    # owning module under src/gromacs/.
+    set(legacy_api_INCLUDE_DIRECTORIES ${legacy_api_BINARY_DIR}/include)
+    foreach(legacy_module analysisdata fileio math mdtypes options pbcutil
+                          restraint selection topology trajectory trajectoryanalysis utility)
+        list(APPEND legacy_api_INCLUDE_DIRECTORIES ${CMAKE_SOURCE_DIR}/src/gromacs/${legacy_module}/include)
+    endforeach()
     set(GMX_API_INCLUDE_DIRECTORIES ${legacy_api_INCLUDE_DIRECTORIES})
 
     if (GMXAPI)
@@ -66,7 +71,7 @@ else ()
         # Use GMXAPI_PUBLIC_HEADERS to populate source files. Make a local copy with
         # the list converted to a space-delimited string.
         set(GMXAPI_PUBLIC_HEADERS ${GMXAPI_SOURCE_DIR}/include ${GMXAPI_BINARY_DIR}/include)
-        string(REPLACE ";" " " GMXAPI_PUBLIC_HEADERS "${GMXAPI_PUBLIC_HEADERS}")
+        list(JOIN GMXAPI_PUBLIC_HEADERS " " GMXAPI_PUBLIC_HEADERS)
         configure_file(Doxyfile-gmxapi0.cmakein Doxyfile-gmxapi0 @ONLY)
 
         # Use all gmxapi sources to populate developer docs.
@@ -82,7 +87,7 @@ else ()
         list(APPEND GMX_API_INCLUDE_DIRECTORIES ${NBLIB_INCLUDE_DIRECTORIES})
     endif ()
 
-    string(REPLACE ";" " " GMX_API_INCLUDE_DIRECTORIES "${GMX_API_INCLUDE_DIRECTORIES}")
+    list(JOIN GMX_API_INCLUDE_DIRECTORIES " " GMX_API_INCLUDE_DIRECTORIES)
     configure_file(Doxyfile.cmakein Doxyfile-api @ONLY)
 
     add_custom_target( public-api-xml

@@ -60,6 +60,9 @@
 #include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
 
+namespace gmx
+{
+
 typedef struct
 {
     char *ai, *aj;
@@ -76,7 +79,7 @@ static t_2morse* read_dissociation_energies(int* n2morse)
     int         nread;
 
     /* Open the file with dissociation energies */
-    gmx::FilePtr fp = gmx::openLibraryFile(fn);
+    FilePtr fp = openLibraryFile(fn);
     do
     {
         /* Try and read two atom names and an energy term from it */
@@ -192,7 +195,7 @@ static real search_e_diss(int n2m, t_2morse t2m[], const char* ai, const char* a
     }
 }
 
-void convert_harmonics(gmx::ArrayRef<MoleculeInformation> mols, PreprocessingAtomTypes* atype)
+void convert_harmonics(ArrayRef<MoleculeInformation> mols, PreprocessingAtomTypes* atype)
 {
     int       n2m;
     t_2morse* t2m;
@@ -212,9 +215,10 @@ void convert_harmonics(gmx::ArrayRef<MoleculeInformation> mols, PreprocessingAto
         /* Check how many morse and harmonic BONDSs there are, increase size of
          * morse with the number of harmonics
          */
-        for (const auto bb : gmx::EnumerationWrapper<InteractionFunction>{})
+        for (const auto bb : EnumerationWrapper<InteractionFunction>{})
         {
-            if ((interaction_function[bb].flags & IF_BTYPE) && (bb != InteractionFunction::MorsePotential))
+            if ((interaction_function[bb].categories & sc_ifcBType)
+                && (bb != InteractionFunction::MorsePotential))
             {
                 int nrharm = mol.interactions[bb].size();
 
@@ -259,3 +263,5 @@ void convert_harmonics(gmx::ArrayRef<MoleculeInformation> mols, PreprocessingAto
     }
     sfree(t2m);
 }
+
+} // namespace gmx

@@ -76,8 +76,6 @@
 #cmakedefine01 GMX_GPU_FFT_ONEMATH
 /* Use rocFFT library for FFT on GPUs */
 #cmakedefine01 GMX_GPU_FFT_ROCFFT
-/* Use hipFFT library for FFT on GPUs */
-#cmakedefine01 GMX_GPU_FFT_HIPFFT
 /* Use double-batched FFT library (BBFFT) for FFT on GPUs */
 #cmakedefine01 GMX_GPU_FFT_BBFFT
 
@@ -196,17 +194,11 @@
 /* Use the Portable Hardware Locality package (hwloc) */
 #cmakedefine01 GMX_USE_HWLOC
 
-/* Library version found for hwloc during configuration time */
-#define GMX_HWLOC_API_VERSION @GMX_HWLOC_API_VERSION@
-
 /* Can and should use nice(3) to set priority */
 #cmakedefine01 GMX_USE_NICE
 
 /* Maximum number of OpenMP threads supported */
 #define GMX_OPENMP_MAX_THREADS @GMX_OPENMP_MAX_THREADS@
-
-/* Use if we cannot rename checkpoints */
-#cmakedefine01 GMX_NO_RENAME
 
 /* Use sub-counters */
 #cmakedefine01 GMX_CYCLE_SUBCOUNTERS
@@ -311,17 +303,14 @@
 // Cluster size used by GPU nonbonded kernel.
 #define GMX_GPU_NB_CLUSTER_SIZE @GMX_GPU_NB_CLUSTER_SIZE@
 
-// Number of clusters along X in a pair-search grid cell for GPU lists.
-#define GMX_GPU_NB_NUM_CLUSTER_PER_CELL_X @GMX_GPU_NB_NUM_CLUSTER_PER_CELL_X@
-
-// Number of clusters along Y in a pair-search grid cell for GPU lists.
-#define GMX_GPU_NB_NUM_CLUSTER_PER_CELL_Y @GMX_GPU_NB_NUM_CLUSTER_PER_CELL_Y@
-
-// Number of clusters along Z in a pair-search grid cell for GPU lists.
-#define GMX_GPU_NB_NUM_CLUSTER_PER_CELL_Z @GMX_GPU_NB_NUM_CLUSTER_PER_CELL_Z@
+// Number of clusters in a pair-search grid bin for GPU lists.
+#define GMX_GPU_NB_NUM_CLUSTER_PER_BIN @GMX_GPU_NB_NUM_CLUSTER_PER_BIN@
 
 // Disable nbnxm cluster setup splitting
 #cmakedefine01 GMX_GPU_NB_DISABLE_CLUSTER_PAIR_SPLIT
+
+/* Define if distributed ROCFFT is available */
+#cmakedefine01 GMX_USE_DISTRIBUTED_ROCFFT
 
 /* Define constants for build types (starting at 1 to make sure undefined values don't match) */
 #define CMAKE_BUILD_TYPE_DEBUG 1
@@ -481,6 +470,9 @@
 
 /* Define if we are building with Torch */
 #cmakedefine01 GMX_TORCH
+
+/* Define if LibTorch has XPU (Intel GPU) support */
+#cmakedefine01 GMX_TORCH_XPU
 
 /* Define if we are building with an external FMM implementation */
 #cmakedefine01 GMX_USE_EXT_FMM

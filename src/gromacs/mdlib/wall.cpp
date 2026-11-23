@@ -52,7 +52,6 @@
 #include "gromacs/mdtypes/forcerec.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
-#include "gromacs/mdtypes/mdatom.h"
 #include "gromacs/tables/forcetable.h"
 #include "gromacs/topology/topology.h"
 #include "gromacs/topology/topology_enums.h"
@@ -97,7 +96,7 @@ void make_wall_tables(FILE*                   fplog,
                         *groups->groupNames[nm_ind[egp]],
                         *groups->groupNames[nm_ind[negp_pp + w]],
                         ftp2ext(efXVG));
-                fr->wall_tab[w][egp] = make_tables(fplog, *fr->ic, buf, 0, GMX_MAKETABLES_FORCEUSER);
+                fr->wall_tab[w][egp] = gmx::make_tables(fplog, *fr->ic, buf, 0, GMX_MAKETABLES_FORCEUSER);
 
                 /* Since wall have no charge, we can compress the table */
                 for (int i = 0; i <= fr->wall_tab[w][egp]->numTablePoints; i++)
@@ -124,7 +123,7 @@ void make_wall_tables(FILE*                   fplog,
               r);
 }
 
-static void tableForce(real r, const t_forcetable& tab, real Cd, real Cr, real* V, real* F)
+static void tableForce(real r, const gmx::t_forcetable& tab, real Cd, real Cr, real* V, real* F)
 {
     const real  tabscale = tab.scale;
     const real* VFtab    = tab.data.data();

@@ -123,7 +123,6 @@
 #include "nbnxm_enums.h"
 
 struct DeviceInformation;
-class ExclusionChecker;
 struct gmx_domdec_t;
 struct gmx_enerdata_t;
 struct gmx_hw_info_t;
@@ -139,12 +138,13 @@ class GpuEventSynchronizer;
 
 namespace gmx
 {
+class ExclusionChecker;
 class FreeEnergyDispatch;
 class MpiComm;
 class Grid;
 struct GridDimensions;
 struct NbnxmGpu;
-struct nbnxn_atomdata_t;
+struct nbnxm_atomdata_t;
 class PairSearch;
 class PairlistSets;
 template<typename>
@@ -213,7 +213,7 @@ public:
      */
     nonbonded_verlet_t(std::unique_ptr<PairlistSets>     pairlistSets,
                        std::unique_ptr<PairSearch>       pairSearch,
-                       std::unique_ptr<nbnxn_atomdata_t> nbat,
+                       std::unique_ptr<nbnxm_atomdata_t> nbat,
                        const NbnxmKernelSetup&           kernelSetup,
                        std::unique_ptr<ExclusionChecker> exclusionChecker,
                        NbnxmGpu*                         gpu_nbv,
@@ -230,7 +230,7 @@ public:
      */
     nonbonded_verlet_t(std::unique_ptr<PairlistSets>     pairlistSets,
                        std::unique_ptr<PairSearch>       pairSearch,
-                       std::unique_ptr<nbnxn_atomdata_t> nbat,
+                       std::unique_ptr<nbnxm_atomdata_t> nbat,
                        const NbnxmKernelSetup&           kernelSetup,
                        NbnxmGpu*                         gpu_nbv);
 
@@ -305,12 +305,12 @@ public:
     //! Returns the index position of the atoms on the search grid
     ArrayRef<const int> getGridIndices() const;
 
-    /*! \brief Returns the number of atoms for each column of the local grid
+    /*! \brief Returns the number of atoms for each cell of the local grid
      *
      * When fillers are not part of the local state, returns the number of real atoms.
      * When fillers are part of the local state, returns number of atoms plus fillers.
      */
-    ArrayRef<const int> getLocalGridNumAtomsPerColumn() const;
+    ArrayRef<const int> getLocalGridNumAtomsPerCell() const;
 
     /*! \brief Constructs the pairlist for the given locality
      *
@@ -408,7 +408,7 @@ public:
                                       const StepWorkload&                    stepWork,
                                       t_nrnb*                                nrnb);
 
-#if GMX_GPU && !GMX_GPU_CUDA
+#if GMX_GPU_OPENCL
     [[noreturn]]
 #endif
     //! Executes the non-bonded free-energy kernels, local + non-local, runs on the GPU
@@ -446,8 +446,8 @@ public:
 
     void setupFepThreadedForceBuffer(int numAtomsForce);
 
-    //! Returns a reference to the nbnxn_atomdata_t object
-    nbnxn_atomdata_t& nbat() { return *nbat_; }
+    //! Returns a reference to the nbnxm_atomdata_t object
+    nbnxm_atomdata_t& nbat() { return *nbat_; }
 
     //! Returns a pointer to the NbnxmGpu object, can return nullptr
     const NbnxmGpu* gpuNbv() const { return gpuNbv_; }
@@ -459,11 +459,11 @@ public:
     //! Returns the local grid
     const Grid& localGrid() const;
 
-    //! Sets the non-local grid usig dimensions and columns received from a halo-domain
+    //! Sets the non-local grid usig dimensions and cells received from a halo-domain
     void setNonLocalGrid(int                                 gridIndex,
                          int                                 ddZone,
                          const GridDimensions&               gridDimensions,
-                         ArrayRef<const std::pair<int, int>> columns,
+                         ArrayRef<const std::pair<int, int>> cells,
                          ArrayRef<const int32_t>             atomInfo,
                          ArrayRef<const RVec>                x);
     /*! \brief Returns a plain pairlist
@@ -483,7 +483,7 @@ private:
     //! Working data for constructing the pairlists
     std::unique_ptr<PairSearch> pairSearch_;
     //! Atom data
-    std::unique_ptr<nbnxn_atomdata_t> nbat_;
+    std::unique_ptr<nbnxm_atomdata_t> nbat_;
 
     //! The non-bonded setup, also affects the pairlist construction kernel
     NbnxmKernelSetup kernelSetup_;
@@ -513,6 +513,7 @@ std::unique_ptr<nonbonded_verlet_t> init_nb_verlet(const MDLogger&            md
                                                    const gmx_hw_info_t&       hardwareInfo,
                                                    bool                       useGpuForNonbonded,
                                                    bool                       useGpuForNonbondedFE,
+                                                   bool                       useGpuUpdate,
                                                    const DeviceStreamManager* deviceStreamManager,
                                                    const gmx_mtop_t&          mtop,
                                                    bool localAtomOrderMatchesNbnxmOrder,
@@ -521,12 +522,12 @@ std::unique_ptr<nonbonded_verlet_t> init_nb_verlet(const MDLogger&            md
                                                    matrix               box,
                                                    gmx_wallcycle*       wcycle);
 
-/*! \brief As nbnxn_put_on_grid, but for the non-local atoms
+/*! \brief As nbnxm_put_on_grid, but for the non-local atoms
  *
  * with domain decomposition. Should be called after calling
- * nbnxn_search_put_on_grid for the local atoms / home zone.
+ * nbnxm_search_put_on_grid for the local atoms / home zone.
  */
-void nbnxn_put_on_grid_nonlocal(nonbonded_verlet_t*     nb_verlet,
+void nbnxm_put_on_grid_nonlocal(nonbonded_verlet_t*     nb_verlet,
                                 const gmx::DomdecZones& zones,
                                 ArrayRef<const int32_t> atomInfo,
                                 ArrayRef<const RVec>    x);

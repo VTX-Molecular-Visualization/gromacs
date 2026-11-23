@@ -42,7 +42,12 @@
 #include <windows.h>
 #undef WIN32_LEAN_AND_MEAN
 
+#if defined(_M_ARM64) || defined(_M_ARM)
+#define tMPI_Atomic_memory_barrier()  MemoryBarrier()
+#else
+// On x86_64, the way MSVC treats "volatile" + strong memory model is enough
 #define tMPI_Atomic_memory_barrier()
+#endif
 
 
 typedef struct tMPI_Atomic
@@ -112,6 +117,8 @@ static inline void tMPI_Spinlock_init(tMPI_Spinlock_t *x)
 
 static inline void tMPI_Spinlock_unlock(tMPI_Spinlock_t *x)
 {
+    // Barrier to ensure all earlier stores are visible. Only for ARM, no-op on x86_64
+    tMPI_Atomic_memory_barrier();
     x->lock = 0;
 }
 

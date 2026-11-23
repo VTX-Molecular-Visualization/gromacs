@@ -72,10 +72,8 @@
 #include "gromacs/gmxlib/nrnb.h"
 #include "gromacs/gpu_utils/gpu_utils.h"
 #include "gromacs/gpu_utils/hostallocator.h"
-#include "gromacs/listed_forces/listed_forces.h"
 #include "gromacs/listed_forces/listed_forces_gpu.h"
 #include "gromacs/math/arrayrefwithpadding.h"
-#include "gromacs/math/functions.h"
 #include "gromacs/math/utilities.h"
 #include "gromacs/mdlib/checkpointhandler.h"
 #include "gromacs/mdlib/constr.h"
@@ -88,7 +86,6 @@
 #include "gromacs/mdlib/forcerec.h"
 #include "gromacs/mdlib/freeenergyparameters.h"
 #include "gromacs/mdlib/md_support.h"
-#include "gromacs/mdlib/mdatoms.h"
 #include "gromacs/mdlib/mdoutf.h"
 #include "gromacs/mdlib/membed.h"
 #include "gromacs/mdlib/resethandler.h"
@@ -116,7 +113,7 @@
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/interaction_const.h"
 #include "gromacs/mdtypes/md_enums.h"
-#include "gromacs/mdtypes/mdatom.h"
+#include "gromacs/mdtypes/mdatoms.h"
 #include "gromacs/mdtypes/mdrunoptions.h"
 #include "gromacs/mdtypes/multipletimestepping.h"
 #include "gromacs/mdtypes/observableshistory.h"
@@ -141,6 +138,7 @@
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/logger.h"
 #include "gromacs/utility/real.h"
 #include "gromacs/utility/vec.h"
@@ -150,15 +148,18 @@
 #include "replicaexchange.h"
 #include "shellfc.h"
 
-struct gmx_edsam;
 struct gmx_mdoutf;
-struct gmx_shellfc_t;
 
-using gmx::SimulationSignaller;
+namespace gmx
+{
+struct edsam;
 
-void gmx::LegacySimulator::do_mimic()
+void LegacySimulator::do_mimic()
 {
     const t_inputrec* ir = inputRec_;
+
+    const OutputControl& outputControl = ir->outputControl;
+
     double            t;
     bool              isLastStep               = false;
     bool              doFreeEnergyPerturbation = false;
@@ -167,7 +168,7 @@ void gmx::LegacySimulator::do_mimic()
     rvec              mu_tot;
     ForceBuffers      f;
     gmx_global_stat_t gstat;
-    gmx_shellfc_t*    shellfc;
+    shellfc_t*        shellfc;
 
     double cycles;
 
@@ -214,10 +215,11 @@ void gmx::LegacySimulator::do_mimic()
     /* Settings for rerun */
     {
         // TODO: Avoid changing inputrec (#3854)
-        auto* nonConstInputrec               = const_cast<t_inputrec*>(inputRec_);
-        nonConstInputrec->nstlist            = 1;
-        nonConstInputrec->nstcalcenergy      = 1;
-        nonConstInputrec->nstxout_compressed = 0;
+        auto* nonConstInputrec    = const_cast<t_inputrec*>(inputRec_);
+        nonConstInputrec->nstlist = 1;
+        // Update outputControl
+        nonConstInputrec->outputControl.nstcalcenergy      = 1;
+        nonConstInputrec->outputControl.nstxout_compressed = 0;
     }
     int        nstglobalcomm = 1;
     const bool bNS           = true;
@@ -258,8 +260,8 @@ void gmx::LegacySimulator::do_mimic()
                        &stateGlobal_->fep_state,
                        stateGlobal_->lambda);
 
-    const bool        simulationsShareState = false;
-    gmx_mdoutf*       outf                  = init_mdoutf(fpLog_,
+    const bool   simulationsShareState = false;
+    gmx_mdoutf*  outf                  = init_mdoutf(fpLog_,
                                    nFile_,
                                    fnm_,
                                    mdrunOptions_,
@@ -273,15 +275,15 @@ void gmx::LegacySimulator::do_mimic()
                                    StartingBehavior::NewSimulation,
                                    simulationsShareState,
                                    ms_);
-    gmx::EnergyOutput energyOutput(mdoutf_get_fp_ene(outf),
-                                   topGlobal_,
-                                   *ir,
-                                   pullWork_,
-                                   mdoutf_get_fp_dhdl(outf),
-                                   true,
-                                   StartingBehavior::NewSimulation,
-                                   simulationsShareState,
-                                   mdModulesNotifiers_);
+    EnergyOutput energyOutput(mdoutf_get_fp_ene(outf),
+                              topGlobal_,
+                              *ir,
+                              pullWork_,
+                              mdoutf_get_fp_dhdl(outf),
+                              true,
+                              StartingBehavior::NewSimulation,
+                              simulationsShareState,
+                              mdModulesNotifiers_);
 
     gstat = global_stat_init(ir);
 
@@ -289,8 +291,9 @@ void gmx::LegacySimulator::do_mimic()
     shellfc = init_shell_flexcon(fpLog_,
                                  topGlobal_,
                                  constr_ ? constr_->numFlexibleConstraints() : 0,
-                                 ir->nstcalcenergy,
+                                 ir->outputControl.nstcalcenergy,
                                  haveDDAtomOrdering(*cr_),
+                                 fr_->deviceStreamManager,
                                  runScheduleWork_->simulationWork);
 
     if (haveDDAtomOrdering(*cr_))
@@ -301,6 +304,7 @@ void gmx::LegacySimulator::do_mimic()
         /* Distribute the charge groups over the nodes from the main node */
         dd_partition_system(fpLog_,
                             mdLog_,
+                            runScheduleWork_->simulationWork,
                             ir->init_step,
                             cr_->dd,
                             TRUE,
@@ -311,6 +315,7 @@ void gmx::LegacySimulator::do_mimic()
                             imdSession_,
                             pullWork_,
                             state_,
+                            fr_->stateGpu,
                             &f,
                             mdAtoms_,
                             top_,
@@ -323,19 +328,28 @@ void gmx::LegacySimulator::do_mimic()
     }
     else
     {
-        mdAlgorithmsSetupAtomData(
-                cr_->dd, *ir, topGlobal_, top_, fr_, &f, mdAtoms_, constr_, virtualSites_, shellfc);
+        mdAlgorithmsSetupAtomData(runScheduleWork_->simulationWork,
+                                  cr_->dd,
+                                  *ir,
+                                  topGlobal_,
+                                  top_,
+                                  fr_,
+                                  &f,
+                                  state_->lambda[FreeEnergyPerturbationCouplingType::Mass],
+                                  mdAtoms_,
+                                  constr_,
+                                  virtualSites_,
+                                  shellfc,
+                                  fr_->stateGpu,
+                                  wallCycleCounters_);
     }
-
-    auto* mdatoms = mdAtoms_->mdatoms();
 
     // NOTE: The global state is no longer used at this point.
     // But state_global is still used as temporary storage space for writing
     // the global state to file and potentially for replica exchange.
     // (Global topology should persist.)
 
-    update_mdatoms(mdatoms, state_->lambda[FreeEnergyPerturbationCouplingType::Mass]);
-    fr_->longRangeNonbondeds->updateAfterPartition(*mdatoms);
+    fr_->longRangeNonbondeds->updateAfterPartition(*mdAtoms_);
 
     if (ir->efep != FreeEnergyPerturbationType::No && ir->fepvals->nstdhdl != 0)
     {
@@ -346,9 +360,8 @@ void gmx::LegacySimulator::do_mimic()
     int64_t step_rel = 0;
 
     {
-        int    cglo_flags   = CGLO_GSTAT;
-        bool   bSumEkinhOld = false;
-        t_vcm* vcm          = nullptr;
+        int    cglo_flags = CGLO_GSTAT;
+        t_vcm* vcm        = nullptr;
         compute_globals(gstat,
                         cr_->commMyGroup,
                         ir,
@@ -357,7 +370,7 @@ void gmx::LegacySimulator::do_mimic()
                         makeConstArrayRef(state_->x),
                         makeConstArrayRef(state_->v),
                         state_->box,
-                        mdatoms,
+                        *mdAtoms_,
                         nrnb_,
                         vcm,
                         nullptr,
@@ -368,7 +381,6 @@ void gmx::LegacySimulator::do_mimic()
                         pres,
                         &nullSignaller,
                         state_->box,
-                        &bSumEkinhOld,
                         cglo_flags,
                         step,
                         &observablesReducer);
@@ -476,6 +488,7 @@ void gmx::LegacySimulator::do_mimic()
             const bool bMainState = true;
             dd_partition_system(fpLog_,
                                 mdLog_,
+                                runScheduleWork_->simulationWork,
                                 step,
                                 cr_->dd,
                                 bMainState,
@@ -486,6 +499,7 @@ void gmx::LegacySimulator::do_mimic()
                                 imdSession_,
                                 pullWork_,
                                 state_,
+                                fr_->stateGpu,
                                 &f,
                                 mdAtoms_,
                                 top_,
@@ -502,12 +516,12 @@ void gmx::LegacySimulator::do_mimic()
             EnergyOutput::printHeader(fpLog_, step, t); /* can we improve the information printed here? */
         }
 
-        if (ir->efep != FreeEnergyPerturbationType::No)
+        if (ir->efep == FreeEnergyPerturbationType::SlowGrowth)
         {
-            update_mdatoms(mdatoms, state_->lambda[FreeEnergyPerturbationCouplingType::Mass]);
+            mdAtoms_->updateForMassLambda(state_->lambda[FreeEnergyPerturbationCouplingType::Mass]);
         }
 
-        fr_->longRangeNonbondeds->updateAfterPartition(*mdatoms);
+        fr_->longRangeNonbondeds->updateAfterPartition(*mdAtoms_);
 
         force_flags = (GMX_FORCE_STATECHANGED | GMX_FORCE_ALLFORCES
                        | GMX_FORCE_VIRIAL
@@ -517,7 +531,7 @@ void gmx::LegacySimulator::do_mimic()
         const int shellfcFlags     = force_flags | (mdrunOptions_.verbose ? GMX_FORCE_ENERGY : 0);
         const int legacyForceFlags = ((shellfc) ? shellfcFlags : force_flags) | GMX_FORCE_NS;
 
-        gmx_edsam* const ed = nullptr;
+        edsam* const ed = nullptr;
 
         if (bNS)
         {
@@ -526,15 +540,17 @@ void gmx::LegacySimulator::do_mimic()
                 fr_->listedForcesGpu->updateHaveInteractions(top_->idef);
             }
             runScheduleWork_->domainWork = setupDomainLifetimeWorkload(
-                    *ir, *fr_, pullWork_, ed, *mdatoms, runScheduleWork_->simulationWork);
+                    *ir, *fr_, pullWork_, ed, mdAtoms_->nPerturbed > 0, runScheduleWork_->simulationWork);
         }
 
 
         runScheduleWork_->stepWork = setupStepWorkload(legacyForceFlags,
                                                        ir->mtsLevels,
                                                        step,
+                                                       {},
                                                        runScheduleWork_->domainWork,
-                                                       runScheduleWork_->simulationWork);
+                                                       runScheduleWork_->simulationWork,
+                                                       *ir);
 
         if (shellfc)
         {
@@ -560,7 +576,7 @@ void gmx::LegacySimulator::do_mimic()
                                 &state_->hist,
                                 &f.view(),
                                 force_vir,
-                                *mdatoms,
+                                *mdAtoms_,
                                 fr_->longRangeNonbondeds.get(),
                                 nrnb_,
                                 wallCycleCounters_,
@@ -599,7 +615,7 @@ void gmx::LegacySimulator::do_mimic()
                      &state_->hist,
                      &f.view(),
                      force_vir,
-                     mdatoms,
+                     *mdAtoms_,
                      enerd_,
                      state_->lambda,
                      fr_,
@@ -618,7 +634,6 @@ void gmx::LegacySimulator::do_mimic()
         {
             const bool isCheckpointingStep = false;
             const bool doRerun             = false;
-            const bool bSumEkinhOld        = false;
             do_md_trajectory_writing(fpLog_,
                                      cr_,
                                      nFile_,
@@ -636,12 +651,11 @@ void gmx::LegacySimulator::do_mimic()
                                      energyOutput,
                                      ekind_,
                                      f.view().force(),
+                                     virtualSites_,
                                      isCheckpointingStep,
                                      doRerun,
                                      isLastStep,
-                                     mdrunOptions_.writeConfout,
-                                     bSumEkinhOld ? EkindataState::UsedNeedToReduce
-                                                  : EkindataState::UsedDoNotNeedToReduce);
+                                     mdrunOptions_.writeConfout);
         }
 
         stopHandler->setSignal();
@@ -649,7 +663,6 @@ void gmx::LegacySimulator::do_mimic()
         {
             const bool          doInterSimSignal = false;
             const bool          doIntraSimSignal = true;
-            bool                bSumEkinhOld     = false;
             t_vcm*              vcm              = nullptr;
             SimulationSignaller signaller(&signals, cr_, ms_, doInterSimSignal, doIntraSimSignal);
 
@@ -662,7 +675,7 @@ void gmx::LegacySimulator::do_mimic()
                             makeConstArrayRef(state_->x),
                             makeConstArrayRef(state_->v),
                             state_->box,
-                            mdatoms,
+                            *mdAtoms_,
                             nrnb_,
                             vcm,
                             wallCycleCounters_,
@@ -673,19 +686,18 @@ void gmx::LegacySimulator::do_mimic()
                             nullptr,
                             &signaller,
                             state_->box,
-                            &bSumEkinhOld,
                             cglo_flags,
                             step,
                             &observablesReducer);
         }
 
         {
-            gmx::HostVector<gmx::RVec>     fglobal(topGlobal_.natoms);
-            gmx::ArrayRef<gmx::RVec>       ftemp;
-            gmx::ArrayRef<const gmx::RVec> flocal = f.view().force();
+            HostVector<RVec>     fglobal(topGlobal_.natoms);
+            ArrayRef<RVec>       ftemp;
+            ArrayRef<const RVec> flocal = f.view().force();
             if (haveDDAtomOrdering(*cr_))
             {
-                ftemp = gmx::makeArrayRef(fglobal);
+                ftemp = makeArrayRef(fglobal);
                 dd_collect_vec(
                         cr_->dd, state_->ddp_count, state_->ddp_count_cg_gl, state_->cg_gl, flocal, ftemp);
             }
@@ -721,7 +733,7 @@ void gmx::LegacySimulator::do_mimic()
             energyOutput.addDataAtEnergyStep(doFreeEnergyPerturbation,
                                              bCalcEnerStep,
                                              t,
-                                             mdatoms->tmass,
+                                             mdAtoms_->tmass,
                                              enerd_,
                                              ir->fepvals.get(),
                                              state_->box,
@@ -754,7 +766,7 @@ void gmx::LegacySimulator::do_mimic()
                                                fr_->fcdata.get(),
                                                awh);
 
-            if (do_per_step(step, ir->nstlog))
+            if (do_per_step(step, outputControl.nstlog))
             {
                 if (std::fflush(fpLog_) != 0)
                 {
@@ -798,15 +810,19 @@ void gmx::LegacySimulator::do_mimic()
         MimicCommunicator::finalize();
     }
 
-    if (!thisRankHasPmeDuty(cr_->dd))
+    if (runScheduleWork_->simulationWork.haveSeparatePmeRank)
     {
-        /* Tell the PME only node to finish */
-        gmx_pme_send_finish(cr_->dd);
+        // Tell the PME-only rank to finish
+        fr_->pmePpComm->sendFinish();
     }
 
     done_mdoutf(outf);
 
     done_shellfc(fpLog_, shellfc, step_rel);
 
+    global_stat_destroy(gstat);
+
     walltime_accounting_set_nsteps_done(wallTimeAccounting_, step_rel);
 }
+
+} // namespace gmx

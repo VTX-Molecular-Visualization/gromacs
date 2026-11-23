@@ -51,12 +51,12 @@
 #include "gromacs/fileio/enxio.h"
 #include "gromacs/fileio/filetypes.h"
 #include "gromacs/fileio/oenv.h"
+#include "gromacs/fileio/timecontrol.h"
 #include "gromacs/fileio/tpxio.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/fileio/xdr_datatype.h"
 #include "gromacs/fileio/xvgr.h"
 #include "gromacs/gmxana/gmx_ana.h"
-#include "gromacs/math/functions.h"
 #include "gromacs/mdlib/energyoutput.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
@@ -72,6 +72,7 @@
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/pleasecite.h"
 #include "gromacs/utility/real.h"
@@ -398,18 +399,18 @@ int gmx_nmr(int argc, char* argv[])
 
 
     };
-    static gmx_bool bPrAll = FALSE;
-    static gmx_bool bDp = FALSE, bOrinst = FALSE, bOvec = FALSE;
-    static int      skip = 0;
-    t_pargs         pa[] = {
+    gmx_bool bPrAll = FALSE;
+    gmx_bool bDp = FALSE, bOrinst = FALSE, bOvec = FALSE;
+    int      skip = 0;
+    t_pargs  pa[] = {
         { "-dp", FALSE, etBOOL, { &bDp }, "Print energies in high precision" },
         { "-skip", FALSE, etINT, { &skip }, "Skip number of frames between data points" },
         { "-aver",
-                  FALSE,
-                  etBOOL,
-                  { &bPrAll },
-                  "Also print the exact average and rmsd stored in the energy frames (only when 1 term is "
-                          "requested)" },
+           FALSE,
+           etBOOL,
+           { &bPrAll },
+           "Also print the exact average and rmsd stored in the energy frames (only when 1 term is "
+            "requested)" },
         { "-orinst", FALSE, etBOOL, { &bOrinst }, "Analyse instantaneous orientation data" },
         { "-ovec", FALSE, etBOOL, { &bOvec }, "Also plot the eigenvectors with [TT]-oten[tt]" }
     };
@@ -417,12 +418,11 @@ int gmx_nmr(int argc, char* argv[])
 
     FILE /* *out     = NULL,*/ *out_disre = nullptr, *fp_pairs = nullptr, *fort = nullptr,
                                *fodt = nullptr, *foten = nullptr;
-    ener_file_t  fp;
-    int          timecheck = 0;
-    gmx_enxnm_t* enm       = nullptr;
-    t_enxframe   fr;
-    int          nre, teller, teller_disre;
-    int          nor = 0, nex = 0, norfr = 0, enx_i = 0;
+    ener_file_t fp;
+    int         timecheck = 0;
+    t_enxframe  fr;
+    int         teller, teller_disre;
+    int         nor = 0, nex = 0, norfr = 0, enx_i = 0;
     real *bounds = nullptr, *violaver = nullptr, *oobs = nullptr, *orient = nullptr, *odrms = nullptr;
     int *    index = nullptr, *pair = nullptr, norsel = 0, *orsel = nullptr, *or_label = nullptr;
     int      nbounds = 0, npairs;
@@ -431,10 +431,9 @@ int gmx_nmr(int argc, char* argv[])
     double   sumaver, sumt;
     int *    set = nullptr, i, j, k, nset, sss;
     std::vector<std::string> pairleg, odtleg, otenleg, leg;
-    const char *             anm_j, *anm_k, *resnm_j, *resnm_k;
-    int                      resnr_j, resnr_k;
     const char*              orinst_sub = "@ subtitle \"instantaneous\"\n";
     gmx_output_env_t*        oenv;
+    gmx::TimeControl         timeControl;
     t_enxblock*              blk_disre = nullptr;
     int                      ndisre    = 0;
 
@@ -454,8 +453,19 @@ int gmx_nmr(int argc, char* argv[])
     int npargs;
 
     npargs = asize(pa);
-    if (!parse_common_args(
-                &argc, argv, PCA_CAN_VIEW | PCA_CAN_BEGIN | PCA_CAN_END, NFILE, fnm, npargs, pa, asize(desc), desc, 0, nullptr, &oenv))
+    if (!parse_common_args(&argc,
+                           argv,
+                           PCA_CAN_VIEW | PCA_CAN_BEGIN | PCA_CAN_END,
+                           NFILE,
+                           fnm,
+                           npargs,
+                           pa,
+                           asize(desc),
+                           desc,
+                           0,
+                           nullptr,
+                           &oenv,
+                           &timeControl))
     {
         return 0;
     }
@@ -481,9 +491,8 @@ int gmx_nmr(int argc, char* argv[])
         gmx_fatal(FARGS, "Cannot do sum of violation (-viol) and other analysis in a single call.");
     }
 
-    fp = open_enx(ftp2fn(efEDR, NFILE, fnm), "r");
-    do_enxnms(fp, &nre, &enm);
-    free_enxnms(nre, enm);
+    fp                                 = open_enx(ftp2fn(efEDR, NFILE, fnm), "r");
+    const std::vector<gmx_enxnm_t> enm = readEnxNames(fp);
 
     t_inputrec  irInstance;
     t_inputrec* ir = &irInstance;
@@ -648,7 +657,7 @@ int gmx_nmr(int argc, char* argv[])
             bCont = do_enx(fp, &fr);
             if (bCont)
             {
-                timecheck = check_times(fr.t);
+                timecheck = check_times(fr.t, timeControl);
             }
         } while (bCont && (timecheck < 0));
 
@@ -678,16 +687,20 @@ int gmx_nmr(int argc, char* argv[])
                               ndisre,
                               ilist.size() / 3);
                 }
-                int molb = 0;
+                MTopLookUp mTopLookUp(*topInfo.mtop());
                 for (i = 0; i < ndisre; i++)
                 {
                     j = fa[3 * i + 1];
                     k = fa[3 * i + 2];
                     GMX_ASSERT(topInfo.hasTopology(), "Need to have a valid topology");
-                    mtopGetAtomAndResidueName(*topInfo.mtop(), j, &molb, &anm_j, &resnr_j, &resnm_j, nullptr);
-                    mtopGetAtomAndResidueName(*topInfo.mtop(), k, &molb, &anm_k, &resnr_k, &resnm_k, nullptr);
-                    pairleg.emplace_back(gmx::formatString(
-                            "%d %s %d %s (%d)", resnr_j, anm_j, resnr_k, anm_k, ip[fa[3 * i]].disres.label));
+                    const auto resJ = mTopLookUp.getAtomAndResidueNameAndNumber(j);
+                    const auto resK = mTopLookUp.getAtomAndResidueNameAndNumber(k);
+                    pairleg.emplace_back(gmx::formatString("%d %s %d %s (%d)",
+                                                           resJ.residueNumber,
+                                                           resJ.atomName,
+                                                           resK.residueNumber,
+                                                           resK.atomName,
+                                                           ip[fa[3 * i]].disres.label));
                 }
                 set = select_it(ndisre, pairleg, &nset);
                 for (i = 0; (i < nset); i++)

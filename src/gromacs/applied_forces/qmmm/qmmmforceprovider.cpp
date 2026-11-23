@@ -55,10 +55,13 @@
 #include "gromacs/mdtypes/enerdata.h"
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/filestream.h"
+#include "gromacs/utility/gmxmpi.h"
 #include "gromacs/utility/keyvaluetree.h"
 #include "gromacs/utility/keyvaluetreebuilder.h"
 #include "gromacs/utility/mpicomm.h"
 #include "gromacs/utility/stringutil.h"
+
+#include "qmmmversion.h"
 
 namespace gmx
 {
@@ -149,6 +152,30 @@ void QMMMForceProvider::appendLog(const std::string& msg)
 
 void QMMMForceProvider::initCP2KForceEnvironment(const MpiComm& mpiComm)
 {
+    /* Check for CP2K version requirements regarding MPI thread support
+     * CP2K>=2026.2(dev) requires GROMACS to initialize with MPI_THREAD_MULTIPLE
+     */
+#if GMX_LIB_MPI
+    const std::string description = qmmmDescription();
+    if (qmmmRequiresMpiThreadMultiple(description))
+    {
+        int provided = MPI_THREAD_SINGLE;
+        if (MPI_Query_thread(&provided) != MPI_SUCCESS)
+        {
+            GMX_THROW(InternalError("Could not query the MPI thread-support level for CP2K."));
+        }
+        if (provided < MPI_THREAD_MULTIPLE)
+        {
+            GMX_THROW(InvalidInputError(formatString(
+                    "CP2K version is %s and requires MPI_THREAD_MULTIPLE. "
+                    "Set the environment variable GMX_USE_MPI_THREAD_MULTIPLE to any value "
+                    "(for example, export GMX_USE_MPI_THREAD_MULTIPLE=1) before launching "
+                    "GROMACS.",
+                    description.c_str())));
+        }
+    }
+#endif
+
     // Check that we have filename either defined in KVT or deduced from *.tpr name
     GMX_RELEASE_ASSERT(!parameters_.qmFileNameBase_.empty(),
                        "Names of CP2K input/output files is not defined in QMMMParameters");
@@ -162,32 +189,24 @@ void QMMMForceProvider::initCP2KForceEnvironment(const MpiComm& mpiComm)
     // Write CP2K input if we are Main
     if (mpiComm.isMainRank())
     {
-        // In the CP2K Input we need to substitute placeholder with the actuall *.pdb file name
+        // In the CP2K Input we need to substitute placeholder with the actual *.pdb file name
         writeStringToFile(cp2kInputName, formatString(parameters_.qmInput_.c_str(), cp2kPdbName.c_str()));
 
         // Write *.pdb with point charges for CP2K
         writeStringToFile(cp2kPdbName, parameters_.qmPdb_);
     }
 
-    // Check if we have external MPI library
+    // Check if we have an external MPI library and initialize CP2K accordingly.
     if (GMX_LIB_MPI)
     {
-        /* Attempt to init CP2K and create force environment in case we have an external MPI library.
+        /* Attempt to init CP2K in case we have an external MPI library.
          * _without_mpi - means that libcp2k will not call MPI_Init() itself,
          * but rather expects it to be called already
          */
         cp2k_init_without_mpi();
-
-        // Here #if (GMX_LIB_MPI) needed because of MPI_Comm_c2f() usage
-        // TODO: Probably there should be more elegant solution
-#if GMX_LIB_MPI
-        cp2k_create_force_env_comm(
-                &force_env_, cp2kInputName.c_str(), cp2kOutputName.c_str(), MPI_Comm_c2f(mpiComm.comm()));
-#endif
     }
     else
     {
-
         // If we have thread-MPI or no-MPI then we should initialize CP2K differently
         if (mpiComm.isParallel())
         {
@@ -200,8 +219,27 @@ void QMMMForceProvider::initCP2KForceEnvironment(const MpiComm& mpiComm)
             GMX_THROW(NotImplementedError(msg));
         }
 
-        // Attempt to init CP2K and create force environment
+        // Attempt to init CP2K
         cp2k_init();
+    }
+
+    // Now create force environment in CP2K.
+    if (mpiComm.isParallel())
+    {
+        // Make sure that we do not pass MPI_COMM_NULL to CP2K in case of parallel run
+        GMX_RELEASE_ASSERT(GMX_LIB_MPI && mpiComm.comm() != MPI_COMM_NULL,
+                           "Cannot have NULL communicator in parallel run.");
+        // Here #if (GMX_LIB_MPI) needed because of MPI_Comm_c2f() usage
+#if GMX_LIB_MPI
+        cp2k_create_force_env_comm(
+                &force_env_, cp2kInputName.c_str(), cp2kOutputName.c_str(), MPI_Comm_c2f(mpiComm.comm()));
+#endif
+    }
+    else
+    {
+        /* Single rank case: we should not pass MPI_COMM_NULL to CP2K,
+         * but rather use the version of function that does not take communicator as an argument
+         */
         cp2k_create_force_env(&force_env_, cp2kInputName.c_str(), cp2kOutputName.c_str());
     }
 }
@@ -265,9 +303,9 @@ void QMMMForceProvider::calculateForces(const ForceProviderInput& fInput, ForceP
     std::vector<double> box_d(9);
     for (size_t i = 0; i < DIM; i++)
     {
-        box_d[3 * i]     = static_cast<double>(box_[0][i] / c_bohr2Nm);
-        box_d[3 * i + 1] = static_cast<double>(box_[1][i] / c_bohr2Nm);
-        box_d[3 * i + 2] = static_cast<double>(box_[2][i] / c_bohr2Nm);
+        box_d[3 * i]     = static_cast<double>(box_[i][XX] / c_bohr2Nm);
+        box_d[3 * i + 1] = static_cast<double>(box_[i][YY] / c_bohr2Nm);
+        box_d[3 * i + 2] = static_cast<double>(box_[i][ZZ] / c_bohr2Nm);
     }
 
     // Update coordinates and box in CP2K
@@ -351,13 +389,6 @@ void QMMMForceProvider::writeCheckpointData(MDModulesWriteCheckpointData checkpo
                                             std::string_view             moduleName)
 {
     state_.writeState(checkpointWriting.builder_, moduleName);
-}
-
-std::string qmmmDescription()
-{
-    std::vector<char> cp2kVersion(100);
-    cp2k_get_version(cp2kVersion.data(), 100);
-    return cp2kVersion[0] != '\0' ? formatString("enabled (version %s)", cp2kVersion.data()) : "enabled";
 }
 
 } // namespace gmx

@@ -48,15 +48,17 @@
 
 #include <cassert>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 
 #include <algorithm>
+#include <limits>
+#include <vector>
 
 #include "gromacs/gpu_utils/devicebuffer.h"
 #include "gromacs/gpu_utils/gpu_utils.h"
 #include "gromacs/gpu_utils/gputraits.h"
 #include "gromacs/gpu_utils/hostallocator.h"
-#include "gromacs/math/functions.h"
 #include "gromacs/mdlib/constr.h"
 #include "gromacs/mdlib/constraint_gpu_helpers.h"
 #include "gromacs/mdlib/gmx_omp_nthreads.h"
@@ -65,12 +67,14 @@
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/topology/ifunc.h"
 #include "gromacs/topology/mtop_util.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/listoflists.h"
 #include "gromacs/utility/vec.h"
 
 
 namespace gmx
 {
+
 void LincsGpu::apply(const DeviceBuffer<Float3>& d_x,
                      DeviceBuffer<Float3>        d_xp,
                      const bool                  updateVelocities,
@@ -106,8 +110,9 @@ void LincsGpu::apply(const DeviceBuffer<Float3>& d_x,
                              0,
                              6,
                              deviceStream_,
-                             GpuApiCallBehavior::Sync,
+                             GpuApiCallBehavior::Async,
                              nullptr);
+        deviceStream_.synchronize();
 
         // Mapping [XX, XY, XZ, YY, YZ, ZZ] internal format to a tensor object
         virialScaled[XX][XX] += h_virialScaled_[0];
@@ -126,13 +131,25 @@ void LincsGpu::apply(const DeviceBuffer<Float3>& d_x,
 
 LincsGpu::LincsGpu(int                  numIterations,
                    int                  expansionOrder,
+                   bool                 hasTriangleConstraints,
                    const DeviceContext& deviceContext,
                    const DeviceStream&  deviceStream) :
-    deviceContext_(deviceContext), deviceStream_(deviceStream)
+    deviceContext_(deviceContext),
+    deviceStream_(deviceStream),
+    h_virialScaled_(6, HostAllocationPolicy{ deviceContext, PinningPolicy::PinnedIfSupported }),
+    h_constraints_(HostAllocationPolicy{ deviceContext, PinningPolicy::PinnedIfSupported }),
+    h_constraintsTargetLengths_(HostAllocationPolicy{ deviceContext, PinningPolicy::PinnedIfSupported }),
+    h_coupledConstraintsCounts_(HostAllocationPolicy{ deviceContext, PinningPolicy::PinnedIfSupported }),
+    h_coupledConstraintsIndices_(HostAllocationPolicy{ deviceContext, PinningPolicy::PinnedIfSupported }),
+    h_massFactors_(HostAllocationPolicy{ deviceContext, PinningPolicy::PinnedIfSupported }),
+    h_constraintGroupSize_(HostAllocationPolicy{ deviceContext, PinningPolicy::PinnedIfSupported }),
+    h_triangleBits_(HostAllocationPolicy{ deviceContext, PinningPolicy::PinnedIfSupported })
 {
     GMX_RELEASE_ASSERT(GMX_GPU && !GMX_GPU_OPENCL, "LINCS GPU is not implemented in OPENCL.");
     kernelParams_.numIterations  = numIterations;
     kernelParams_.expansionOrder = expansionOrder;
+
+    kernelParams_.hasTriangleConstraints = hasTriangleConstraints;
 
     static_assert(sizeof(real) == sizeof(float),
                   "Real numbers should be in single precision in GPU code.");
@@ -141,11 +158,6 @@ LincsGpu::LincsGpu(int                  numIterations,
             "Number of threads per block should be a power of two in order for reduction to work.");
 
     allocateDeviceBuffer(&kernelParams_.d_virialScaled, 6, deviceContext_);
-    h_virialScaled_.resize(6);
-
-    // The data arrays should be expanded/reallocated on first call of set() function.
-    numConstraintsThreadsAlloc_ = 0;
-    numAtomsAlloc_              = 0;
 }
 
 LincsGpu::~LincsGpu()
@@ -157,7 +169,8 @@ LincsGpu::~LincsGpu()
 
         freeDeviceBuffer(&kernelParams_.d_virialScaled);
 
-        if (numConstraintsThreadsAlloc_ > 0)
+        // The first set() with constraints allocates all of these buffers together.
+        if (d_constraintsCapacity_ >= 0)
         {
             freeDeviceBuffer(&kernelParams_.d_constraints);
             freeDeviceBuffer(&kernelParams_.d_constraintsTargetLengths);
@@ -170,9 +183,7 @@ LincsGpu::~LincsGpu()
             {
                 freeDeviceBuffer(&kernelParams_.d_constraintGroupsSizes);
             }
-        }
-        if (numAtomsAlloc_ > 0)
-        {
+            freeDeviceBuffer(&kernelParams_.d_triangleBits);
             freeDeviceBuffer(&kernelParams_.d_inverseMasses);
         }
     }
@@ -237,18 +248,6 @@ void LincsGpu::set(const InteractionDefinitions& idef, int numAtoms, const Array
                "The number of atoms needs to be > 0 if there are constraints in the domain.");
 
     GMX_RELEASE_ASSERT(GMX_GPU && !GMX_GPU_OPENCL, "LINCS GPU is not implemented in OPENCL.");
-    // List of constrained atoms (CPU memory)
-    std::vector<AtomPair> constraintsHost;
-    // Equilibrium distances for the constraints (CPU)
-    std::vector<float> constraintsTargetLengthsHost;
-    // Number of constraints, coupled with the current one (CPU)
-    std::vector<int> coupledConstraintsCountsHost;
-    // List of coupled with the current one (CPU)
-    std::vector<int> coupledConstraintsIndicesHost;
-    // Mass factors (CPU)
-    std::vector<float> massFactorsHost;
-    // List of constraint groups that share common first atom (typically a heavy atom)
-    std::vector<int> constraintGroupSize;
 
     // List of constrained atoms in local topology
     ArrayRef<const int> iatoms         = idef.il[InteractionFunction::Constraints].iatoms;
@@ -258,7 +257,9 @@ void LincsGpu::set(const InteractionDefinitions& idef, int numAtoms, const Array
     // Early exit if no constraints
     if (numConstraints == 0)
     {
-        kernelParams_.numConstraintsThreads = 0;
+        kernelParams_.numConstraintsThreads  = 0;
+        kernelParams_.haveCoupledConstraints = false;
+        maxCoupledConstraints_               = 0;
         return;
     }
 
@@ -298,36 +299,42 @@ void LincsGpu::set(const InteractionDefinitions& idef, int numAtoms, const Array
     GMX_RELEASE_ASSERT(kernelParams_.numConstraintsThreads % c_threadsPerBlock == 0,
                        "Number of threads should be a multiple of the block size");
 
-    // Initialize constraints and their target indexes taking into account the splits in the data arrays.
-    {
-        AtomPair pair;
-        pair.i = -1;
-        pair.j = -1;
-        constraintsHost.clear();
-        constraintsHost.resize(kernelParams_.numConstraintsThreads, pair);
-        constraintsTargetLengthsHost.clear();
-        constraintsTargetLengthsHost.resize(kernelParams_.numConstraintsThreads, 0.0);
-        if constexpr (GMX_GPU_HIP)
-        {
-            constraintGroupSize.resize(kernelParams_.numConstraintsThreads);
-            std::fill(constraintGroupSize.begin(), constraintGroupSize.end(), -1);
-        }
-    }
-
-
-    const int gmx_unused numOmpThreads = gmx_omp_nthreads_get(ModuleMultiThread::Lincs);
-#pragma omp parallel for num_threads(numOmpThreads) schedule(static)
+    // Inverse of splitMap: the constraint in each device slot, or -1 for the padding slots that
+    // the splits leave at the end of thread blocks.
+    slotToConstraint_.assign(kernelParams_.numConstraintsThreads, -1);
     for (int c = 0; c < numConstraints; c++)
     {
-        int a1   = iatoms[stride * c + 1];
-        int a2   = iatoms[stride * c + 2];
-        int type = iatoms[stride * c];
+        slotToConstraint_[splitMap[c]] = c;
+    }
 
-        AtomPair localPair;
-        localPair.i                               = a1;
-        localPair.j                               = a2;
-        constraintsHost[splitMap[c]]              = localPair;
-        constraintsTargetLengthsHost[splitMap[c]] = idef.iparams[type].constr.dA;
+    h_constraints_.resize(kernelParams_.numConstraintsThreads);
+    h_constraintsTargetLengths_.resize(kernelParams_.numConstraintsThreads);
+    h_coupledConstraintsCounts_.resize(kernelParams_.numConstraintsThreads);
+
+    const int gmx_unused numOmpThreads = gmx_omp_nthreads_get(ModuleMultiThread::Lincs);
+    // The host buffers persist across set() calls, so they can hold stale values from an earlier
+    // call. Writing every slot, padding included, ensures none of them survives.
+#pragma omp parallel for num_threads(numOmpThreads) schedule(static)
+    for (int slot = 0; slot < kernelParams_.numConstraintsThreads; slot++)
+    {
+        const int c = slotToConstraint_[slot];
+        AtomPair  pair;
+        if (c >= 0)
+        {
+            pair.i                            = iatoms[stride * c + 1];
+            pair.j                            = iatoms[stride * c + 2];
+            h_constraintsTargetLengths_[slot] = idef.iparams[iatoms[stride * c]].constr.dA;
+        }
+        else
+        {
+            // Dummy constraint, skipped by the kernel
+            pair.i                            = -1;
+            pair.j                            = -1;
+            h_constraintsTargetLengths_[slot] = 0.0F;
+        }
+        h_constraints_[slot] = pair;
+        // Counted up for the real constraints below
+        h_coupledConstraintsCounts_[slot] = 0;
     }
 
     // The adjacency list of constraints (i.e. the list of coupled constraints for each constraint).
@@ -340,7 +347,9 @@ void LincsGpu::set(const InteractionDefinitions& idef, int numAtoms, const Array
     // array --- a number, greater then total number of constraints, taking into account the splits
     // in the constraints array due to the GPU block borders. This number can be adjusted to improve
     // memory access pattern. Mass factors are saved in a similar data structure.
-    const int prevMaxCoupledConstraints = maxCoupledConstraints_;
+    // The maximum is recomputed for the current constraints, while the buffer capacities are
+    // tracked separately.
+    maxCoupledConstraints_ = 0;
 #ifndef _MSC_VER
 #    pragma omp parallel for num_threads(numOmpThreads) schedule(static) \
             reduction(max : maxCoupledConstraints_)
@@ -361,30 +370,28 @@ void LincsGpu::set(const InteractionDefinitions& idef, int numAtoms, const Array
             maxCoupledConstraints_ = nCoupledConstraints;
         }
     }
-    const bool maxCoupledConstraintsHasIncreased = (maxCoupledConstraints_ > prevMaxCoupledConstraints);
-
     kernelParams_.haveCoupledConstraints = (maxCoupledConstraints_ > 0);
 
-    coupledConstraintsCountsHost.resize(kernelParams_.numConstraintsThreads, 0);
-    coupledConstraintsIndicesHost.resize(maxCoupledConstraints_ * kernelParams_.numConstraintsThreads, -1);
-    massFactorsHost.resize(maxCoupledConstraints_ * kernelParams_.numConstraintsThreads, -1);
+    // The kernels read only the first h_coupledConstraintsCounts_[slot] entries of each slot, and
+    // those are written below, so stale values in the rest of these buffers are harmless.
+    const int coupledBuffersSize = maxCoupledConstraints_ * kernelParams_.numConstraintsThreads;
+    h_coupledConstraintsIndices_.resize(coupledBuffersSize);
+    h_massFactors_.resize(coupledBuffersSize);
 
     // Only perform constraint re-ordering with HIP
     if constexpr (GMX_GPU_HIP)
     {
-        constraintGroupSize.clear();
-        // We need to fill this with the sentinel value to make sure no groups
-        // are detected as well
-        constraintGroupSize.resize(kernelParams_.numConstraintsThreads, -1);
-        findConstraintGroupSizes(numConstraints, constraintsHost, constraintGroupSize);
+        // findConstraintGroupSizes() only writes the entries of the groups it detects, so the
+        // whole buffer needs the sentinel value first to make sure no stale groups survive.
+        h_constraintGroupSize_.assign(kernelParams_.numConstraintsThreads, -1);
+        findConstraintGroupSizes(numConstraints, h_constraints_, h_constraintGroupSize_);
     }
 
 #pragma omp parallel for num_threads(numOmpThreads) schedule(static)
     for (int c1 = 0; c1 < numConstraints; c1++)
     {
-        coupledConstraintsCountsHost[splitMap[c1]] = 0;
-        int c1a1                                   = iatoms[stride * c1 + 1];
-        int c1a2                                   = iatoms[stride * c1 + 2];
+        int c1a1 = iatoms[stride * c1 + 1];
+        int c1a2 = iatoms[stride * c1 + 2];
 
         // Constraints, coupled through the first atom.
         int c2a1 = c1a1;
@@ -394,23 +401,22 @@ void LincsGpu::set(const InteractionDefinitions& idef, int numAtoms, const Array
 
             if (c1 != c2)
             {
-                int c2a2  = atomAdjacencyList.indexOfSecondConstrainedAtom_;
-                int sign  = atomAdjacencyList.signFactor_;
-                int index = kernelParams_.numConstraintsThreads
-                                    * coupledConstraintsCountsHost[splitMap[c1]]
+                int c2a2 = atomAdjacencyList.indexOfSecondConstrainedAtom_;
+                int sign = atomAdjacencyList.signFactor_;
+                int index = kernelParams_.numConstraintsThreads * h_coupledConstraintsCounts_[splitMap[c1]]
                             + splitMap[c1];
                 int threadBlockStarts = splitMap[c1] - splitMap[c1] % c_threadsPerBlock;
 
-                coupledConstraintsIndicesHost[index] = splitMap[c2] - threadBlockStarts;
+                h_coupledConstraintsIndices_[index] = splitMap[c2] - threadBlockStarts;
 
                 int center = c1a1;
 
                 float sqrtmu1 = 1.0 / std::sqrt(invmass[c1a1] + invmass[c1a2]);
                 float sqrtmu2 = 1.0 / std::sqrt(invmass[c2a1] + invmass[c2a2]);
 
-                massFactorsHost[index] = -sign * invmass[center] * sqrtmu1 * sqrtmu2;
+                h_massFactors_[index] = -sign * invmass[center] * sqrtmu1 * sqrtmu2;
 
-                coupledConstraintsCountsHost[splitMap[c1]]++;
+                h_coupledConstraintsCounts_[splitMap[c1]]++;
             }
         }
 
@@ -422,131 +428,179 @@ void LincsGpu::set(const InteractionDefinitions& idef, int numAtoms, const Array
 
             if (c1 != c2)
             {
-                int c2a2  = atomAdjacencyList.indexOfSecondConstrainedAtom_;
-                int sign  = atomAdjacencyList.signFactor_;
-                int index = kernelParams_.numConstraintsThreads
-                                    * coupledConstraintsCountsHost[splitMap[c1]]
+                int c2a2 = atomAdjacencyList.indexOfSecondConstrainedAtom_;
+                int sign = atomAdjacencyList.signFactor_;
+                int index = kernelParams_.numConstraintsThreads * h_coupledConstraintsCounts_[splitMap[c1]]
                             + splitMap[c1];
                 int threadBlockStarts = splitMap[c1] - splitMap[c1] % c_threadsPerBlock;
 
-                coupledConstraintsIndicesHost[index] = splitMap[c2] - threadBlockStarts;
+                h_coupledConstraintsIndices_[index] = splitMap[c2] - threadBlockStarts;
 
                 int center = c1a2;
 
                 float sqrtmu1 = 1.0 / std::sqrt(invmass[c1a1] + invmass[c1a2]);
                 float sqrtmu2 = 1.0 / std::sqrt(invmass[c2a1] + invmass[c2a2]);
 
-                massFactorsHost[index] = sign * invmass[center] * sqrtmu1 * sqrtmu2;
+                h_massFactors_[index] = sign * invmass[center] * sqrtmu1 * sqrtmu2;
 
-                coupledConstraintsCountsHost[splitMap[c1]]++;
+                h_coupledConstraintsCounts_[splitMap[c1]]++;
             }
         }
     }
 
-    // (Re)allocate the memory, if the number of constraints has increased.
-    if ((kernelParams_.numConstraintsThreads > numConstraintsThreadsAlloc_) || maxCoupledConstraintsHasIncreased)
+    // If we have triangle constraints, build per-constraint coupling bitmasks.
+    // A constraint c1=(A,B) is part of a triangle if some coupled constraint c2 shares atom A
+    // (with other atom C) while there is also a constraint between C and B, forming a 3-cycle.
+    // Bit n in h_triangleBitsHost_[splitMap[c1]] corresponds to coupling slot n, using the same
+    // traversal order (first through atom A, then through atom B) as the coupling-data loop above.
+    h_triangleBits_.assign(kernelParams_.numConstraintsThreads, 0);
+    if (kernelParams_.hasTriangleConstraints)
     {
-        // Free memory if it was allocated before (i.e. if not the first time here).
-        if (numConstraintsThreadsAlloc_ > 0)
+        constexpr int c_maxCouplingsForTriangle = std::numeric_limits<int>::digits;
+#pragma omp parallel for num_threads(numOmpThreads) schedule(static)
+        for (int c1 = 0; c1 < numConstraints; c1++)
         {
-            freeDeviceBuffer(&kernelParams_.d_constraints);
-            freeDeviceBuffer(&kernelParams_.d_constraintsTargetLengths);
+            int c1a1 = iatoms[stride * c1 + 1];
+            int c1a2 = iatoms[stride * c1 + 2];
 
-            freeDeviceBuffer(&kernelParams_.d_coupledConstraintsCounts);
-            freeDeviceBuffer(&kernelParams_.d_coupledConstraintsIndices);
-            freeDeviceBuffer(&kernelParams_.d_massFactors);
-            freeDeviceBuffer(&kernelParams_.d_matrixA);
-            if constexpr (GMX_GPU_HIP)
+            int n    = 0;
+            int bits = 0;
+
+            // Helper function to detect triangle: a coupling slot closes a triangle if the constraint
+            // in that slot connects \p sharedAtom to another that is itself connected to \p otherAtom.
+            auto scanCouplings = [&](int sharedAtom, int otherAtom)
             {
-                freeDeviceBuffer(&kernelParams_.d_constraintGroupsSizes);
-            }
-        }
+                for (const auto& adj1 : atomsAdjacencyList[sharedAtom])
+                {
+                    if (adj1.indexOfConstraint_ == c1)
+                    {
+                        continue;
+                    }
+                    const int thirdAtom = adj1.indexOfSecondConstrainedAtom_;
+                    for (const auto& adj2 : atomsAdjacencyList[otherAtom])
+                    {
+                        if (adj2.indexOfConstraint_ != c1 && adj2.indexOfSecondConstrainedAtom_ == thirdAtom)
+                        {
+                            // guard for out-of-range bitshift
+                            GMX_RELEASE_ASSERT(
+                                    n <= c_maxCouplingsForTriangle,
+                                    formatString("A constraint that is part of a constraint "
+                                                 "triangle is coupled to %d other constraints, "
+                                                 "which is more than the %d supported for "
+                                                 "constraints participating in triangles.",
+                                                 n + 1,
+                                                 c_maxCouplingsForTriangle)
+                                            .c_str());
+                            bits |= (1 << n);
+                            break;
+                        }
+                    }
+                    n++;
+                }
+            };
+            scanCouplings(c1a1, c1a2);
+            scanCouplings(c1a2, c1a1);
 
-        numConstraintsThreadsAlloc_ = kernelParams_.numConstraintsThreads;
-
-        allocateDeviceBuffer(
-                &kernelParams_.d_constraints, kernelParams_.numConstraintsThreads, deviceContext_);
-        allocateDeviceBuffer(&kernelParams_.d_constraintsTargetLengths,
-                             kernelParams_.numConstraintsThreads,
-                             deviceContext_);
-
-        allocateDeviceBuffer(&kernelParams_.d_coupledConstraintsCounts,
-                             kernelParams_.numConstraintsThreads,
-                             deviceContext_);
-        allocateDeviceBuffer(&kernelParams_.d_coupledConstraintsIndices,
-                             maxCoupledConstraints_ * kernelParams_.numConstraintsThreads,
-                             deviceContext_);
-        allocateDeviceBuffer(&kernelParams_.d_massFactors,
-                             maxCoupledConstraints_ * kernelParams_.numConstraintsThreads,
-                             deviceContext_);
-        allocateDeviceBuffer(&kernelParams_.d_matrixA,
-                             maxCoupledConstraints_ * kernelParams_.numConstraintsThreads,
-                             deviceContext_);
-        if constexpr (GMX_GPU_HIP)
-        {
-            allocateDeviceBuffer(&kernelParams_.d_constraintGroupsSizes,
-                                 kernelParams_.numConstraintsThreads,
-                                 deviceContext_);
+            h_triangleBits_[splitMap[c1]] = bits;
         }
     }
 
-    // (Re)allocate the memory, if the number of atoms has increased.
-    if (numAtoms > numAtomsAlloc_)
+    // (Re)allocate the buffers that no longer fit, with the usual over-allocation slack.
+    const int numThreads = kernelParams_.numConstraintsThreads;
+    reallocateDeviceBuffer(
+            &kernelParams_.d_constraints, numThreads, &d_constraintsSize_, &d_constraintsCapacity_, deviceContext_);
+    reallocateDeviceBuffer(&kernelParams_.d_constraintsTargetLengths,
+                           numThreads,
+                           &d_constraintsTargetLengthsSize_,
+                           &d_constraintsTargetLengthsCapacity_,
+                           deviceContext_);
+    reallocateDeviceBuffer(&kernelParams_.d_coupledConstraintsCounts,
+                           numThreads,
+                           &d_coupledConstraintsCountsSize_,
+                           &d_coupledConstraintsCountsCapacity_,
+                           deviceContext_);
+    reallocateDeviceBuffer(&kernelParams_.d_coupledConstraintsIndices,
+                           coupledBuffersSize,
+                           &d_coupledConstraintsIndicesSize_,
+                           &d_coupledConstraintsIndicesCapacity_,
+                           deviceContext_);
+    reallocateDeviceBuffer(&kernelParams_.d_massFactors,
+                           coupledBuffersSize,
+                           &d_massFactorsSize_,
+                           &d_massFactorsCapacity_,
+                           deviceContext_);
+    reallocateDeviceBuffer(
+            &kernelParams_.d_matrixA, coupledBuffersSize, &d_matrixASize_, &d_matrixACapacity_, deviceContext_);
+    if constexpr (GMX_GPU_HIP)
     {
-        if (numAtomsAlloc_ > 0)
-        {
-            freeDeviceBuffer(&kernelParams_.d_inverseMasses);
-        }
-        numAtomsAlloc_ = numAtoms;
-        allocateDeviceBuffer(&kernelParams_.d_inverseMasses, numAtoms, deviceContext_);
+        reallocateDeviceBuffer(&kernelParams_.d_constraintGroupsSizes,
+                               numThreads,
+                               &d_constraintGroupsSizesSize_,
+                               &d_constraintGroupsSizesCapacity_,
+                               deviceContext_);
     }
+    reallocateDeviceBuffer(
+            &kernelParams_.d_triangleBits, numThreads, &d_triangleBitsSize_, &d_triangleBitsCapacity_, deviceContext_);
+    reallocateDeviceBuffer(&kernelParams_.d_inverseMasses,
+                           numAtoms,
+                           &d_inverseMassesSize_,
+                           &d_inverseMassesCapacity_,
+                           deviceContext_);
 
     // Copy data to GPU.
     copyToDeviceBuffer(&kernelParams_.d_constraints,
-                       constraintsHost.data(),
+                       h_constraints_.data(),
                        0,
                        kernelParams_.numConstraintsThreads,
                        deviceStream_,
-                       GpuApiCallBehavior::Sync,
+                       GpuApiCallBehavior::Async,
                        nullptr);
     copyToDeviceBuffer(&kernelParams_.d_constraintsTargetLengths,
-                       constraintsTargetLengthsHost.data(),
+                       h_constraintsTargetLengths_.data(),
                        0,
                        kernelParams_.numConstraintsThreads,
                        deviceStream_,
-                       GpuApiCallBehavior::Sync,
+                       GpuApiCallBehavior::Async,
                        nullptr);
     copyToDeviceBuffer(&kernelParams_.d_coupledConstraintsCounts,
-                       coupledConstraintsCountsHost.data(),
+                       h_coupledConstraintsCounts_.data(),
                        0,
                        kernelParams_.numConstraintsThreads,
                        deviceStream_,
-                       GpuApiCallBehavior::Sync,
+                       GpuApiCallBehavior::Async,
                        nullptr);
     copyToDeviceBuffer(&kernelParams_.d_coupledConstraintsIndices,
-                       coupledConstraintsIndicesHost.data(),
+                       h_coupledConstraintsIndices_.data(),
                        0,
-                       maxCoupledConstraints_ * kernelParams_.numConstraintsThreads,
+                       coupledBuffersSize,
                        deviceStream_,
-                       GpuApiCallBehavior::Sync,
+                       GpuApiCallBehavior::Async,
                        nullptr);
     copyToDeviceBuffer(&kernelParams_.d_massFactors,
-                       massFactorsHost.data(),
+                       h_massFactors_.data(),
                        0,
-                       maxCoupledConstraints_ * kernelParams_.numConstraintsThreads,
+                       coupledBuffersSize,
                        deviceStream_,
-                       GpuApiCallBehavior::Sync,
+                       GpuApiCallBehavior::Async,
                        nullptr);
     if constexpr (GMX_GPU_HIP)
     {
         copyToDeviceBuffer(&kernelParams_.d_constraintGroupsSizes,
-                           constraintGroupSize.data(),
+                           h_constraintGroupSize_.data(),
                            0,
                            kernelParams_.numConstraintsThreads,
                            deviceStream_,
-                           GpuApiCallBehavior::Sync,
+                           GpuApiCallBehavior::Async,
                            nullptr);
     }
+
+    copyToDeviceBuffer(&kernelParams_.d_triangleBits,
+                       h_triangleBits_.data(),
+                       0,
+                       kernelParams_.numConstraintsThreads,
+                       deviceStream_,
+                       GpuApiCallBehavior::Async,
+                       nullptr);
 
     GMX_RELEASE_ASSERT(!invmass.empty(), "Masses of atoms should be specified.\n");
     copyToDeviceBuffer(&kernelParams_.d_inverseMasses,
@@ -554,7 +608,7 @@ void LincsGpu::set(const InteractionDefinitions& idef, int numAtoms, const Array
                        0,
                        numAtoms,
                        deviceStream_,
-                       GpuApiCallBehavior::Sync,
+                       GpuApiCallBehavior::Async,
                        nullptr);
 }
 

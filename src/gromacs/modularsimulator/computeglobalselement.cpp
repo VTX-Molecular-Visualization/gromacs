@@ -54,7 +54,6 @@
 #include "gromacs/math/arrayrefwithpadding.h"
 #include "gromacs/mdlib/constr.h"
 #include "gromacs/mdlib/md_support.h"
-#include "gromacs/mdlib/mdatoms.h"
 #include "gromacs/mdlib/stat.h"
 #include "gromacs/mdlib/update.h"
 #include "gromacs/mdlib/vcm.h"
@@ -63,7 +62,7 @@
 #include "gromacs/mdtypes/group.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
-#include "gromacs/mdtypes/mdatom.h"
+#include "gromacs/mdtypes/mdatoms.h"
 #include "gromacs/mdtypes/observablesreducer.h"
 #include "gromacs/modularsimulator/energydata.h"
 #include "gromacs/modularsimulator/modularsimulatorinterfaces.h"
@@ -92,7 +91,7 @@ ComputeGlobalsElement<algorithm>::ComputeGlobalsElement(StatePropagatorData* sta
                                                         const MDLogger&     mdlog,
                                                         t_commrec*          cr,
                                                         const t_inputrec*   inputrec,
-                                                        const MDAtoms*      mdAtoms,
+                                                        const MDAtoms&      mdAtoms,
                                                         t_nrnb*             nrnb,
                                                         gmx_wallcycle*      wcycle,
                                                         t_forcerec*         fr,
@@ -155,9 +154,8 @@ void ComputeGlobalsElement<algorithm>::elementSetup()
         auto x = vcm_.mode == ComRemovalAlgorithm::LinearAccelerationCorrection
                          ? ArrayRefWithPadding<RVec>{}
                          : statePropagatorData_->positionsView();
-        process_and_stopcm_grp(
-                fplog_, &vcm_, *mdAtoms_->mdatoms(), x.unpaddedArrayRef(), v.unpaddedArrayRef());
-        inc_nrnb(nrnb_, eNR_STOPCM, mdAtoms_->mdatoms()->homenr);
+        process_and_stopcm_grp(fplog_, &vcm_, mdAtoms_, x.unpaddedArrayRef(), v.unpaddedArrayRef());
+        inc_nrnb(nrnb_, eNR_STOPCM, mdAtoms_.numHomeAtoms);
     }
 
     unsigned int cglo_flags = (CGLO_TEMPERATURE | CGLO_GSTAT
@@ -173,7 +171,7 @@ void ComputeGlobalsElement<algorithm>::elementSetup()
     // Calculate the initial half step temperature, and save the ekinh_old
     for (int i = 0; (i < inputrec_->opts.ngtc); i++)
     {
-        copy_mat(energyData_->ekindata()->tcstat[i].ekinh, energyData_->ekindata()->tcstat[i].ekinh_old);
+        energyData_->ekindata()->tcstat[i].ekinh_old = energyData_->ekindata()->tcstat[i].ekinh;
     }
 
     // Clean up after pre-step use of compute()
@@ -211,9 +209,10 @@ void ComputeGlobalsElement<algorithm>::scheduleTask(Step                       s
         }
 
         const bool doEnergy = step == energyReductionStep_;
+        const bool doVirial = step == virialReductionStep_;
         int        flags    = (needGlobalReduction ? CGLO_GSTAT : 0) | (doEnergy ? CGLO_ENERGY : 0)
-                    | (needComReduction ? CGLO_STOPCM : 0) | CGLO_TEMPERATURE | CGLO_PRESSURE
-                    | CGLO_CONSTRAINT;
+                    | (needComReduction ? CGLO_STOPCM : 0) | CGLO_TEMPERATURE
+                    | (doVirial ? (CGLO_PRESSURE | CGLO_CONSTRAINT) : 0);
 
         // Since we're already communicating at this step, we
         // can propagate intra-simulation signals. Note that
@@ -310,7 +309,7 @@ void ComputeGlobalsElement<algorithm>::compute(gmx::Step            step,
                     x,
                     v,
                     box,
-                    mdAtoms_->mdatoms(),
+                    mdAtoms_,
                     nrnb_,
                     &vcm_,
                     step != -1 ? wcycle_ : nullptr,
@@ -321,14 +320,13 @@ void ComputeGlobalsElement<algorithm>::compute(gmx::Step            step,
                     energyData_->pressure(step),
                     signaller,
                     lastbox,
-                    energyData_->needToSumEkinhOld(),
                     flags,
                     step,
                     observablesReducer_);
     if (flags & CGLO_STOPCM && !isInit)
     {
-        process_and_stopcm_grp(fplog_, &vcm_, *mdAtoms_->mdatoms(), x, v);
-        inc_nrnb(nrnb_, eNR_STOPCM, mdAtoms_->mdatoms()->homenr);
+        process_and_stopcm_grp(fplog_, &vcm_, mdAtoms_, x, v);
+        inc_nrnb(nrnb_, eNR_STOPCM, mdAtoms_.numHomeAtoms);
     }
 }
 
@@ -396,7 +394,8 @@ ISimulatorElement* ComputeGlobalsElement<ComputeGlobalsAlgorithm::LeapFrog>::get
         EnergyData*                             energyData,
         FreeEnergyPerturbationData*             freeEnergyPerturbationData,
         GlobalCommunicationHelper*              globalCommunicationHelper,
-        ObservablesReducer*                     observablesReducer)
+        ObservablesReducer*                     observablesReducer,
+        const DeviceStreamManager* /*deviceStreamManager*/)
 {
     ComputeGlobalsElement* element = builderHelper->storeElement(
             std::make_unique<ComputeGlobalsElement<ComputeGlobalsAlgorithm::LeapFrog>>(
@@ -409,7 +408,7 @@ ISimulatorElement* ComputeGlobalsElement<ComputeGlobalsAlgorithm::LeapFrog>::get
                     legacySimulatorData->mdLog_,
                     legacySimulatorData->cr_,
                     legacySimulatorData->inputRec_,
-                    legacySimulatorData->mdAtoms_,
+                    *legacySimulatorData->mdAtoms_,
                     legacySimulatorData->nrnb_,
                     legacySimulatorData->wallCycleCounters_,
                     legacySimulatorData->fr_,
@@ -430,7 +429,8 @@ ISimulatorElement* ComputeGlobalsElement<ComputeGlobalsAlgorithm::VelocityVerlet
         EnergyData*                             energyData,
         FreeEnergyPerturbationData*             freeEnergyPerturbationData,
         GlobalCommunicationHelper*              globalCommunicationHelper,
-        ObservablesReducer*                     observablesReducer)
+        ObservablesReducer*                     observablesReducer,
+        const DeviceStreamManager* /*deviceStreamManager*/)
 {
     // We allow this element to be added multiple times to the call list, but we only want one
     // actual element built
@@ -455,7 +455,7 @@ ISimulatorElement* ComputeGlobalsElement<ComputeGlobalsAlgorithm::VelocityVerlet
                         simulator->mdLog_,
                         simulator->cr_,
                         simulator->inputRec_,
-                        simulator->mdAtoms_,
+                        *simulator->mdAtoms_,
                         simulator->nrnb_,
                         simulator->wallCycleCounters_,
                         simulator->fr_,

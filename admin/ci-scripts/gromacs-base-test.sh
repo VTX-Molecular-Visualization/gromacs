@@ -5,6 +5,9 @@ cd $BUILD_DIR
 # Needed to run MPI enabled code in the docker images, until we set up different users
 export OMPI_ALLOW_RUN_AS_ROOT=1
 export OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1
+# Disable CPU binding, since different jobs on the same node and sometimes tests
+# in the same job see the same set of CPUs and so all pin to the same cores
+export PRTE_MCA_hwloc_default_binding_policy=none OMPI_MCA_hwloc_base_binding_policy=none
 export ASAN_OPTIONS="check_initialization_order=1:detect_invalid_pointer_pairs=1:strict_init_order=true:strict_string_checks=true:detect_stack_use_after_return=true"
 export UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1:suppressions=$CI_PROJECT_DIR/admin/ubsan-suppressions.txt
 
@@ -72,7 +75,7 @@ if [[ -n "$GMX_TESTS_TO_RUN_REGEX" ]] ; then
     TESTS_REGEX="--tests-regex $GMX_TESTS_TO_RUN_REGEX"
 fi
 
-ctest -D $CTEST_RUN_MODE $LABEL_REGEX $TESTS_REGEX $EXTRA_FLAGS --parallel $PARALLEL_TEST_EXECUTION --output-on-failure | tee ctestLog.log || true
+ctest -D $CTEST_RUN_MODE $LABEL_REGEX $TESTS_REGEX $EXTRA_FLAGS --parallel $PARALLEL_TEST_EXECUTION --schedule-random --output-on-failure | tee ctestLog.log || true
 
 EXITCODE=$?
 
@@ -83,7 +86,7 @@ else
 fi
 
 awk '/The following tests FAILED/,/^Errors while running CTest|^$/' ctestLog.log | tee ctestErrors.log
-xsltproc $CI_PROJECT_DIR/scripts/CTest2JUnit.xsl Testing/`head -n 1 < Testing/TAG`/$TEST_XML_OUTPUT > JUnitTestResults.xml
+xsltproc $CI_PROJECT_DIR/admin/ci-scripts/CTest2JUnit.xsl Testing/`head -n 1 < Testing/TAG`/$TEST_XML_OUTPUT > JUnitTestResults.xml
 if [ -s ctestErrors.log ] || [ $EXITCODE != 0 ] ; then
     echo "Error during running ctest";
     exit 1;

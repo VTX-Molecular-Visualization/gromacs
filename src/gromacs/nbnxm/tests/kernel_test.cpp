@@ -72,7 +72,6 @@
 
 #include "gromacs/ewald/ewald_utils.h"
 #include "gromacs/gpu_utils/hostallocator.h"
-#include "gromacs/math/functions.h"
 #include "gromacs/mdlib/forcerec.h"
 #include "gromacs/mdlib/gmx_omp_nthreads.h"
 #include "gromacs/mdtypes/atominfo.h"
@@ -99,6 +98,7 @@
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/listoflists.h"
 #include "gromacs/utility/logger.h"
@@ -208,13 +208,13 @@ std::unique_ptr<nonbonded_verlet_t> setupNbnxmForBenchInstance(const KernelOptio
     gmx_omp_nthreads_set(ModuleMultiThread::Pairsearch, options.numThreads);
     gmx_omp_nthreads_set(ModuleMultiThread::Nonbonded, options.numThreads);
 
-    const auto pinPolicy =
-            (options.useGpu ? PinningPolicy::PinnedIfSupported : PinningPolicy::CannotBePinned);
-    const int numThreads = options.numThreads;
+    // Later, this will depend on options.useGpu
+    const gmx::HostAllocationPolicy hostAllocationPolicy{};
+    const int                       numThreads = options.numThreads;
 
     PairlistParams pairlistParams(options.kernelSetup.kernelType, {}, false, options.pairlistCutoff, false);
 
-    auto pairlistSets = std::make_unique<PairlistSets>(pairlistParams, false, 0, pinPolicy);
+    auto pairlistSets = std::make_unique<PairlistSets>(pairlistParams, false, 0, hostAllocationPolicy);
 
     const bool localAtomOrderMatchesNbnxmOrder = false;
     auto       pairSearch                      = std::make_unique<PairSearch>(PbcType::Xyz,
@@ -225,10 +225,10 @@ std::unique_ptr<nonbonded_verlet_t> setupNbnxmForBenchInstance(const KernelOptio
                                                    false,
                                                    localAtomOrderMatchesNbnxmOrder,
                                                    numThreads,
-                                                   pinPolicy);
+                                                   hostAllocationPolicy);
 
-    auto atomData = std::make_unique<nbnxn_atomdata_t>(
-            pinPolicy,
+    auto atomData = std::make_unique<nbnxm_atomdata_t>(
+            hostAllocationPolicy,
             MDLogger(),
             options.kernelSetup.kernelType,
             options.useLJPme ? LJCombinationRule::None : options.ljCombinationRule,

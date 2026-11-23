@@ -62,7 +62,6 @@
 #include "gromacs/analysisdata/paralleloptions.h"
 #include "gromacs/fileio/oenv.h"
 #include "gromacs/fileio/trxio.h"
-#include "gromacs/math/functions.h"
 #include "gromacs/options/basicoptions.h"
 #include "gromacs/options/filenameoption.h"
 #include "gromacs/options/ioptionscontainer.h"
@@ -79,6 +78,7 @@
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/exceptions.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/real.h"
 #include "gromacs/utility/stringutil.h"
 #include "gromacs/utility/vectypes.h"
@@ -666,7 +666,7 @@ void Msd::analyzeFrame(int gmx_unused                frameNumber,
                        t_pbc*                        pbc,
                        TrajectoryAnalysisModuleData* pdata)
 {
-    const real time = frame.time;
+    const double time = frame.time;
     // Need to populate dt on frame 2;
     if (!dt_.has_value() && !times_.empty())
     {
@@ -719,7 +719,7 @@ void Msd::analyzeFrame(int gmx_unused                frameNumber,
 
     for (MsdGroupData& msdData : groupData_)
     {
-        //NOLINTNEXTLINE(readability-static-accessed-through-instance)
+        // NOLINTNEXTLINE(readability-static-accessed-through-instance)
         const Selection& sel = pdata->parallelSelection(msdData.sel);
 
         ArrayRef<const DVec> coords = msdData.coordinateManager_.buildCoordinates(sel, pbc);
@@ -754,7 +754,7 @@ void Msd::analyzeFrame(int gmx_unused                frameNumber,
 
         // We only store the frame for the future if it's a restart per -trestart.
 
-        if (bRmod_fd(time, t0_, trestart_, false))
+        if (bRmod_fd(time, t0_, trestart_, frame.timeIsDouble))
         {
             msdData.frames.emplace_back(
                     std::make_pair(frameNumber, std::vector(coords.begin(), coords.end())));

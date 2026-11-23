@@ -43,10 +43,9 @@
 #include "pullelement.h"
 
 #include "gromacs/gmxlib/network.h"
-#include "gromacs/mdlib/mdatoms.h"
 #include "gromacs/mdtypes/commrec.h"
 #include "gromacs/mdtypes/inputrec.h"
-#include "gromacs/mdtypes/mdatom.h"
+#include "gromacs/mdtypes/mdatoms.h"
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/pulling/output.h"
 #include "gromacs/pulling/pull.h"
@@ -63,7 +62,7 @@ PullElement::PullElement(bool                 setPbcRefToPrevStepCOM,
                          StatePropagatorData* statePropagatorData,
                          pull_t*              pullWork,
                          const MpiComm&       mpiComm,
-                         const MDAtoms*       mdAtoms) :
+                         const MDAtoms&       mdAtoms) :
     setPbcRefToPrevStepCOM_(setPbcRefToPrevStepCOM),
     pbcType_(pbcType),
     restoredFromCheckpoint_(false),
@@ -80,7 +79,7 @@ void PullElement::elementSetup()
     {
         preparePrevStepPullComNewSimulation(mpiComm_,
                                             pullWork_,
-                                            mdAtoms_->mdatoms()->massT,
+                                            mdAtoms_.massT,
                                             statePropagatorData_->constPositionsView().unpaddedArrayRef(),
                                             statePropagatorData_->constBox(),
                                             pbcType_,
@@ -116,16 +115,23 @@ namespace
  */
 enum class CheckpointVersion
 {
-    Base, //!< First version of modular checkpointing
-    Count //!< Number of entries. Add new versions right above this!
+    Base,                 //!< First version of modular checkpointing
+    PullPrevStepCommDVec, //!< Changed pull prev. step COM buffer from double to DVec
+    Count                 //!< Number of entries. Add new versions right above this!
 };
 constexpr auto c_currentVersion = CheckpointVersion(int(CheckpointVersion::Count) - 1);
 } // namespace
 
 template<CheckpointDataOperation operation>
-static void doCheckpointData(CheckpointData<operation>* checkpointData, ArrayRef<double> previousStepCom)
+static void doCheckpointData(CheckpointData<operation>* checkpointData, ArrayRef<DVec> previousStepCom)
 {
-    checkpointVersion(checkpointData, "PullElement version", c_currentVersion);
+    const CheckpointVersion fileVersion =
+            checkpointVersion(checkpointData, "PullElement version", c_currentVersion);
+    if (fileVersion < CheckpointVersion::PullPrevStepCommDVec)
+    {
+        GMX_THROW(InvalidInputError(
+                "Reading checkpoint file with old, incompatible previous step pull COMs"));
+    }
     checkpointData->arrayRef("Previous step COM positions",
                              makeCheckpointArrayRef<operation>(previousStepCom));
 }
@@ -165,13 +171,15 @@ const std::string& PullElement::clientID()
     return identifier_;
 }
 
-ISimulatorElement* PullElement::getElementPointerImpl(LegacySimulatorData* legacySimulatorData,
-                                                      ModularSimulatorAlgorithmBuilderHelper* builderHelper,
-                                                      StatePropagatorData* statePropagatorData,
-                                                      EnergyData* /*energyData*/,
-                                                      FreeEnergyPerturbationData* /*freeEnergyPerturbationData*/,
-                                                      GlobalCommunicationHelper* /*globalCommunicationHelper*/,
-                                                      ObservablesReducer* /*observablesReducer*/)
+ISimulatorElement*
+PullElement::getElementPointerImpl(LegacySimulatorData*                    legacySimulatorData,
+                                   ModularSimulatorAlgorithmBuilderHelper* builderHelper,
+                                   StatePropagatorData*                    statePropagatorData,
+                                   EnergyData* /*energyData*/,
+                                   FreeEnergyPerturbationData* /*freeEnergyPerturbationData*/,
+                                   GlobalCommunicationHelper* /*globalCommunicationHelper*/,
+                                   ObservablesReducer* /*observablesReducer*/,
+                                   const DeviceStreamManager* /*deviceStreamManager*/)
 {
     auto* pullElement = builderHelper->storeElement(std::make_unique<PullElement>(
             legacySimulatorData->inputRec_->pull->bSetPbcRefToPrevStepCOM,
@@ -179,7 +187,7 @@ ISimulatorElement* PullElement::getElementPointerImpl(LegacySimulatorData* legac
             statePropagatorData,
             legacySimulatorData->pullWork_,
             legacySimulatorData->cr_->commMyGroup,
-            legacySimulatorData->mdAtoms_));
+            *legacySimulatorData->mdAtoms_));
     // Printing output is scheduled after the step
     builderHelper->registerPostStepScheduling(
             [pullElement](Step step, Time time, const RegisterRunFunction& registerRunFunction)

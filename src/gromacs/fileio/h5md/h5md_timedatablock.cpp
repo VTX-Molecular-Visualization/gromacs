@@ -42,7 +42,7 @@
 #include <optional>
 #include <utility>
 
-#include "gromacs/fileio/h5md/h5md_error.h"
+#include "gromacs/fileio/h5md/exceptions.h"
 #include "gromacs/fileio/h5md/h5md_framedatasetbuilder.h"
 #include "gromacs/fileio/h5md/h5md_group.h"
 #include "gromacs/fileio/h5md/h5md_guard.h"
@@ -96,6 +96,12 @@ H5mdTimeDataBlock<ValueType>::H5mdTimeDataBlock(decltype(makeH5mdGroupGuard(H5I_
                     ? std::make_optional(H5mdScalarFrameDataSet<double>(blockGroupAndGuard.first, c_timeName))
                     : std::nullopt)
 {
+}
+
+template<typename ValueType>
+std::optional<double> H5mdTimeDataBlock<ValueType>::absoluteError() const
+{
+    return valueDataSet_.absoluteError();
 }
 
 template<typename ValueType>
@@ -229,9 +235,10 @@ H5mdTimeDataBlockBuilder<ValueType>::H5mdTimeDataBlockBuilder(const hid_t       
 }
 
 template<typename ValueType>
-H5mdTimeDataBlockBuilder<ValueType>& H5mdTimeDataBlockBuilder<ValueType>::withCompression(H5mdCompression compression)
+H5mdTimeDataBlockBuilder<ValueType>&
+H5mdTimeDataBlockBuilder<ValueType>::withCompression(H5mdCompression compression, double absoluteError)
 {
-    valueDataSetBuilder_.withCompression(compression);
+    valueDataSetBuilder_.withCompression(compression, absoluteError);
     return *this;
 }
 

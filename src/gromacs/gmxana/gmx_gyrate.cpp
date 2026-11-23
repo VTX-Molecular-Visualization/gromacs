@@ -49,11 +49,11 @@
 #include "gromacs/correlationfunctions/autocorr.h"
 #include "gromacs/fileio/confio.h"
 #include "gromacs/fileio/filetypes.h"
+#include "gromacs/fileio/timecontrol.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/fileio/xvgr.h"
 #include "gromacs/gmxana/gmx_ana.h"
 #include "gromacs/gmxana/princ.h"
-#include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
 #include "gromacs/pbcutil/rmpbc.h"
 #include "gromacs/topology/atoms.h"
@@ -63,6 +63,7 @@
 #include "gromacs/utility/arraysize.h"
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/vec.h"
@@ -205,30 +206,30 @@ int gmx_gyrate(int argc, char* argv[])
         "With the option [TT]-nz[tt] 2D radii of gyration in the [IT]x-y[it] plane",
         "of slices along the [IT]z[it]-axis are calculated."
     };
-    static int      nmol = 1, nz = 0;
-    static gmx_bool bQ = FALSE, bRot = FALSE, bMOI = FALSE;
-    t_pargs         pa[] = {
+    int      nmol = 1, nz = 0;
+    gmx_bool bQ = FALSE, bRot = FALSE, bMOI = FALSE;
+    t_pargs  pa[] = {
         { "-nmol", FALSE, etINT, { &nmol }, "The number of molecules to analyze" },
         { "-q",
-                  FALSE,
-                  etBOOL,
-                  { &bQ },
-                  "Use absolute value of the charge of an atom as weighting factor instead of mass" },
+           FALSE,
+           etBOOL,
+           { &bQ },
+           "Use absolute value of the charge of an atom as weighting factor instead of mass" },
         { "-p",
-                  FALSE,
-                  etBOOL,
-                  { &bRot },
-                  "Calculate the radii of gyration about the principal axes." },
+           FALSE,
+           etBOOL,
+           { &bRot },
+           "Calculate the radii of gyration about the principal axes." },
         { "-moi",
-                  FALSE,
-                  etBOOL,
-                  { &bMOI },
-                  "Calculate the moments of inertia (defined by the principal axes)." },
+           FALSE,
+           etBOOL,
+           { &bMOI },
+           "Calculate the moments of inertia (defined by the principal axes)." },
         { "-nz",
-                  FALSE,
-                  etINT,
-                  { &nz },
-                  "Calculate the 2D radii of gyration of this number of slices along the z-axis" },
+           FALSE,
+           etINT,
+           { &nz },
+           "Calculate the 2D radii of gyration of this number of slices along the z-axis" },
     };
     FILE*                      out;
     t_trxstatus*               status;
@@ -241,12 +242,14 @@ int gmx_gyrate(int argc, char* argv[])
     real**                     moi_trans = nullptr;
     int                        max_moi = 0, delta_moi = 100;
     rvec                       d, d1; /* eigenvalues of inertia tensor */
-    real                       t, t0, tm, gyro;
+    double                     t, t0, tm;
+    real                       gyro;
     int                        natoms;
     char*                      grpname;
     int                        j, m, gnx, nam, mol;
     int*                       index;
     gmx_output_env_t*          oenv;
+    gmx::TimeControl           timeControl;
     gmx_rmpbc_t                gpbc = nullptr;
     std::array<std::string, 4> leg  = { "Rg", "Rg\\sX\\N", "Rg\\sY\\N", "Rg\\sZ\\N" };
     std::array<std::string, 4> legI = { "Itot", "I1", "I2", "I3" };
@@ -264,7 +267,7 @@ int gmx_gyrate(int argc, char* argv[])
     ppa    = add_acf_pargs(&npargs, pa);
 
     if (!parse_common_args(
-                &argc, argv, PCA_CAN_TIME | PCA_CAN_VIEW, NFILE, fnm, npargs, ppa, asize(desc), desc, 0, nullptr, &oenv))
+                &argc, argv, PCA_CAN_TIME | PCA_CAN_VIEW, NFILE, fnm, npargs, ppa, asize(desc), desc, 0, nullptr, &oenv, &timeControl))
     {
         sfree(ppa);
         return 0;
@@ -308,7 +311,7 @@ int gmx_gyrate(int argc, char* argv[])
     }
     nam = gnx / nmol;
 
-    natoms = read_first_x(oenv, &status, ftp2fn(efTRX, NFILE, fnm), &t, &x, box);
+    natoms = read_first_x(oenv, &status, ftp2fn(efTRX, NFILE, fnm), &t, &x, box, &timeControl);
     snew(x_s, natoms);
 
     j  = 0;

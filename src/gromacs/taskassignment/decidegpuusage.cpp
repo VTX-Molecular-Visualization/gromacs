@@ -220,6 +220,32 @@ bool canUseGpusForNonbonded(const t_inputrec& ir, const bool doRerun, std::strin
     return errorReasons.isEmpty();
 }
 
+bool canUseGpusForNonbondedFe(const t_inputrec& ir, std::string* error)
+{
+    MessageStringCollector errorReasons;
+    // Before changing the prefix string, make sure that it is not searched for in regression tests.
+    errorReasons.startContext("Nonbonded free energy interactions on GPUs are not supported:");
+    errorReasons.appendIf(!GMX_GPU, "Non-GPU build of GROMACS.");
+    errorReasons.appendIf(GMX_GPU && !GpuConfigurationCapabilities::NonbondedFE,
+                          "The GPU backend does not support free energies.");
+    if (ir.fepvals->softcoreFunction != SoftcoreType::Beutler)
+    {
+        errorReasons.append("Only Beutler softcore function supported.");
+    }
+
+    if (ir.efep == FreeEnergyPerturbationType::Expanded)
+    {
+        errorReasons.append("Expanded-ensemble simulation is not supported.");
+    }
+
+    errorReasons.finishContext();
+    if (error != nullptr)
+    {
+        *error = errorReasons.toString();
+    }
+    return errorReasons.isEmpty();
+}
+
 static bool canUseGpusForPme(const bool        useGpuForNonbonded,
                              const TaskTarget  pmeTarget,
                              const TaskTarget  pmeFftTarget,
@@ -236,7 +262,8 @@ static bool canUseGpusForPme(const bool        useGpuForNonbonded,
     // Before changing the prefix string, make sure that it is not searched for in regression tests.
     errorReasons.startContext("Cannot compute PME interactions on a GPU, because:");
     errorReasons.appendIf(!useGpuForNonbonded, "Nonbonded interactions must also run on GPUs.");
-    errorReasons.appendIf(!pme_gpu_supports_build(&tempString), tempString);
+    errorReasons.appendIf(!GpuConfigurationCapabilities::Pme,
+                          "This build does not support PME on GPUs.");
     errorReasons.appendIf(!pme_gpu_supports_input(inputrec, &tempString), tempString);
     if (!decideWhetherToUseGpusForPmeFft(pmeFftTarget))
     {
@@ -459,7 +486,9 @@ bool decideWhetherToUseGpusForNonbonded(const TaskTarget          nonbondedTarge
     return gpusWereDetected;
 }
 
-bool decideWhetherToUseGpusForNonbondedFE(bool useGpuForNonbonded, TaskTarget nonBondedFeTarget)
+bool decideWhetherToUseGpusForNonbondedFE(const bool        useGpuForNonbonded,
+                                          TaskTarget        nonBondedFeTarget,
+                                          const t_inputrec& inputrec)
 {
     if (nonBondedFeTarget == TaskTarget::Cpu)
     {
@@ -479,19 +508,20 @@ bool decideWhetherToUseGpusForNonbondedFE(bool useGpuForNonbonded, TaskTarget no
         return false;
     }
 
-    if (nonBondedFeTarget == TaskTarget::Gpu)
+    std::string message;
+    if (!canUseGpusForNonbondedFe(inputrec, &message))
     {
-        if (!GpuConfigurationCapabilities::NonbondedFE)
+        if (!message.empty() && nonBondedFeTarget == TaskTarget::Gpu)
         {
-            GMX_THROW(NotImplementedError(
-                    "Nonbonded free energy tasks were required to run on GPUs, but currently it is "
-                    "only implemented in CUDA build. Use a CUDA visible device or run these "
-                    "calculations on the CPU."));
+            GMX_THROW(InconsistentInputError(message));
         }
-        return true;
+        return false;
     }
 
-    return false;
+    // This feature is pending validation, so require the
+    // user to explicitly opt in. Once validated, return
+    // true so that mdrun can put FE on GPU in auto mode.
+    return (nonBondedFeTarget == TaskTarget::Gpu);
 }
 
 bool decideWhetherToUseGpusForPme(const bool              useGpuForNonbonded,
@@ -701,6 +731,7 @@ bool decideWhetherToUseGpuForUpdate(const bool           isDomainDecomposition,
                                     const bool           haveFrozenAtoms,
                                     const bool           useModularSimulator,
                                     const bool           doRerun,
+                                    const bool           enableGpuVirtualSites,
                                     const gmx::MDLogger& mdlog)
 {
 
@@ -722,7 +753,7 @@ bool decideWhetherToUseGpuForUpdate(const bool           isDomainDecomposition,
         return false;
     }
 
-    const bool hasAnyConstraints      = gmx_mtop_interaction_count(mtop, IF_CONSTRAINT) > 0;
+    const bool hasAnyConstraints      = gmx_mtop_interaction_count(mtop, sc_ifcConstraint) > 0;
     const bool pmeSpreadGatherUsesCpu = (pmeRunMode == PmeRunMode::CPU);
 
     gmx::MessageStringCollector errorReasons;
@@ -755,6 +786,10 @@ bool decideWhetherToUseGpuForUpdate(const bool           isDomainDecomposition,
     errorReasons.appendIf((inputrec.eConstrAlg == ConstraintAlgorithm::Shake && hasAnyConstraints
                            && gmx_mtop_ftype_count(mtop, InteractionFunction::Constraints) > 0),
                           "SHAKE constraints are not supported.");
+    errorReasons.appendIf((!GpuConfigurationCapabilities::Constraints && hasAnyConstraints
+                           && gmx_mtop_ftype_count(mtop, InteractionFunction::Constraints) > 0),
+                          "Backend does not support constraints");
+
     // Using the GPU-version of update if:
     // 1. PME is on the GPU (there should be a copy of coordinates on GPU for PME spread) or inactive, or
     // 2. Non-bonded interactions are on the GPU.
@@ -769,32 +804,69 @@ bool decideWhetherToUseGpuForUpdate(const bool           isDomainDecomposition,
         errorReasons.append("Compatible GPUs must have been found.");
         silenceWarningMessageWithUpdateAuto = true;
     }
-    if (!GpuConfigurationCapabilities::Update)
-    {
-        errorReasons.append("Backend doesn't support GPU update+constraints.");
-        // Silence clang-analyzer deadcode.DeadStores warning about ignoring the previous assignments
-        GMX_UNUSED_VALUE(silenceWarningMessageWithUpdateAuto);
-        silenceWarningMessageWithUpdateAuto = true;
-    }
-    errorReasons.appendIf((inputrec.eI != IntegrationAlgorithm::MD),
-                          "Only the md integrator is supported.");
+    errorReasons.appendIf(inputrec.eI == IntegrationAlgorithm::MD && !GpuConfigurationCapabilities::UpdateLeapfrog,
+                          "Backend doesn't support GPU update with leapfrog integrator");
+    errorReasons.appendIf(inputrec.eI == IntegrationAlgorithm::SD1
+                                  && !(GpuConfigurationCapabilities::UpdateSD
+                                       && GpuConfigurationCapabilities::Constraints),
+                          "Backend doesn't support GPU update with stochastic dynamics (SD1) "
+                          "integrator and constraints");
+
+    errorReasons.appendIf(
+            (inputrec.eI != IntegrationAlgorithm::MD && inputrec.eI != IntegrationAlgorithm::SD1),
+            "Only the md and sd integrators are supported.");
     errorReasons.appendIf((inputrec.etc == TemperatureCoupling::NoseHoover),
                           "Nose-Hoover temperature coupling is not supported.");
     errorReasons.appendIf((!(inputrec.pressureCouplingOptions.epc == PressureCoupling::No
                              || inputrec.pressureCouplingOptions.epc == PressureCoupling::ParrinelloRahman
                              || inputrec.pressureCouplingOptions.epc == PressureCoupling::Berendsen
                              || inputrec.pressureCouplingOptions.epc == PressureCoupling::CRescale)),
-
                           "Only Parrinello-Rahman, Berendsen, and C-rescale pressure coupling are "
                           "supported.");
+    errorReasons.appendIf(
+            inputrec.eI == IntegrationAlgorithm::SD1
+                    && inputrec.pressureCouplingOptions.epc == PressureCoupling::ParrinelloRahman,
+            "The SD integrator cannot be used with Parrinello-Rahman pressure coupling. "
+            "C-rescale pressure coupling is recommended.");
+    const bool haveAnnealing = (inputrec.opts.annealing != nullptr)
+                               && std::any_of(inputrec.opts.annealing,
+                                              inputrec.opts.annealing + inputrec.opts.ngtc,
+                                              [](auto a) { return a != SimulatedAnnealing::No; });
+
+    errorReasons.appendIf(inputrec.eI == IntegrationAlgorithm::SD1 && haveAnnealing,
+                          "The SD integrator cannot be used with simulated annealing");
     errorReasons.appendIf((inputrec.cos_accel != 0 || inputrec.useConstantAcceleration),
                           "Acceleration is not supported.");
     errorReasons.appendIf(ir_haveBoxDeformation(inputrec), "Box deformation is not supported.");
     errorReasons.appendIf((usingPmeOrEwald(inputrec.coulombtype) && inputrec.epsilon_surface != 0),
                           // The graph is needed, but not supported
                           "Ewald surface correction is not supported.");
-    errorReasons.appendIf((gmx_mtop_interaction_count(mtop, IF_VSITE) > 0),
-                          "Virtual sites are not supported.");
+    // GPU update supports type 1, 2 and 3 virtual sites. Any other vsite type blocks it.
+    // NOTE: Before supporting more types, check that do_force() copies the coordinates
+    // from the GPU when these are needed for spreading vsite forces on the host, as
+    // spreading for some other types needs them also without the virial.
+    {
+        const int totalVsites     = gmx_mtop_interaction_count(mtop, sc_ifcVirtualSite);
+        const int supportedVsites = gmx_mtop_ftype_count(mtop, InteractionFunction::VirtualSite1)
+                                    + gmx_mtop_ftype_count(mtop, InteractionFunction::VirtualSite2)
+                                    + gmx_mtop_ftype_count(mtop, InteractionFunction::VirtualSite3);
+        const bool allVsitesAreSupported = (totalVsites == supportedVsites);
+        // Handling virtual sites on the GPU is considered experimental for now.
+        // It must be explicitly enabled with the GMX_GPU_VSITES environment variable,
+        // see manageDevelopmentFeatures().
+        errorReasons.appendIf(!GpuConfigurationCapabilities::UpdateVsite && totalVsites > 0,
+                              "Backend does not support virtual sites with GPU update.");
+        errorReasons.appendIf(
+                GpuConfigurationCapabilities::UpdateVsite && totalVsites > 0 && !enableGpuVirtualSites,
+                "Virtual sites with GPU update are considered an experimental feature and "
+                "disabled by default; set the GMX_GPU_VSITES environment variable to "
+                "enable it.");
+        errorReasons.appendIf(!allVsitesAreSupported,
+                              "Virtual sites other than VS1, VS2 and VS3 are not supported.");
+        errorReasons.appendIf(
+                totalVsites > 0 && allVsitesAreSupported && isDomainDecomposition && !useUpdateGroups,
+                "Virtual sites are not all within update groups while using domain decomposition.");
+    }
     errorReasons.appendIf(useEssentialDynamics, "Essential dynamics is not supported.");
     errorReasons.appendIf((inputrec.bPull && pull_have_constraint(*inputrec.pull)),
                           "Constraints pulling is not supported.");
@@ -826,10 +898,13 @@ bool decideWhetherToUseGpuForUpdate(const bool           isDomainDecomposition,
     errorReasons.appendIf(haveFrozenAtoms,
                           // There is a known bug with frozen atoms and GPU update, see Issue #3920.
                           "Frozen atoms not supported.");
-    errorReasons.appendIf(hasAnyConstraints
-                                  && hasTriangleConstraints(
-                                          mtop, flexibleConstraintTreatment(EI_DYNAMICS(inputrec.eI))),
-                          "Triangle constraints are not supported.");
+    const bool triangleGpuEnabled = std::getenv("GMX_GPU_TRIANGLE_CONSTRAINTS") != nullptr;
+    errorReasons.appendIf(
+            hasAnyConstraints && hasTriangleConstraints(mtop, FlexibleConstraintTreatment::Include)
+                    && !triangleGpuEnabled,
+            "Triangle constraints with LINCS on the GPU are pending validation and disabled by "
+            "default; "
+            "set the GMX_GPU_TRIANGLE_CONSTRAINTS environment variable to enable them.");
     errorReasons.finishContext();
 
     if (!errorReasons.isEmpty())
@@ -842,6 +917,13 @@ bool decideWhetherToUseGpuForUpdate(const bool           isDomainDecomposition,
         {
             GMX_THROW(InconsistentInputError(errorReasons.toString()));
         }
+        return false;
+    }
+
+    // While validation is pending, we default to CPU for the stochastic dynamics
+    // integrator if the user didn't explicitly ask to run on the GPU.
+    if (updateTarget == TaskTarget::Auto && inputrec.eI == IntegrationAlgorithm::SD1)
+    {
         return false;
     }
 

@@ -51,6 +51,8 @@
 
 #include "config.h"
 
+#include "gromacs/utility/basedefinitions.h"
+
 namespace gmx
 {
 
@@ -67,7 +69,7 @@ namespace gmx
  *  by an MD module, such as FMM.
  *
  *  The row-order of pointers to different electrostatic kernels defined in
- *  nbnxn_cuda.cu by the nb_*_kfunc_ptr function pointer table
+ *  nbnxm_cuda.cu by the nb_*_kfunc_ptr function pointer table
  *  should match the order of enumerated types below.
  */
 enum class ElecType : int
@@ -92,7 +94,7 @@ constexpr int c_numElecTypes = static_cast<int>(ElecType::Count);
  * kernels.
  *
  * The column-order of pointers to different electrostatic kernels defined in
- * nbnxn_cuda_ocl.cpp/.cu by the nb_*_kfunc_ptr function pointer table
+ * nbnxm_cuda_ocl.cpp/.cu by the nb_*_kfunc_ptr function pointer table
  * should match the order of enumerated types below.
  */
 enum class VdwType : int
@@ -173,18 +175,16 @@ namespace detail
 
 //! The i- and j-cluster size for GPU lists, 8 atoms for CUDA, set at configure time for OpenCL and SYCL
 #if GMX_GPU_OPENCL || GMX_GPU_SYCL
-constexpr int c_nbnxnGpuClusterSize = GMX_GPU_NB_CLUSTER_SIZE;
+constexpr int c_nbnxmGpuClusterSize = GMX_GPU_NB_CLUSTER_SIZE;
 #else
-constexpr int c_nbnxnGpuClusterSize = 8;
+constexpr int c_nbnxmGpuClusterSize = 8;
 #endif
 
 /*! \brief The number of clusters along a direction in a pair-search grid cell for GPU lists
  *
- * Typically all 2, but X can be 1 when targeting Intel Ponte Vecchio */
+ * Typically 8, but can be 4 when targeting Intel Ponte Vecchio */
 //! \{
-constexpr int c_gpuNumClusterPerCellZ = GMX_GPU_NB_NUM_CLUSTER_PER_CELL_Z;
-constexpr int c_gpuNumClusterPerCellY = GMX_GPU_NB_NUM_CLUSTER_PER_CELL_Y;
-constexpr int c_gpuNumClusterPerCellX = GMX_GPU_NB_NUM_CLUSTER_PER_CELL_X;
+constexpr int c_gpuNumClusterPerBin = GMX_GPU_NB_NUM_CLUSTER_PER_BIN;
 //! \}
 
 /*! \brief The number of sub-parts used for data storage for a GPU cluster pair
@@ -197,9 +197,9 @@ constexpr int c_gpuNumClusterPerCellX = GMX_GPU_NB_NUM_CLUSTER_PER_CELL_X;
  * (e.g. AMD GCN, CDNA and later).
  */
 #if GMX_GPU_NB_DISABLE_CLUSTER_PAIR_SPLIT
-static constexpr int c_nbnxnGpuClusterpairSplit = 1;
+static constexpr int c_nbnxmGpuClusterpairSplit = 1;
 #else
-static constexpr int c_nbnxnGpuClusterpairSplit = 2;
+static constexpr int c_nbnxmGpuClusterpairSplit = 2;
 #endif
 
 } // namespace detail
@@ -210,49 +210,60 @@ static constexpr int sc_gpuClusterSize(const PairlistType pairlistType)
     // for now we return only the default type here and in the other places
     switch (pairlistType)
     {
-        default: return detail::c_nbnxnGpuClusterSize;
-    }
-}
-
-//! The number of super clusters in the X dimension.
-static constexpr int sc_gpuNumClusterPerCellX(const PairlistType pairlistType)
-{
-    switch (pairlistType)
-    {
-        default: return detail::c_gpuNumClusterPerCellX;
-    }
-}
-
-//! The number of super clusters in the X dimension.
-static constexpr int sc_gpuNumClusterPerCellY(const PairlistType pairlistType)
-{
-    switch (pairlistType)
-    {
-        default: return detail::c_gpuNumClusterPerCellY;
-    }
-}
-
-//! The number of super clusters in the X dimension.
-static constexpr int sc_gpuNumClusterPerCellZ(const PairlistType pairlistType)
-{
-    switch (pairlistType)
-    {
-        default: return detail::c_gpuNumClusterPerCellZ;
+        default: return detail::c_nbnxmGpuClusterSize;
     }
 }
 
 //! The NBNxM GPU super cluster size according to the kernel layout.
 static constexpr int sc_gpuClusterPerSuperCluster(const PairlistType pairlistType)
 {
-    return sc_gpuNumClusterPerCellX(pairlistType) * sc_gpuNumClusterPerCellY(pairlistType)
-           * sc_gpuNumClusterPerCellZ(pairlistType);
+    switch (pairlistType)
+    {
+        default: return detail::c_gpuNumClusterPerBin;
+    }
 }
 
 //! The NBNxM GPU super cluster size according to the kernel layout.
-static constexpr int sc_gpuNumClusterPerCell(const PairlistType pairlistType)
+static constexpr int sc_gpuNumClusterPerBin(const PairlistType gmx_unused pairlistType)
 {
-    return sc_gpuNumClusterPerCellZ(pairlistType) * sc_gpuNumClusterPerCellY(pairlistType)
-           * sc_gpuNumClusterPerCellX(pairlistType);
+    switch (pairlistType)
+    {
+        default: return detail::c_gpuNumClusterPerBin;
+    }
+}
+
+//! The number of clusters per grid bin in the X dimension.
+static constexpr int sc_gpuNumClusterPerBinX(const PairlistType gmx_unused pairlistType)
+{
+    static_assert(detail::c_gpuNumClusterPerBin == 4 || detail::c_gpuNumClusterPerBin == 8,
+                  "Only 4 or 8 clusters per bin are supported");
+
+    if constexpr (detail::c_gpuNumClusterPerBin == 4)
+    {
+        return 1;
+    }
+    else
+    {
+        return 2;
+    }
+}
+
+//! The number of clusters per grid bin in the Y dimension.
+static constexpr int sc_gpuNumClusterPerBinY(const PairlistType gmx_unused pairlistType)
+{
+    static_assert(detail::c_gpuNumClusterPerBin == 4 || detail::c_gpuNumClusterPerBin == 8,
+                  "Only 4 or 8 clusters per bin are supported");
+
+    return 2;
+}
+
+//! The number of clusters per grid bin in the Z dimension.
+static constexpr int sc_gpuNumClusterPerBinZ(const PairlistType gmx_unused pairlistType)
+{
+    static_assert(detail::c_gpuNumClusterPerBin == 4 || detail::c_gpuNumClusterPerBin == 8,
+                  "Only 4 or 8 clusters per bin are supported");
+
+    return 2;
 }
 
 /*! \brief The number of sub-parts used for data storage for a GPU cluster pair
@@ -268,7 +279,7 @@ static constexpr int sc_gpuClusterPairSplit(const PairlistType pairlistType)
 {
     switch (pairlistType)
     {
-        default: return detail::c_nbnxnGpuClusterpairSplit;
+        default: return detail::c_nbnxmGpuClusterpairSplit;
     }
 }
 

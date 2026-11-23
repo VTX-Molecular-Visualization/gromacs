@@ -51,6 +51,7 @@
 #include "gromacs/fileio/matio.h"
 #include "gromacs/fileio/oenv.h"
 #include "gromacs/fileio/rgb.h"
+#include "gromacs/fileio/timecontrol.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/fileio/xvgr.h"
 #include "gromacs/gmxana/eigio.h"
@@ -153,16 +154,16 @@ int gmx_covar(int argc, char* argv[])
         "should consider carefully whether a reduced set of atoms will meet",
         "your needs for lower costs."
     };
-    static gmx_bool bFit = TRUE, bRef = FALSE, bM = FALSE, bPBC = TRUE;
-    static int      end  = -1;
-    t_pargs         pa[] = {
+    gmx_bool bFit = TRUE, bRef = FALSE, bM = FALSE, bPBC = TRUE;
+    int      end  = -1;
+    t_pargs  pa[] = {
         { "-fit", FALSE, etBOOL, { &bFit }, "Fit to a reference structure" },
         { "-ref",
-                  FALSE,
-                  etBOOL,
-                  { &bRef },
-                  "Use the deviation from the conformation in the structure file instead of from the "
-                          "average" },
+           FALSE,
+           etBOOL,
+           { &bRef },
+           "Use the deviation from the conformation in the structure file instead of from the "
+            "average" },
         { "-mwa", FALSE, etBOOL, { &bM }, "Mass-weighted covariance analysis" },
         { "-last", FALSE, etINT, { &end }, "Last eigenvector to write away (-1 is till the last)" },
         { "-pbc", FALSE, etBOOL, { &bPBC }, "Apply corrections for periodic boundary conditions" }
@@ -175,7 +176,8 @@ int gmx_covar(int argc, char* argv[])
     rvec *            x, *xread, *xref, *xav, *xproj;
     matrix            box, zerobox;
     real *            sqrtm, *mat, *eigenvalues, sum, trace, inv_nframes;
-    real              t, tstart, tend, **mat2;
+    double            t, tstart, tend;
+    real**            mat2;
     real              xj, *w_rls = nullptr;
     real              min, max, *axis;
     int               natoms, nat, nframes0, nframes, nlevels;
@@ -192,6 +194,7 @@ int gmx_covar(int argc, char* argv[])
     real*             eigenvectors;
     gmx_output_env_t* oenv;
     gmx_rmpbc_t       gpbc = nullptr;
+    gmx::TimeControl  timeControl;
 
     t_filenm fnm[] = {
         { efTRX, "-f", nullptr, ffREAD },     { efTPS, nullptr, nullptr, ffREAD },
@@ -203,7 +206,7 @@ int gmx_covar(int argc, char* argv[])
 #define NFILE asize(fnm)
 
     if (!parse_common_args(
-                &argc, argv, PCA_CAN_TIME | PCA_TIME_UNIT, NFILE, fnm, asize(pa), pa, asize(desc), desc, 0, nullptr, &oenv))
+                &argc, argv, PCA_CAN_TIME | PCA_TIME_UNIT, NFILE, fnm, asize(pa), pa, asize(desc), desc, 0, nullptr, &oenv, &timeControl))
     {
         return 0;
     }
@@ -322,7 +325,7 @@ int gmx_covar(int argc, char* argv[])
 
     fprintf(stderr, "Calculating the average structure ...\n");
     nframes0 = 0;
-    nat      = read_first_x(oenv, &status, trxfile, &t, &xread, box);
+    nat      = read_first_x(oenv, &status, trxfile, &t, &xread, box, &timeControl);
     if (nat != atoms->nr)
     {
         fprintf(stderr,
@@ -376,7 +379,7 @@ int gmx_covar(int argc, char* argv[])
             static_cast<int>(ndim),
             static_cast<int>(ndim));
     nframes = 0;
-    nat     = read_first_x(oenv, &status, trxfile, &t, &xread, box);
+    nat     = read_first_x(oenv, &status, trxfile, &t, &xread, box, &timeControl);
     tstart  = t;
     do
     {

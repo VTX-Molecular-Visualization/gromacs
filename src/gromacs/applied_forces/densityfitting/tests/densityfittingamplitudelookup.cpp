@@ -48,12 +48,15 @@
 
 #include <gtest/gtest.h>
 
-#include "gromacs/mdtypes/mdatom.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/booltype.h"
 #include "gromacs/utility/real.h"
 
 namespace gmx
+{
+namespace test
+{
+namespace
 {
 
 class DensityFittingAmplitudeLookupTest : public ::testing::Test
@@ -61,7 +64,6 @@ class DensityFittingAmplitudeLookupTest : public ::testing::Test
 protected:
     std::vector<real> masses_        = { 2, 3, 4 };
     std::vector<real> charges_       = { 20, 30, 40 };
-    t_mdatoms         atoms_         = {};
     std::vector<int>  lookupIndices_ = { 1, 2 };
 };
 
@@ -125,4 +127,6 @@ TEST_F(DensityFittingAmplitudeLookupTest, CanMoveConstruct)
     EXPECT_EQ(lookupResult[1], 1);
 }
 
+} // namespace
+} // namespace test
 } // namespace gmx

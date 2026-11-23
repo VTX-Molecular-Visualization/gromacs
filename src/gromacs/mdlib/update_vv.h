@@ -55,7 +55,6 @@ struct t_extmass;
 struct t_fcdata;
 struct t_forcerec;
 struct t_inputrec;
-struct t_mdatoms;
 struct t_nrnb;
 class t_state;
 struct t_vcm;
@@ -64,6 +63,7 @@ namespace gmx
 {
 class Constraints;
 class ForceBuffers;
+class MDAtoms;
 class MpiComm;
 class ObservablesReducer;
 class SimulationSignaller;
@@ -83,7 +83,7 @@ enum class StartingBehavior : int;
  * \param[in]  mpiComm           Communication object for my group.
  * \param[in]  dd                Domain decomposition object, pass nullptr when dd is not in use.
  * \param[in]  state             Simulation state.
- * \param[in]  mdatoms           MD atoms data.
+ * \param[in]  mdAtoms           MD atoms data.
  * \param[in]  fcdata            Force calculation data.
  * \param[in]  MassQ             Mass/pressure data.
  * \param[in]  vcm               Center of mass motion removal.
@@ -104,7 +104,6 @@ enum class StartingBehavior : int;
  * \param[in]  bStopCM           Stop the center of mass motion on this step.
  * \param[in]  bTrotter          Do trotter routines this step.
  * \param[in]  bExchanged        If this is a replica exchange step.
- * \param[out] bSumEkinhOld      Old kinetic energies will need to be summed up.
  * \param[out] saved_conserved_quantity  Place to store the conserved energy.
  * \param[in]  f                 Force buffers.
  * \param[in]  upd               Update object.
@@ -125,7 +124,7 @@ void integrateVVFirstStep(int64_t                   step,
                           const gmx::MpiComm&       mpiComm,
                           const gmx_domdec_t*       dd,
                           t_state*                  state,
-                          t_mdatoms*                mdatoms,
+                          gmx::MDAtoms&             mdAtoms,
                           t_fcdata*                 fcdata,
                           t_extmass*                MassQ,
                           t_vcm*                    vcm,
@@ -146,7 +145,6 @@ void integrateVVFirstStep(int64_t                   step,
                           bool                      bStopCM,
                           bool                      bTrotter,
                           bool                      bExchanged,
-                          bool*                     bSumEkinhOld,
                           real*                     saved_conserved_quantity,
                           gmx::ForceBuffers*        f,
                           gmx::Update*              upd,
@@ -166,7 +164,7 @@ void integrateVVFirstStep(int64_t                   step,
  * \param[in]  mpiComm           Communication object for my group.
  * \param[in]  dd                Domain decomposition object, pass nullptr when dd is not in use.
  * \param[in]  state             Simulation state.
- * \param[in]  mdatoms           MD atoms data.
+ * \param[in]  mdAtoms           MD atoms data.
  * \param[in]  fcdata            Force calculation data.
  * \param[in]  MassQ             Mass/pressure data.
  * \param[in]  vcm               Center of mass motion removal.
@@ -185,7 +183,6 @@ void integrateVVFirstStep(int64_t                   step,
  * \param[in]  do_log            Do logging on this step.
  * \param[in]  do_ene            Print energies on this step.
  * \param[in]  bGStat            Collect globals this step.
- * \param[out] bSumEkinhOld      Old kinetic energies need to be summed up.
  * \param[in]  f                 Force buffers.
  * \param[in]  cbuf              Buffer to store intermediate coordinates
  * \param[in]  upd               Update object.
@@ -201,7 +198,7 @@ void integrateVVSecondStep(int64_t                   step,
                            const gmx::MpiComm&       mpiComm,
                            const gmx_domdec_t*       dd,
                            t_state*                  state,
-                           t_mdatoms*                mdatoms,
+                           gmx::MDAtoms&             mdAtoms,
                            t_fcdata*                 fcdata,
                            t_extmass*                MassQ,
                            t_vcm*                    vcm,
@@ -220,7 +217,6 @@ void integrateVVSecondStep(int64_t                   step,
                            bool                      do_log,
                            bool                      do_ene,
                            bool                      bGStat,
-                           bool*                     bSumEkinhOld,
                            gmx::ForceBuffers*        f,
                            std::vector<gmx::RVec>*   cbuf,
                            gmx::Update*              upd,

@@ -33,10 +33,12 @@
 
 gmx_add_unit_test(TestUtilsUnitTests testutils-test
     CPP_SOURCE_FILES
+        generate_frame_data_tests.cpp
         interactivetest.cpp
         naming.cpp
         posixmemstream.cpp
         refdata_tests.cpp
+        stderrcapture.cpp
         testasserts_tests.cpp
         xvgtest_tests.cpp
         )

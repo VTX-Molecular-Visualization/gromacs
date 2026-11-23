@@ -46,10 +46,10 @@
 #include <memory>
 
 #include "gromacs/gpu_utils/devicebuffer_datatype.h"
-#include "gromacs/math/matrix.h"
 #include "gromacs/mdtypes/group.h"
 #include "gromacs/timing/wallcycle.h"
 #include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/matrix.h"
 
 class DeviceContext;
 class DeviceStream;
@@ -58,11 +58,12 @@ struct gmx_mtop_t;
 enum class PbcType : int;
 class InteractionDefinitions;
 struct t_inputrec;
-struct t_mdatoms;
 struct t_pbc;
 
 namespace gmx
 {
+
+class MDAtoms;
 
 class UpdateConstrainGpu
 {
@@ -77,14 +78,14 @@ public:
      *                                projection from it.
      * \param[in] mtop                Topology of the system: SETTLE gets the masses for O and H atoms
      *                                and target O-H and H-H distances from this object.
-     * \param[in] numTempScaleValues  Number of temperature scaling groups. Zero for no temperature scaling.
+     * \param[in] numTempCouplGroups  Number of temperature coupling groups. Zero for no temperature scaling or temperature coupling.
      * \param[in] deviceContext       GPU device context.
      * \param[in] deviceStream        GPU stream to use.
      * \param[in] wcycle              The wallclock counter
      */
     UpdateConstrainGpu(const t_inputrec&    ir,
                        const gmx_mtop_t&    mtop,
-                       int                  numTempScaleValues,
+                       int                  numTempCouplGroups,
                        const DeviceContext& deviceContext,
                        const DeviceStream&  deviceStream,
                        gmx_wallcycle*       wcycle);
@@ -102,22 +103,28 @@ public:
      * \param[in]  updateVelocities         If the velocities should be constrained.
      * \param[in]  computeVirial            If virial should be updated.
      * \param[out] virial                   Place to save virial tensor.
+     * \param[in]  spreadVsiteForces        Whether to spread virtual-site forces before integrating.
      * \param[in]  doTemperatureScaling     If velocities should be scaled for temperature coupling.
      * \param[in]  tcstat                   Temperature coupling data.
      * \param[in]  doParrinelloRahman       If current step is a Parrinello-Rahman pressure coupling step.
      * \param[in]  dtPressureCouple         Period between pressure coupling steps.
      * \param[in]  prVelocityScalingMatrix  Parrinello-Rahman velocity scaling matrix.
+     * \param[in]  seed                     Random seed for sd integrator.
+     * \param[in]  step                     The step number in the simulation.
      */
     void integrate(GpuEventSynchronizer*             fReadyOnDevice,
                    real                              dt,
                    bool                              updateVelocities,
                    bool                              computeVirial,
                    tensor                            virial,
+                   bool                              spreadVsiteForces,
                    bool                              doTemperatureScaling,
                    gmx::ArrayRef<const t_grp_tcstat> tcstat,
                    bool                              doParrinelloRahman,
                    float                             dtPressureCouple,
-                   const gmx::Matrix3x3&             prVelocityScalingMatrix);
+                   const gmx::Matrix3x3&             prVelocityScalingMatrix,
+                   int64_t                           seed,
+                   int64_t                           step);
 
     /*! \brief Scale coordinates on the GPU for the pressure coupling.
      *
@@ -138,17 +145,32 @@ public:
 
     /*! \brief Set the pointers and update data-structures (e.g. after NB search step).
      *
+     * The copies to the GPU are asynchronous and this function may reallocate buffers that earlier
+     * copies and kernels still use, so the device stream has to be synchronized between calls. In
+     * mdrun this is implicit, because a search step needs the coordinates on the host. The caller
+     * declares each such synchronization with markStreamSynchronized(), which is checked here.
+     *
      * \param[in,out]  d_x                 Device buffer with coordinates.
      * \param[in,out]  d_v                 Device buffer with velocities.
      * \param[in]      d_f                 Device buffer with forces.
      * \param[in]      idef                System topology
-     * \param[in]      md                  Atoms data.
+     * \param[in]      mdAtoms             Atoms data.
+     * \param[in]      globalAtomIndices   Global atom index for each local atom, used by the SD
+     *                                     integrator for the random numbers. Empty when the local
+     *                                     and global atom orders are the same.
      */
     void set(DeviceBuffer<RVec>            d_x,
              DeviceBuffer<RVec>            d_v,
              DeviceBuffer<RVec>            d_f,
              const InteractionDefinitions& idef,
-             const t_mdatoms&              md);
+             const MDAtoms&                mdAtoms,
+             ArrayRef<const int>           globalAtomIndices);
+
+    /*! \brief Record that the host has waited for all work in the update stream.
+     *
+     * This allows the next set() call, see there.
+     */
+    void markStreamSynchronized();
 
     /*! \brief
      * Update PBC data.

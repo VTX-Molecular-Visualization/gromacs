@@ -65,6 +65,9 @@
 
 struct gmx_domdec_t;
 
+namespace gmx
+{
+
 /*! \brief Data to help check local topology construction
  *
  * Partitioning could incorrectly miss a bonded interaction.
@@ -78,7 +81,7 @@ class ExclusionChecker::Impl
 {
 public:
     //! Constructor
-    Impl(const gmx::MpiComm& MpiComm, const gmx_mtop_t& mtop);
+    Impl(const MpiComm& MpiComm, const gmx_mtop_t& mtop);
 
     //! Checks the count passed with the expected number and exits with a fatal error at mismatch
     void check(int numTotalPerturbedExclusionsFound);
@@ -86,7 +89,7 @@ public:
     //! Object used when reporting that exclusions are missing
     //! {
     //! Communication object for my group
-    const gmx::MpiComm& mpiComm_;
+    const MpiComm& mpiComm_;
     //!
     //! }
 
@@ -96,11 +99,11 @@ public:
      * by a call of the callbackToRequireReduction. Useful to read
      * only from the callback that the ObservablesReducer will later
      * make after reduction. */
-    gmx::ArrayRef<double> reductionBuffer_;
+    ArrayRef<double> reductionBuffer_;
     /*! \brief Callback used after repartitioning to require reduction
      * of numBondedInteractionsToReduce so that the total number of
      * bonded interactions can be checked. */
-    gmx::ObservablesReducerBuilder::CallbackToRequireReduction callbackToRequireReduction_;
+    ObservablesReducerBuilder::CallbackToRequireReduction callbackToRequireReduction_;
     /*! \brief The expected number of global non-bonded perturbed pair exclusions */
     int expectedNumGlobalPerturbedExclusions_;
 };
@@ -140,18 +143,15 @@ static int computeNumGlobalPerturbedExclusions(const gmx_mtop_t& mtop)
     }
 
     // Check all atom pairs in the inter-molecular exclusion group
+    MTopLookUp               mtopLookUp(mtop);
     gmx::ArrayRef<const int> group = mtop.intermolecularExclusionGroup;
     for (const int globalAtomI : group)
     {
-        int moleculeBlockI = 0;
-        int moleculeIndexI;
-        int atomIndexInMoleculeI;
-        mtopGetMolblockIndex(mtop, globalAtomI, &moleculeBlockI, &moleculeIndexI, &atomIndexInMoleculeI);
-        const gmx_moltype_t& moltypeI = mtop.moltype[mtop.molblock[moleculeBlockI].type];
-        const bool atomIIsPerturbed   = PERTURBED(moltypeI.atoms.atom[atomIndexInMoleculeI]);
-        const gmx::ArrayRef<const int> exclsI = moltypeI.excls[atomIndexInMoleculeI];
+        const auto           indexI           = mtopLookUp.getMolblockAtomIndex(globalAtomI);
+        const gmx_moltype_t& moltypeI         = mtop.moltype[mtop.molblock[indexI.molBlock].type];
+        const bool           atomIIsPerturbed = PERTURBED(moltypeI.atoms.atom[indexI.atomIndex]);
+        const gmx::ArrayRef<const int> exclsI = moltypeI.excls[indexI.atomIndex];
 
-        int moleculeBlockJ = moleculeBlockI;
         for (const int globalAtomJ : group)
         {
             if (globalAtomJ <= globalAtomI)
@@ -160,12 +160,11 @@ static int computeNumGlobalPerturbedExclusions(const gmx_mtop_t& mtop)
             }
 
             // We count this exclusion when this is not also a "normal" intra-molecular exclusion
-            int moleculeIndexJ;
-            int atomIndexInMoleculeJ;
-            mtopGetMolblockIndex(mtop, globalAtomJ, &moleculeBlockJ, &moleculeIndexJ, &atomIndexInMoleculeJ);
-            if ((atomIIsPerturbed || PERTURBED(moltypeI.atoms.atom[atomIndexInMoleculeJ]))
-                && !(moleculeBlockJ == moleculeBlockI && moleculeIndexJ == moleculeIndexI
-                     && std::find(exclsI.begin(), exclsI.end(), atomIndexInMoleculeJ) != exclsI.end()))
+            const auto           indexJ   = mtopLookUp.getMolblockAtomIndex(globalAtomJ);
+            const gmx_moltype_t& moltypeJ = mtop.moltype[mtop.molblock[indexJ.molBlock].type];
+            if ((atomIIsPerturbed || PERTURBED(moltypeJ.atoms.atom[indexJ.atomIndex]))
+                && !(indexJ.molBlock == indexI.molBlock && indexJ.molIndex == indexI.molIndex
+                     && std::find(exclsI.begin(), exclsI.end(), indexJ.atomIndex) != exclsI.end()))
             {
                 numPerturbedExclusions++;
             }
@@ -175,14 +174,14 @@ static int computeNumGlobalPerturbedExclusions(const gmx_mtop_t& mtop)
     return numPerturbedExclusions;
 }
 
-ExclusionChecker::Impl::Impl(const gmx::MpiComm& mpiComm, const gmx_mtop_t& mtop) :
+ExclusionChecker::Impl::Impl(const MpiComm& mpiComm, const gmx_mtop_t& mtop) :
     mpiComm_(mpiComm), expectedNumGlobalPerturbedExclusions_(computeNumGlobalPerturbedExclusions(mtop))
 {
 }
 
-ExclusionChecker::ExclusionChecker(const gmx::MpiComm&             mpiComm,
-                                   const gmx_mtop_t&               mtop,
-                                   gmx::ObservablesReducerBuilder* observablesReducerBuilder) :
+ExclusionChecker::ExclusionChecker(const MpiComm&             mpiComm,
+                                   const gmx_mtop_t&          mtop,
+                                   ObservablesReducerBuilder* observablesReducerBuilder) :
     impl_(std::make_unique<Impl>(mpiComm, mtop))
 {
     if (mpiComm.isSerial())
@@ -194,16 +193,16 @@ ExclusionChecker::ExclusionChecker(const gmx::MpiComm&             mpiComm,
     GMX_RELEASE_ASSERT(observablesReducerBuilder,
                        "With DD an ObservablesReducerBuilder is required");
 
-    Impl*                                               impl = impl_.get();
-    gmx::ObservablesReducerBuilder::CallbackFromBuilder callbackFromBuilder =
-            [impl](gmx::ObservablesReducerBuilder::CallbackToRequireReduction c, gmx::ArrayRef<double> v)
+    Impl*                                          impl = impl_.get();
+    ObservablesReducerBuilder::CallbackFromBuilder callbackFromBuilder =
+            [impl](ObservablesReducerBuilder::CallbackToRequireReduction c, ArrayRef<double> v)
     {
         impl->callbackToRequireReduction_ = std::move(c);
         impl->reductionBuffer_            = v;
     };
 
     // Make the callback that runs afer reduction.
-    gmx::ObservablesReducerBuilder::CallbackAfterReduction callbackAfterReduction = [impl](gmx::Step /*step*/)
+    ObservablesReducerBuilder::CallbackAfterReduction callbackAfterReduction = [impl](Step /*step*/)
     {
         // Pass the total after reduction to the check
         impl->check(impl->reductionBuffer_[0]);
@@ -212,6 +211,7 @@ ExclusionChecker::ExclusionChecker(const gmx::MpiComm&             mpiComm,
     observablesReducerBuilder->addSubscriber(
             1, std::move(callbackFromBuilder), std::move(callbackAfterReduction));
 }
+
 
 ExclusionChecker::~ExclusionChecker() = default;
 
@@ -272,6 +272,8 @@ void ExclusionChecker::scheduleCheckOfExclusions(const int numPerturbedExclusion
         //
         // There is no need to check the return value from this callback,
         // as it is not an error to request reduction at a future step.
-        impl_->callbackToRequireReduction_(gmx::ReductionRequirement::Eventually);
+        impl_->callbackToRequireReduction_(ReductionRequirement::Eventually);
     }
 }
+
+} // namespace gmx

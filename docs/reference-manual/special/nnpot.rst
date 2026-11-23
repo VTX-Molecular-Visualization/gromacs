@@ -31,12 +31,12 @@ interactions, in which case the coupling term only includes the LJ interactions.
 Bonded interactions are also described on the MM level, removing terms
 consisting of bonds containing 2 NNP atoms, angles and settles containing 2 or 3 NNP atoms,
 and dihedrals containing 3 or 4 NNP atoms. Broken chemical bonds between NNP and MM atoms
-are capped with a link atom, as is usual in QM/MM simulations. The link atom is placed at
+are capped with a link atom, a common practice in QM/MM simulations. The link atom is placed at
 a fixed distance from the NNP atom along the vector pointing towards the MM atom, and
-the force acting on it is redistributed to the NNP and MM atoms, as if it was a 2FD-type
-virtual site. The type of link atom and the distance from the NNP atom can be specified
-via :ref:`mdp` options, see below. All necessary modifications to the system topology
-are performed automatically during :ref:`gmx grompp` preprocessing.
+the force acting on it is redistributed to the NNP and MM atoms according to the chain rule,
+as if it was a 2FD-type virtual site. The type of link atom and the distance from the NNP atom
+can be specified via :ref:`mdp` options, see below. All necessary modifications to the system
+topology are performed automatically during :ref:`gmx grompp` preprocessing.
 
 Software Prerequisites
 ^^^^^^^^^^^^^^^^^^^^^^
@@ -52,15 +52,46 @@ Usage
 Simulations using the NNPot interface are controlled by setting :ref:`mdp` file options.
 For a detailed description of all available options, please see the
 :ref:`mdp options documentation<mdp-nnpot>`.
-The inputs are passed to the model in order of their occurence in the mdp file. Note
-that there are no default values for the model input, so not specifying the model
-input will lead to errors. The model is expected to return a tensor containing the energy
-of the system and, optionally, a tensor containing the forces on the input atoms.
-This option can be useful for cases in which the forces can be computed by the model
-by some technique that is more efficient than via backpropagation. If the model does not
-provide its own forces, they are calculated by the interface as gradients
-w.r.t. the *first* input tensor. In the case of :mdp-value:`electrostatic-model` embedding,
-forces on the NNP as well as MM atoms should be returned. \
+Since the 2027 version, the inputs are passed to the model as a dictionary of tensors.
+That is, the model is expected to take a single dictionary as argument to its ``forward()``
+method, e.g. ``forward(input_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]``.
+Available inputs, and their corresponding shapes and dictionary keys, are as follows:
+
+* ``positions``: A tensor of shape ``(N_ml, 3)`` containing the positions of the :math:`N_{\text{ml}}` ML atoms.
+* ``atomic-numbers``: A tensor of shape ``(N_ml,)`` containing the atomic numbers of the ML atoms.
+* ``pairs``: A tensor of shape ``(M, 2)`` containing the indices of ``M`` nearest-neighbor pairs.
+    of ML atoms with in the ``pair-cutoff`` specified by the user. Available only if the ``pair-cutoff`` option is set
+    to a non-zero value in the :ref:`mdp` file.
+* ``shifts``: A tensor of shape ``(M, 3)`` containing periodic shift vectors to apply to the
+    neighbor pairs in order to get the minimum image distance between them. Available only if the ``pair-cutoff`` option
+    is set to a non-zero value in the :ref:`mdp` file.
+* ``mm-positions``: A tensor of shape ``(N_mm, 3)`` containing the positions of the :math:`N_{\text{mm}}` MM atoms surrounding
+    the NNP atoms. Available only if the :mdp-value:`nnpot-embedding=electrostatic-model` option is set in the :ref:`mdp` file.
+* ``mm-charges``: A tensor of shape ``(N_mm,)`` containing the charges of the :math:`N_{\text{mm}}` MM atoms surrounding
+    the NNP atoms. Available only if the :mdp-value:`nnpot-embedding=electrostatic-model` option is set in the :ref:`mdp` file.
+* ``total-charge``: A tensor of shape ``(1,)`` containing the total charge of the NNP subsystem, as set by the user with the
+    :mdp-value:`nnpot-nnp-charge` option.
+* ``box``: A tensor of shape ``(3, 3)`` containing the vectors of the simulation box.
+* ``pbc``: A boolean tensor of shape ``(3,)`` indicating whether PBCs are used along this dimension.
+
+The precision of real-valued input tensors is depends on the precision |Gromacs| was compiled with,
+and can be either 32-bit (single precision) or 64-bit (double precision) floating point. Atom indices
+are passed as 32-bit integers.
+
+The expected and optional outputs, which likewise have to be returned in dictionary form, are:
+
+* ``energy``: A mandatory input tensor of shape ``(1,)`` containing the total energy of the input system.
+* ``forces``: An optional tensor of shape ``(N_ml, 3)`` containing the forces on the input atoms.
+    This can be useful for cases in which the forces can be computed by the model by some technique that
+    is more efficient than via backpropagation. If the model does not provide its own forces, they are
+    calculated by the interface as gradients w.r.t. the position tensor.
+* ``forces-mm``: A tensor of shape ``(N_mm, 3)``, which is required if
+    :mdp-value:`nnpot-embedding=electrostatic-model` was set.
+* ``virial``: An optional tensor of shape ``(3, 3)`` containing a virial stress contribution for the 
+    ML subsystem. Note that this tensor has to follow the virial convention of |Gromacs| as described in
+    :ref:`details`. If no virial contribution is supplied, the NNP does not contribute to pressure scaling
+    in NPT simulations, which will produce artifacts in simulations with larger ML subsystems.
+
 By default, |Gromacs| will run inference on the GPU, if available. You can also explicitly
 specify the device on which you wish to run model inference using the environment
 variable ``GMX_NN_DEVICE``. The options ``cpu`` and ``gpu`` are supported. Option ``cuda``
@@ -68,6 +99,16 @@ is deprecated, and is treated as ``gpu``.
 If multiple GPUs are available, the active device will be inherited from mdrun.
 For ``gpu``, a CUDA/HIP-aware LibTorch installation should be installed, and the
 corresponding CUDA/HIP installation should be available in your ``PATH``.
+On Intel GPUs, a LibTorch with XPU support (PyTorch 2.5 or later) is needed. Unlike
+for CUDA and HIP, the device is not inherited from mdrun: the model runs on the first
+Intel GPU LibTorch enumerates, which can be restricted with ``ONEAPI_DEVICE_SELECTOR``
+or ``ZE_AFFINITY_MASK``. When |Gromacs| itself is built with SYCL, two things apply at
+run time. First, |Gromacs| and LibTorch must use one and the same SYCL runtime
+(``libsycl``): build |Gromacs| with the oneAPI release whose runtime the LibTorch
+package bundles, or make sure the runtime bundled with LibTorch is the one loaded;
+with two different runtimes in the process either side can crash. Second, expose a
+single SYCL backend, e.g. ``ONEAPI_DEVICE_SELECTOR=level_zero:gpu``, as |Gromacs|
+itself recommends when it detects a GPU through more than one backend.
 
 Find below an example Python code snippet to export a pretrained model in
 PyTorch using TorchScript. As an example, we use the popular ANI models
@@ -78,7 +119,7 @@ available from `TorchANI <https://github.com/aiqm/torchani/>`_.
     import torch
     from torch import nn
     from torchani.models import ANI2x
-    from typing import Optional
+    from typing import Dict
 
     class GmxNNPotModelWrapper(nn.Module):
         def __init__(self):
@@ -91,21 +132,26 @@ available from `TorchANI <https://github.com/aiqm/torchani/>`_.
             self.length_conversion = 10.0   # nm --> Å
             self.energy_conversion = 2625.5 # Hartree --> kJ/mol
 
-        def forward(self, positions, atomic_numbers,
-                    box: Optional[torch.Tensor]=None, pbc: Optional[torch.Tensor]=None):
-
+        def forward(self, input_data: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
             # Prepare the inputs for the model
-            atomic_numbers = atomic_numbers.unsqueeze(0)
-            positions = positions.unsqueeze(0) * self.length_conversion
-            if box is not None:
-                box *= self.length_conversion
+            atomic_numbers = input_data["atomic-numbers"].unsqueeze(0)
+            positions = input_data["positions"].unsqueeze(0) * self.length_conversion
+            # positions = positions.detach().requires_grad_(True)
+            if "box" in input_data and input_data["box"] is not None:
+                cell = input_data["box"] * self.length_conversion
+            else:
+                cell = None
+            if "pbc" in input_data and input_data["pbc"] is not None:
+                pbc = input_data["pbc"]
+            else:
+                pbc = None
 
             # Forward pass
             result = self.model((atomic_numbers, positions), box, pbc)
+            output = {}
+            output["energy"] = result.energies[0] * self.energy_conversion
 
-            energy = result.energies[0] * self.energy_conversion
-
-            return energy
+            return output
 
     model = GmxNNPotModelWrapper()
 
@@ -122,7 +168,3 @@ In the :ref:`mdp` file, the relevant options could look like:
     nnpot-active          = true
     nnpot-modelfile       = ani2x.pt
     nnpot-input-group     = System
-    nnpot-model-input1    = atom-positions
-    nnpot-model-input2    = atom-numbers
-    nnpot-model-input3    = box
-    nnpot-model-input4    = pbc

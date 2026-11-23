@@ -55,7 +55,10 @@
 #include "gromacs/utility/vectypes.h"
 
 struct gmx_domdec_t;
-struct gmx_edsam;
+namespace gmx
+{
+struct edsam;
+}
 struct gmx_localtop_t;
 struct gmx_moltype_t;
 struct gmx_mtop_t;
@@ -108,6 +111,7 @@ private:
                 const MpiComm&             mpiComm,
                 gmx_domdec_t*              dd,
                 bool                       useUpdateGroups,
+                bool                       hasMassPerturbedAtoms,
                 const gmx_multisim_t*      ms,
                 t_nrnb*                    nrnb,
                 gmx_wallcycle*             wcycle,
@@ -139,7 +143,6 @@ public:
                         int                                 numHomeAtoms,
                         gmx::ArrayRef<const real>           masses,
                         gmx::ArrayRef<const real>           inverseMasses,
-                        bool                                hasMassPerturbedAtoms,
                         real                                lambda,
                         gmx::ArrayRef<const unsigned short> cFREEZE);
 
@@ -192,7 +195,7 @@ public:
                tensor                    constraintsVirial,
                ConstraintVariable        econq);
     //! Links the essentialdynamics and constraint code.
-    void saveEdsamPointer(gmx_edsam* ed);
+    void saveEdsamPointer(edsam* ed);
     //! Getter for use by domain decomposition.
     ArrayRef<const ListOfLists<int>> atom2constraints_moltype() const;
     //! Getter for use by domain decomposition.

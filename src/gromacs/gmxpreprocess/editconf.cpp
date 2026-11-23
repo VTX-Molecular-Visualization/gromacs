@@ -47,6 +47,7 @@
 #include "gromacs/commandline/filenm.h"
 #include "gromacs/commandline/pargs.h"
 #include "gromacs/commandline/viewit.h"
+#include "gromacs/fileio/cifio.h"
 #include "gromacs/fileio/confio.h"
 #include "gromacs/fileio/filetypes.h"
 #include "gromacs/fileio/oenv.h"
@@ -55,7 +56,6 @@
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/gmxana/princ.h"
 #include "gromacs/gmxlib/conformation_utilities.h"
-#include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
 #include "gromacs/math/utilities.h"
 #include "gromacs/mdtypes/md_enums.h"
@@ -65,6 +65,7 @@
 #include "gromacs/topology/atoms.h"
 #include "gromacs/topology/idef.h"
 #include "gromacs/topology/index.h"
+#include "gromacs/topology/mtop_atomloops.h"
 #include "gromacs/topology/symtab.h"
 #include "gromacs/topology/topology.h"
 #include "gromacs/topology/topology_enums.h"
@@ -72,6 +73,7 @@
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/futil.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/real.h"
@@ -81,6 +83,9 @@
 #include "gromacs/utility/vectypes.h"
 
 struct gmx_output_env_t;
+
+namespace gmx
+{
 
 static real calc_mass(t_atoms* atoms, gmx_bool bGetMass, AtomProperties* aps)
 {
@@ -398,9 +403,9 @@ static void visualize_box(FILE* out, int a0, int r0, matrix box, const rvec grid
     a0++;
     r0++;
 
-    nx   = gmx::roundToInt(gridsize[XX]);
-    ny   = gmx::roundToInt(gridsize[YY]);
-    nz   = gmx::roundToInt(gridsize[ZZ]);
+    nx   = roundToInt(gridsize[XX]);
+    ny   = roundToInt(gridsize[YY]);
+    nz   = roundToInt(gridsize[ZZ]);
     nbox = nx * ny * nz;
     if (TRICLINIC(box))
     {
@@ -655,98 +660,97 @@ int gmx_editconf(int argc, char* argv[])
         "where [TT]veclen[tt] is the size of the cubic box times [SQRT]3[sqrt]/2."
     };
     const char* bugs[] = {
-        "For complex molecules, the periodicity removal routine may break down, ",
-        "in that case you can use [gmx-trjconv]."
+        "For complex molecules, the periodicity removal routine may break down, "
+        "in that case you can use [gmx-trjconv].",
     };
-    static real dist = 0.0;
-    static gmx_bool bNDEF = FALSE, bRMPBC = FALSE, bCenter = FALSE, bReadVDW = FALSE, bCONECT = FALSE;
-    static gmx_bool peratom = FALSE, bLegend = FALSE, bOrient = FALSE, bMead = FALSE,
-                    bGrasp = FALSE, bSig56 = FALSE;
-    static rvec scale = { 1, 1, 1 }, newbox = { 0, 0, 0 }, newang = { 90, 90, 90 };
-    static real rho = 1000.0, rvdw = 0.12;
-    static rvec center = { 0, 0, 0 }, translation = { 0, 0, 0 }, rotangles = { 0, 0, 0 },
-                aligncenter = { 0, 0, 0 }, targetvec = { 0, 0, 0 };
-    static const char *btype[] = { nullptr,        "triclinic",  "cubic",
-                                   "dodecahedron", "octahedron", nullptr },
-                      *label   = "A";
-    static rvec visbox         = { 0, 0, 0 };
-    static int  resnr_start    = -1;
-    t_pargs     pa[]           = {
+    real     dist  = 0.0;
+    gmx_bool bNDEF = FALSE, bRMPBC = FALSE, bCenter = FALSE, bReadVDW = FALSE, bCONECT = FALSE;
+    gmx_bool peratom = FALSE, bLegend = FALSE, bOrient = FALSE, bMead = FALSE, bGrasp = FALSE,
+             bSig56 = FALSE;
+    rvec scale = { 1, 1, 1 }, newbox = { 0, 0, 0 }, newang = { 90, 90, 90 };
+    real rho = 1000.0, rvdw = 0.12;
+    rvec center = { 0, 0, 0 }, translation = { 0, 0, 0 }, rotangles = { 0, 0, 0 },
+         aligncenter = { 0, 0, 0 }, targetvec = { 0, 0, 0 };
+    const char *btype[] = { nullptr, "triclinic", "cubic", "dodecahedron", "octahedron", nullptr },
+               *label   = "A";
+    rvec    visbox      = { 0, 0, 0 };
+    int     resnr_start = -1;
+    t_pargs pa[]        = {
         { "-ndef", FALSE, etBOOL, { &bNDEF }, "Choose output from default index groups" },
         { "-visbox",
-                        FALSE,
-                        etRVEC,
-                        { visbox },
-                        "HIDDENVisualize a grid of boxes, -1 visualizes the 14 box images" },
+                 FALSE,
+                 etRVEC,
+                 { visbox },
+                 "HIDDENVisualize a grid of boxes, -1 visualizes the 14 box images" },
         { "-bt", FALSE, etENUM, { btype }, "Box type for [TT]-box[tt] and [TT]-d[tt]" },
         { "-box", FALSE, etRVEC, { newbox }, "Box vector lengths (a,b,c)" },
         { "-angles", FALSE, etRVEC, { newang }, "Angles between the box vectors (bc,ac,ab)" },
         { "-d", FALSE, etREAL, { &dist }, "Distance between the solute and the box" },
         { "-c",
-                        FALSE,
-                        etBOOL,
-                        { &bCenter },
-                        "Center molecule in box (implied by [TT]-box[tt] and [TT]-d[tt])" },
+                 FALSE,
+                 etBOOL,
+                 { &bCenter },
+                 "Center molecule in box (implied by [TT]-box[tt] and [TT]-d[tt])" },
         { "-center", FALSE, etRVEC, { center }, "Shift the geometrical center to (x,y,z)" },
         { "-aligncenter", FALSE, etRVEC, { aligncenter }, "Center of rotation for alignment" },
         { "-align", FALSE, etRVEC, { targetvec }, "Align to target vector" },
         { "-translate", FALSE, etRVEC, { translation }, "Translation" },
         { "-rotate",
-                        FALSE,
-                        etRVEC,
-                        { rotangles },
-                        "Rotation around the X, Y and Z axes in degrees" },
+                 FALSE,
+                 etRVEC,
+                 { rotangles },
+                 "Rotation around the X, Y and Z axes in degrees" },
         { "-princ", FALSE, etBOOL, { &bOrient }, "Orient molecule(s) along their principal axes" },
         { "-scale", FALSE, etRVEC, { scale }, "Scaling factor" },
         { "-density",
-                        FALSE,
-                        etREAL,
-                        { &rho },
-                        "Density (g/L) of the output box achieved by scaling" },
+                 FALSE,
+                 etREAL,
+                 { &rho },
+                 "Density (g/L) of the output box achieved by scaling" },
         { "-pbc", FALSE, etBOOL, { &bRMPBC }, "Remove the periodicity (make molecule whole again)" },
         { "-resnr", FALSE, etINT, { &resnr_start }, " Renumber residues starting from resnr" },
         { "-grasp",
-                        FALSE,
-                        etBOOL,
-                        { &bGrasp },
-                        "Store the charge of the atom in the B-factor field and the radius of the atom in the "
-                                      "occupancy field" },
+                 FALSE,
+                 etBOOL,
+                 { &bGrasp },
+                 "Store the charge of the atom in the B-factor field and the radius of the atom in the "
+                        "occupancy field" },
         { "-rvdw",
-                        FALSE,
-                        etREAL,
-                        { &rvdw },
-                        "Default Van der Waals radius (in nm) if one can not be found in the database or if no "
-                                      "parameters are present in the topology file" },
+                 FALSE,
+                 etREAL,
+                 { &rvdw },
+                 "Default Van der Waals radius (in nm) if one can not be found in the database or if no "
+                        "parameters are present in the topology file" },
         { "-sig56",
-                        FALSE,
-                        etBOOL,
-                        { &bSig56 },
-                        "Use rmin/2 (minimum in the Van der Waals potential) rather than [GRK]sigma[grk]/2 " },
+                 FALSE,
+                 etBOOL,
+                 { &bSig56 },
+                 "Use rmin/2 (minimum in the Van der Waals potential) rather than [GRK]sigma[grk]/2 " },
         { "-vdwread",
-                        FALSE,
-                        etBOOL,
-                        { &bReadVDW },
-                        "Read the Van der Waals radii from the file [TT]vdwradii.dat[tt] rather than computing "
-                                      "the radii based on the force field" },
+                 FALSE,
+                 etBOOL,
+                 { &bReadVDW },
+                 "Read the Van der Waals radii from the file [TT]vdwradii.dat[tt] rather than computing "
+                        "the radii based on the force field" },
         { "-atom", FALSE, etBOOL, { &peratom }, "Force B-factor attachment per atom" },
         { "-legend", FALSE, etBOOL, { &bLegend }, "Make B-factor legend" },
         { "-label", FALSE, etSTR, { &label }, "Add chain label for all residues" },
         { "-conect",
-                        FALSE,
-                        etBOOL,
-                        { &bCONECT },
-                        "Add CONECT records to a [REF].pdb[ref] file when written. Can only be done when a "
-                                      "topology (tpr file) is present" }
+                 FALSE,
+                 etBOOL,
+                 { &bCONECT },
+                 "Add connectivity records to a [REF].pdb[ref] (CONECT) or [REF].cif[ref] "
+                        "([TT]struct_conn[tt]) file when written. Can only be done when a "
+                        "topology (tpr file) is present" }
     };
 #define NPA asize(pa)
 
     FILE*             out;
     const char*       infile;
     const char*       outfile;
-    int               outftp, inftp, natom, j, n_bfac, itype, ntype;
-    double *          bfac    = nullptr, c6, c12;
+    int               outftp, inftp, natom, j, n_bfac;
+    double*           bfac    = nullptr;
     int*              bfac_nr = nullptr;
-    t_topology*       top     = nullptr;
     char *            grpname, *sgrpname, *agrpname;
     int               isize, ssize, numAlignmentAtoms;
     int *             sindex, *aindex;
@@ -756,7 +760,7 @@ int gmx_editconf(int argc, char* argv[])
     rvec              princd, tmpvec;
     gmx_bool          bIndex, bSetSize, bSetAng, bDist, bSetCenter, bAlign;
     gmx_bool          bHaveV, bScale, bRho, bTranslate, bRotate, bCalcGeom, bCalcDiam;
-    real              diam = 0, mass = 0, d, vdw;
+    real              diam = 0, mass = 0, d;
     gmx_conect        conect;
     gmx_output_env_t* oenv;
     t_filenm          fnm[] = { { efSTX, "-f", nullptr, ffREAD },
@@ -767,7 +771,7 @@ int gmx_editconf(int argc, char* argv[])
 #define NFILE asize(fnm)
 
     if (!parse_common_args(
-                &argc, argv, PCA_CAN_VIEW, NFILE, fnm, NPA, pa, asize(desc), desc, asize(bugs), bugs, &oenv))
+                &argc, argv, PCA_CAN_VIEW, NFILE, fnm, NPA, pa, asize(desc), desc, asize(bugs), bugs, &oenv, nullptr))
     {
         return 0;
     }
@@ -821,11 +825,17 @@ int gmx_editconf(int argc, char* argv[])
         printf("Incompatible options -mead and -grasp. Turning off -grasp\n");
         bGrasp = FALSE;
     }
-    if ((bGrasp || bCONECT) && (outftp != efPDB))
+    if (bGrasp && (outftp != efPDB))
     {
         gmx_fatal(FARGS,
                   "Output file should be a .pdb file"
-                  " when using the -grasp or -conect options\n");
+                  " when using the -grasp option\n");
+    }
+    if (bCONECT && (outftp != efPDB) && (outftp != efCIF))
+    {
+        gmx_fatal(FARGS,
+                  "Output file should be a .pdb or .cif file"
+                  " when using the -conect option\n");
     }
     if ((bMead || bGrasp || bCONECT) && inftp != efTPR)
     {
@@ -866,37 +876,44 @@ int gmx_editconf(int argc, char* argv[])
                100 * (static_cast<int>(vol * 4.5)));
     }
 
+    std::unique_ptr<gmx_mtop_t> mtop;
     if (bMead || bGrasp || bCONECT)
     {
-        top = read_top(infile, nullptr);
+        mtop = std::make_unique<gmx_mtop_t>();
+        // Note this is the second time this file was read!
+        read_tpx(infile, nullptr, nullptr, nullptr, nullptr, nullptr, mtop.get());
     }
 
     if (bMead || bGrasp)
     {
-        if (atoms.nr != top->atoms.nr)
+        // Replace the PDB info (ie. B-factors and occupancy) with
+        // fresh data.
+        if (atoms.nr != mtop->natoms)
         {
-            gmx_fatal(FARGS, "Atom numbers don't match (%d vs. %d)", atoms.nr, top->atoms.nr);
+            gmx_fatal(FARGS, "Atom numbers don't match (%d vs. %d)", atoms.nr, mtop->natoms);
         }
-        snew(atoms.pdbinfo, top->atoms.nr);
-        ntype = top->idef.atnr;
-        for (int i = 0; (i < atoms.nr); i++)
+        if (atoms.pdbinfo != nullptr)
         {
-            /* Determine the Van der Waals radius from the force field */
+            sfree(atoms.pdbinfo);
+        }
+        snew(atoms.pdbinfo, mtop->natoms);
+        const int ntype = mtop->ffparams.atnr;
+        for (const AtomProxy atom : AtomRange(*mtop))
+        {
+            real vdw;
+            // Determine the Van der Waals radius from the force field
             if (bReadVDW)
             {
-                if (!aps.setAtomProperty(epropVDW,
-                                         *top->atoms.resinfo[top->atoms.atom[i].resind].name,
-                                         *top->atoms.atomname[i],
-                                         &vdw))
+                if (!aps.setAtomProperty(epropVDW, atom.residueName(), atom.atomName(), &vdw))
                 {
                     vdw = rvdw;
                 }
             }
             else
             {
-                itype = top->atoms.atom[i].type;
-                c12   = top->idef.iparams[itype * ntype + itype].lj.c12;
-                c6    = top->idef.iparams[itype * ntype + itype].lj.c6;
+                const int    itype = atom.atom().type;
+                const double c12   = mtop->ffparams.iparams[itype * ntype + itype].lj.c12;
+                const double c6    = mtop->ffparams.iparams[itype * ntype + itype].lj.c6;
                 if ((c6 != 0) && (c12 != 0))
                 {
                     real sig6;
@@ -908,25 +925,26 @@ int gmx_editconf(int argc, char* argv[])
                     {
                         sig6 = c12 / c6;
                     }
-                    vdw = 0.5 * gmx::sixthroot(sig6);
+                    vdw = 0.5 * sixthroot(sig6);
                 }
                 else
                 {
                     vdw = rvdw;
                 }
             }
-            /* Factor of 10 for nm -> Angstroms */
-            vdw *= 10;
+            // Scale nm -> Angstrom
+            vdw *= c_nano / c_angstrom;
 
+            const int globalAtomNumber = atom.globalAtomNumber();
             if (bMead)
             {
-                atoms.pdbinfo[i].occup = top->atoms.atom[i].q;
-                atoms.pdbinfo[i].bfac  = vdw;
+                atoms.pdbinfo[globalAtomNumber].occup = atom.atom().q;
+                atoms.pdbinfo[globalAtomNumber].bfac  = vdw;
             }
             else
             {
-                atoms.pdbinfo[i].occup = vdw;
-                atoms.pdbinfo[i].bfac  = top->atoms.atom[i].q;
+                atoms.pdbinfo[globalAtomNumber].occup = vdw;
+                atoms.pdbinfo[globalAtomNumber].bfac  = atom.atom().q;
             }
         }
     }
@@ -984,9 +1002,9 @@ int gmx_editconf(int argc, char* argv[])
         printf("    center      :%7.3f%7.3f%7.3f (nm)\n", gc[XX], gc[YY], gc[ZZ]);
         printf("    box vectors :%7.3f%7.3f%7.3f (nm)\n", norm(box[XX]), norm(box[YY]), norm(box[ZZ]));
         printf("    box angles  :%7.2f%7.2f%7.2f (degrees)\n",
-               norm2(box[ZZ]) == 0 ? 0 : gmx::c_rad2Deg * gmx_angle(box[YY], box[ZZ]),
-               norm2(box[ZZ]) == 0 ? 0 : gmx::c_rad2Deg * gmx_angle(box[XX], box[ZZ]),
-               norm2(box[YY]) == 0 ? 0 : gmx::c_rad2Deg * gmx_angle(box[XX], box[YY]));
+               norm2(box[ZZ]) == 0 ? 0 : c_rad2Deg * gmx_angle(box[YY], box[ZZ]),
+               norm2(box[ZZ]) == 0 ? 0 : c_rad2Deg * gmx_angle(box[XX], box[ZZ]),
+               norm2(box[YY]) == 0 ? 0 : c_rad2Deg * gmx_angle(box[XX], box[YY]));
         printf("    box volume  :%7.2f               (nm^3)\n", det(box));
     }
 
@@ -1019,7 +1037,7 @@ int gmx_editconf(int argc, char* argv[])
             real vol, dens;
 
             vol  = det(box);
-            dens = (mass * gmx::c_amu) / (vol * gmx::c_nano * gmx::c_nano * gmx::c_nano);
+            dens = (mass * c_amu) / (vol * c_nano * c_nano * c_nano);
             fprintf(stderr, "Volume  of input %g (nm^3)\n", vol);
             fprintf(stderr, "Mass    of input %g (a.m.u.)\n", mass);
             fprintf(stderr, "Density of input %g (g/l)\n", dens);
@@ -1139,7 +1157,7 @@ int gmx_editconf(int argc, char* argv[])
                rotangles[ZZ]);
         for (int i = 0; i < DIM; i++)
         {
-            rotangles[i] *= gmx::c_deg2Rad;
+            rotangles[i] *= c_deg2Rad;
         }
         rotate_conf(natom, x, v, rotangles[XX], rotangles[YY], rotangles[ZZ]);
     }
@@ -1249,9 +1267,9 @@ int gmx_editconf(int argc, char* argv[])
     {
         printf("new box vectors :%7.3f%7.3f%7.3f (nm)\n", norm(box[XX]), norm(box[YY]), norm(box[ZZ]));
         printf("new box angles  :%7.2f%7.2f%7.2f (degrees)\n",
-               norm2(box[ZZ]) == 0 ? 0 : gmx::c_rad2Deg * gmx_angle(box[YY], box[ZZ]),
-               norm2(box[ZZ]) == 0 ? 0 : gmx::c_rad2Deg * gmx_angle(box[XX], box[ZZ]),
-               norm2(box[YY]) == 0 ? 0 : gmx::c_rad2Deg * gmx_angle(box[XX], box[YY]));
+               norm2(box[ZZ]) == 0 ? 0 : c_rad2Deg * gmx_angle(box[YY], box[ZZ]),
+               norm2(box[ZZ]) == 0 ? 0 : c_rad2Deg * gmx_angle(box[XX], box[ZZ]),
+               norm2(box[YY]) == 0 ? 0 : c_rad2Deg * gmx_angle(box[XX], box[YY]));
         printf("new box volume  :%7.2f               (nm^3)\n", det(box));
     }
 
@@ -1281,10 +1299,10 @@ int gmx_editconf(int argc, char* argv[])
                    "to use a cubic box instead, or why not try a dodecahedron today?\n");
         }
     }
-    /* We have already checked that the output is a pdb file and the input a tpr file */
+    /* We have already checked that the output is a pdb or cif file and the input a tpr file */
     if (bCONECT)
     {
-        conect = gmx_conect_generate(top);
+        conect = gmx_conect_generate(*mtop);
     }
     else
     {
@@ -1320,6 +1338,11 @@ int gmx_editconf(int argc, char* argv[])
             out = gmx_ffopen(outfile, "w");
             write_pdbfile_indexed(out, name, &atoms, x, pbcType, box, ' ', 1, isize, index, conect, FALSE);
             gmx_ffclose(out);
+        }
+        else if (outftp == efCIF)
+        {
+            /* Bypass write_sto_conf_indexed(), which cannot pass on connectivity */
+            CifIO::writeIndexed(outfile, name, &atoms, x, pbcType, box, isize, index, conect);
         }
         else
         {
@@ -1396,6 +1419,11 @@ int gmx_editconf(int argc, char* argv[])
             }
             gmx_ffclose(out);
         }
+        else if (outftp == efCIF)
+        {
+            /* Bypass write_sto_conf(), which cannot pass on connectivity */
+            CifIO::write(outfile, name, &atoms, x, pbcType, box, conect);
+        }
         else
         {
             write_sto_conf(outfile, name, &atoms, x, bHaveV ? v : nullptr, pbcType, box);
@@ -1412,8 +1440,14 @@ int gmx_editconf(int argc, char* argv[])
     {
         sfree(v);
     }
+    if (bCONECT)
+    {
+        gmx_conect_done(conect);
+    }
     do_view(oenv, outfile, nullptr);
     output_env_done(oenv);
 
     return 0;
 }
+
+} // namespace gmx

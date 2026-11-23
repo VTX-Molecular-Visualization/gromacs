@@ -100,7 +100,7 @@ class Lincs;
 
 /* \brief Impl class for Constraints
  *
- * \todo Members like md, idef are valid only for the lifetime of a
+ * \todo Members like mdAtoms, idef are valid only for the lifetime of a
  * domain, which would be good to make clearer in the structure of the
  * code. It should not be possible to call apply() if setConstraints()
  * has not been called. For example, this could be achieved if
@@ -117,6 +117,7 @@ public:
          const MpiComm&             mpiComm_p,
          gmx_domdec_t*              dd_p,
          bool                       useUpdateGroups,
+         bool                       hasMassPerturbedAtoms,
          const gmx_multisim_t*      ms,
          t_nrnb*                    nrnb,
          gmx_wallcycle*             wcycle_p,
@@ -130,7 +131,6 @@ public:
                         int                                 numHomeAtoms,
                         gmx::ArrayRef<const real>           masses,
                         gmx::ArrayRef<const real>           inverseMasses,
-                        bool                                hasMassPerturbedAtoms,
                         real                                lambda,
                         gmx::ArrayRef<const unsigned short> cFREEZE);
     bool apply(bool                      computeRmsd,
@@ -168,7 +168,7 @@ public:
     //! The number of warnings for SETTLE.
     int warncount_settle = 0;
     //! The essential dynamics data.
-    gmx_edsam* ed = nullptr;
+    edsam* ed = nullptr;
 
     //! Thread-local virial contribution.
     tensor* threadConstraintsVirial = { nullptr };
@@ -187,8 +187,6 @@ public:
     gmx::ArrayRef<const real> masses_;
     //! Inverse masses.
     gmx::ArrayRef<const real> inverseMasses_;
-    //! If there are atoms with perturbed mass (for FEP).
-    bool hasMassPerturbedAtoms_;
     //! FEP lambda value.
     real lambda_;
     //! Freeze groups data
@@ -278,10 +276,9 @@ static void write_constr_pdb(const char*          fn,
                              ArrayRef<const RVec> x,
                              const matrix         box)
 {
-    char        fname[STRLEN];
-    FILE*       out;
-    int         dd_ac0 = 0, dd_ac1 = 0, i, ii, resnr;
-    const char *anm, *resnm;
+    char  fname[STRLEN];
+    FILE* out;
+    int   dd_ac0 = 0, dd_ac1 = 0, i, ii;
 
     if (dd)
     {
@@ -303,7 +300,7 @@ static void write_constr_pdb(const char*          fn,
 
     fprintf(out, "TITLE     %s\n", title);
     gmx_write_pdb_box(out, PbcType::Unset, box);
-    int molb = 0;
+    MTopLookUp mTopLookUp(mtop);
     for (i = start; i < start + homenr; i++)
     {
         if (dd != nullptr)
@@ -322,15 +319,15 @@ static void write_constr_pdb(const char*          fn,
         {
             ii = i;
         }
-        mtopGetAtomAndResidueName(mtop, ii, &molb, &anm, &resnr, &resnm, nullptr);
+        const auto res = mTopLookUp.getAtomAndResidueNameAndNumber(ii);
         gmx_fprintf_pdb_atomline(out,
                                  PdbRecordType::Atom,
                                  ii + 1,
-                                 anm,
+                                 res.atomName,
                                  ' ',
-                                 resnm,
+                                 res.residueName,
                                  ' ',
-                                 resnr,
+                                 res.residueNumber,
                                  ' ',
                                  10 * x[i][XX],
                                  10 * x[i][YY],
@@ -534,7 +531,6 @@ bool Constraints::Impl::apply(const bool                computeRmsd,
                               min_proj,
                               box,
                               pbc_null,
-                              hasMassPerturbedAtoms_,
                               lambda,
                               dvdlambda,
                               invdt,
@@ -980,17 +976,15 @@ void Constraints::Impl::setConstraints(gmx_localtop_t*                     top,
                                        int                                 numHomeAtoms,
                                        gmx::ArrayRef<const real>           masses,
                                        gmx::ArrayRef<const real>           inverseMasses,
-                                       const bool                          hasMassPerturbedAtoms,
                                        const real                          lambda,
                                        gmx::ArrayRef<const unsigned short> cFREEZE)
 {
-    numAtoms_              = numAtoms;
-    numHomeAtoms_          = numHomeAtoms;
-    masses_                = masses;
-    inverseMasses_         = inverseMasses;
-    hasMassPerturbedAtoms_ = hasMassPerturbedAtoms;
-    lambda_                = lambda;
-    cFREEZE_               = cFREEZE;
+    numAtoms_      = numAtoms;
+    numHomeAtoms_  = numHomeAtoms;
+    masses_        = masses;
+    inverseMasses_ = inverseMasses;
+    lambda_        = lambda;
+    cFREEZE_       = cFREEZE;
 
     idef = &top->idef;
 
@@ -1042,12 +1036,10 @@ void Constraints::setConstraints(gmx_localtop_t*                     top,
                                  const int                           numHomeAtoms,
                                  gmx::ArrayRef<const real>           masses,
                                  gmx::ArrayRef<const real>           inverseMasses,
-                                 const bool                          hasMassPerturbedAtoms,
                                  const real                          lambda,
                                  gmx::ArrayRef<const unsigned short> cFREEZE)
 {
-    impl_->setConstraints(
-            top, numAtoms, numHomeAtoms, masses, inverseMasses, hasMassPerturbedAtoms, lambda, cFREEZE);
+    impl_->setConstraints(top, numAtoms, numHomeAtoms, masses, inverseMasses, lambda, cFREEZE);
 }
 
 /*! \brief Makes a per-moleculetype container of mappings from atom
@@ -1087,6 +1079,7 @@ Constraints::Constraints(const gmx_mtop_t&          mtop,
                          const MpiComm&             mpiComm,
                          gmx_domdec_t*              dd,
                          const bool                 useUpdateGroups,
+                         const bool                 hasMassPerturbedAtoms,
                          const gmx_multisim_t*      ms,
                          t_nrnb*                    nrnb,
                          gmx_wallcycle*             wcycle,
@@ -1101,6 +1094,7 @@ Constraints::Constraints(const gmx_mtop_t&          mtop,
                    mpiComm,
                    dd,
                    useUpdateGroups,
+                   hasMassPerturbedAtoms,
                    ms,
                    nrnb,
                    wcycle,
@@ -1118,6 +1112,7 @@ Constraints::Impl::Impl(const gmx_mtop_t&          mtop_p,
                         const MpiComm&             mpiComm_p,
                         gmx_domdec_t*              dd_p,
                         const bool                 useUpdateGroups,
+                        const bool                 hasMassPerturbedAtoms,
                         const gmx_multisim_t*      ms_p,
                         t_nrnb*                    nrnb_p,
                         gmx_wallcycle*             wcycle_p,
@@ -1182,8 +1177,15 @@ Constraints::Impl::Impl(const gmx_mtop_t&          mtop_p,
             GMX_RELEASE_ASSERT(
                     observablesReducerBuilder == nullptr || mpiComm.isParallel(),
                     "ObservablesReducer only works with LINCS when there is more than one rank");
-            lincsd = init_lincs(
-                    log, mtop, nflexcon, at2con_mt, mayHaveSplitConstraints, ir.nLincsIter, ir.nProjOrder, observablesReducerBuilder);
+            lincsd = init_lincs(log,
+                                mtop,
+                                nflexcon,
+                                at2con_mt,
+                                mayHaveSplitConstraints,
+                                hasMassPerturbedAtoms,
+                                ir.nLincsIter,
+                                ir.nProjOrder,
+                                observablesReducerBuilder);
         }
 
         if (ir.eConstrAlg == ConstraintAlgorithm::Shake)
@@ -1277,7 +1279,7 @@ Constraints::Impl::~Impl()
     done_lincs(lincsd);
 }
 
-void Constraints::saveEdsamPointer(gmx_edsam* ed)
+void Constraints::saveEdsamPointer(edsam* ed)
 {
     impl_->ed = ed;
 }

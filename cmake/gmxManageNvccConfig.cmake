@@ -42,7 +42,9 @@ gmx_check_if_changed(CUDA_HOST_COMPILER_CHANGED CMAKE_CUDA_HOST_COMPILER)
 # code in GROMACS. So this workaround is good enough to keep problems
 # away from users installing GROMACS. See Issue #1982.
 if(CUDA_HOST_COMPILER_CHANGED)
-    try_compile(IS_GLIBC_2_23_OR_HIGHER ${CMAKE_BINARY_DIR} ${CMAKE_SOURCE_DIR}/cmake/TestGlibcVersion.cpp)
+    try_compile(IS_GLIBC_2_23_OR_HIGHER
+        SOURCES "${CMAKE_SOURCE_DIR}/cmake/TestGlibcVersion.cpp"
+        LOG_DESCRIPTION "Checking whether the CUDA host uses glibc 2.23 or newer")
     if(IS_GLIBC_2_23_OR_HIGHER)
         message(STATUS "Adding work-around for issue compiling CUDA code with glibc 2.23 string.h")
         set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -D_FORCE_INLINES")
@@ -71,7 +73,10 @@ gmx_add_cuda_flag_if_supported(NVCC_HAS_STATIC_GLOBAL_TEMPLATE_STUB_FALSE -stati
 # Add warnings
 gmx_add_cuda_flag_if_supported(NVCC_HAS_PTXAS_WARN_DOUBLE_USAGE -Xptxas=-warn-double-usage)
 gmx_add_cuda_flag_if_supported(NVCC_HAS_PTXAS_WERROR -Xptxas=-Werror)
+# CUDA 13 does not like traditional MSVC preprocessor, see https://github.com/NVIDIA/cccl/issues/5171
+if(MSVC AND CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 13.0)
+    gmx_add_cuda_flag_if_supported(NVCC_HAS_XCOMPILER_ZC_PREPROCESSOR "-Xcompiler=/Zc:preprocessor")
+endif()
 
 # Disable cudafe warnings with nvc++ as a host compiler - warning #177-D
 gmx_add_cuda_flag_if_supported(NVCC_HAS_DIAG_SUPPRESS_177 -diag-suppress=177)
-

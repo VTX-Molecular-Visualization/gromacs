@@ -31,7 +31,10 @@
 # To help us fund GROMACS development, we humbly ask that you cite
 # the research papers on the package. Check out https://www.gromacs.org.
 
-file(GLOB MDRUN_SOURCES mdrun/*.cpp)
+set(MDRUN_SOURCES
+    mdrun/mdrun.cpp
+    mdrun/nonbonded_bench.cpp
+    )
 # make an "object library" that we can re-use for multiple targets
 add_library(mdrun_objlib OBJECT ${MDRUN_SOURCES})
 gmx_target_compile_options(mdrun_objlib)
@@ -54,7 +57,7 @@ if(GMX_FAHCORE)
     add_library(fahcore $<TARGET_OBJECTS:mdrun_objlib>)
     target_link_libraries(fahcore PRIVATE ${GMX_COMMON_LIBRARIES} legacy_api)
 else()
-    file(GLOB GMX_MAIN_SOURCES gmx.cpp legacymodules.cpp)
+    set(GMX_MAIN_SOURCES gmx.cpp legacymodules.cpp)
     add_library(gmx_objlib OBJECT ${GMX_MAIN_SOURCES})
     target_link_libraries(gmx_objlib PRIVATE common legacy_api)
     # TODO: Remove `legacy_modules` once specific modules are explicitly linked.
@@ -74,8 +77,15 @@ else()
                           libgromacs
                           ${GMX_COMMON_LIBRARIES}
                           ${GMX_EXE_LINKER_FLAGS})
-    # Ensure that libsycl is properly linked when libgromacs needs it.
-    if(GMX_GPU_SYCL)
+    # Ensure that libsycl is properly linked when libgromacs is a static
+    # library.
+    #
+    # TODO The second predicate is used in release-2025 branch to
+    # maximize stability of the default shared-library build
+    # configuration. After merging to main branch, remove the second
+    # predicate, because it may be useful and seems unlikely to cause
+    # harm.
+    if(GMX_GPU_SYCL AND NOT BUILD_SHARED_LIBS)
         # There are no source files to gmx that need to compile as
         # SYCL, so none are provided here.
         add_sycl_to_target(TARGET gmx)

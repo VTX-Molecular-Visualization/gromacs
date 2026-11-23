@@ -60,6 +60,7 @@
 #include "gromacs/fileio/enxio.h"
 #include "gromacs/fileio/filetypes.h"
 #include "gromacs/fileio/oenv.h"
+#include "gromacs/fileio/timecontrol.h"
 #include "gromacs/fileio/tpxio.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/fileio/xvgr.h"
@@ -73,6 +74,7 @@
 #include "gromacs/utility/arraysize.h"
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/futil.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/real.h"
@@ -381,10 +383,10 @@ void OutputFile::initializeFrictionOutputFile(int                  subBlockStart
     firstGraphSubBlock_ = subBlockStart + numSubBlocks - numTensorElements;
     numGraph_           = numTensorElements;
     useKTForEnergy_     = (energyUnit == EnergyUnit::KT);
-    // For the the bias and the PMF in the awh output file this factor converts energy.
-    // For the friction output, which has units energy^2*time, this converts energy
-    // and also divides by kT to get from the metric tensor to friction.
-    scaleFactor_.resize(numGraph_, useKTForEnergy_ ? 1 : kTValue);
+    // The metric tensor, which has units energy^2*time, is stored in the energy file in MD units.
+    // For kT units we thus need to multiply by kT^-2.
+    // For MD units we need to divide by kT to get from the metric tensor to friction.
+    scaleFactor_.resize(numGraph_, useKTForEnergy_ ? 1 / gmx::square(kTValue) : 1 / kTValue);
     int numLegend = numDim_ - 1 + numGraph_;
     legend_       = makeLegend(awhBiasParams, OutputFileType::Friction, numLegend);
     xLabel_       = "(nm, deg or lambda state)";
@@ -524,34 +526,33 @@ void AwhReader::processAwhFrame(const t_enxblock& block, double time, const gmx_
 /*! \brief The main function for the AWH tool */
 int gmx_awh(int argc, char* argv[])
 {
-    const char*     desc[]     = { "[THISMODULE] extracts AWH data from an energy file.",
-                                   "One or two files are written per AWH bias per time frame.",
-                                   "The bias index, if more than one, is appended to the file, as well as",
-                                   "the time of the frame. By default only the PMF is printed.",
-                                   "With [TT]-more[tt] the bias, target and coordinate distributions",
-                                   "are also printed, as well as the metric sqrt(det(friction_tensor))",
-                                   "normalized such that the average is 1.",
-                                   "Option [TT]-fric[tt] prints all components of the friction tensor",
-                                   "to an additional set of files." };
-    static gmx_bool moreGraphs = FALSE;
-    static int      skip       = 0;
-    static gmx_bool kTUnit     = FALSE;
-    t_pargs         pa[]       = {
+    const char* desc[]     = { "[THISMODULE] extracts AWH data from an energy file.",
+                               "One or two files are written per AWH bias per time frame.",
+                               "The bias index, if more than one, is appended to the file, as well as",
+                               "the time of the frame. By default only the PMF is printed.",
+                               "With [TT]-more[tt] the bias, target and coordinate distributions",
+                               "are also printed, as well as the metric sqrt(det(friction_tensor))",
+                               "normalized such that the average is 1.",
+                               "Option [TT]-fric[tt] prints all components of the friction tensor",
+                               "to an additional set of files." };
+    gmx_bool    moreGraphs = FALSE;
+    int         skip       = 0;
+    gmx_bool    kTUnit     = FALSE;
+    t_pargs     pa[]       = {
         { "-skip", FALSE, etINT, { &skip }, "Skip number of frames between data points" },
         { "-more", FALSE, etBOOL, { &moreGraphs }, "Print more output" },
         { "-kt",
-                        FALSE,
-                        etBOOL,
-                        { &kTUnit },
-                        "Print free energy output in units of kT instead of kJ/mol" }
+                    FALSE,
+                    etBOOL,
+                    { &kTUnit },
+                    "Print free energy output in units of kT instead of kJ/mol" }
     };
 
     ener_file_t       fp;
     t_inputrec        ir;
-    gmx_enxnm_t*      enm = nullptr;
     t_enxframe*       frame;
-    int               nre;
     gmx_output_env_t* oenv;
+    gmx::TimeControl  timeControl;
 
     t_filenm  fnm[] = { { efEDR, "-f", nullptr, ffREAD },
                         { efTPR, "-s", nullptr, ffREAD },
@@ -569,14 +570,15 @@ int gmx_awh(int argc, char* argv[])
                            desc,
                            0,
                            nullptr,
-                           &oenv))
+                           &oenv,
+                           &timeControl))
     {
         return 0;
     }
 
     snew(frame, 1);
-    fp = open_enx(ftp2fn(efEDR, nfile, fnm), "r");
-    do_enxnms(fp, &nre, &enm);
+    fp                           = open_enx(ftp2fn(efEDR, nfile, fnm), "r");
+    std::vector<gmx_enxnm_t> enm = readEnxNames(fp);
 
     /* We just need the AWH parameters from inputrec. These are used to initialize
        the AWH reader when we have a frame to read later on. */
@@ -606,7 +608,7 @@ int gmx_awh(int argc, char* argv[])
 
         if (haveFrame)
         {
-            timeCheck = check_times(frame->t);
+            timeCheck = check_times(frame->t, timeControl);
 
             if (timeCheck == 0)
             {
@@ -651,7 +653,7 @@ int gmx_awh(int argc, char* argv[])
 
     fprintf(stderr, "\n");
 
-    close_enx(fp);
+    done_ener_file(fp);
 
     return 0;
 }

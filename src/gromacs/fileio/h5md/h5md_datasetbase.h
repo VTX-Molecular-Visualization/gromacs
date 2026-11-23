@@ -32,9 +32,12 @@
  * the research papers on the package. Check out https://www.gromacs.org.
  */
 
-/*! \brief Declarations of H5md data set base class.
+/*! \internal \file
+ * \brief Declarations of H5md data set base class.
  *
  * \author Petter Johansson <pettjoha@kth.se>
+ * \author Yang Zhang <yang.zhang@scilifelab.se>
+ * \ingroup module_fileio
  */
 
 #ifndef GMX_FILEIO_H5MD_DATASETBASE_H
@@ -42,12 +45,16 @@
 
 #include <hdf5.h>
 
-#include <memory>
+#include <string>
 #include <vector>
+
+#include "gromacs/fileio/h5md/h5md_guard.h"
 
 namespace gmx
 {
 
+template<typename ValueType>
+class ArrayRef;
 template<typename ValueType>
 class BasicVector;
 template<typename ValueType>
@@ -79,10 +86,14 @@ public:
 
     //! \brief Destructor.
     ~H5mdDataSetBase() noexcept;
+    //! \brief Copy constructor explicitly deleted.
+    H5mdDataSetBase(const H5mdDataSetBase&) noexcept = delete;
+    //! \brief Copy assignment explicitly deleted.
+    H5mdDataSetBase& operator=(const H5mdDataSetBase&) = delete;
     //! \brief Move constructor.
     H5mdDataSetBase(H5mdDataSetBase&&) noexcept;
-    //! \brief Move assignment.
-    H5mdDataSetBase& operator=(H5mdDataSetBase&&) noexcept;
+    //! \brief Move assignment explicitly deleted (not supported by sg::scope_guard).
+    H5mdDataSetBase& operator=(H5mdDataSetBase&&) noexcept = delete;
 
     /*! \brief Return the HDF5 handle of the data set.
      *
@@ -92,15 +103,15 @@ public:
      */
     hid_t id() const;
 
-    /*! \brief Return the HDF5 handle of the data type for the managed data set.
+    /*! \brief Return the HDF5 handle of the stored (in-file) data type for the managed data set.
      *
      *  \warning Must not be closed by the caller.
      *
      *  \deprecated This handle will not be exposed once I/O is implemented as class methods.
      */
-    hid_t dataType() const;
+    hid_t storedDataType() const;
 
-    /*! \brief Return the HDF5 handle of the native data type for the managed data set.
+    /*! \brief Return the HDF5 handle of the native (in-memory) data type for the managed data set.
      *
      *  \warning Must not be closed by the caller.
      *
@@ -110,9 +121,35 @@ public:
 
     /*! \brief Return the dimensions of the data set.
      *
-     *  \throws gmx::FileIOError if the dimensions cannot be read.
+     *  \throws H5mdError if the dimensions cannot be read.
      */
     DataSetDims dims() const;
+
+    /*! \brief Perform a low-level operation to read data into \p values.
+     *
+     * \note Assumes that the caller has validated the given handles
+     * and that \p values is of the correct size.
+     *
+     * \param[out] values          Container to read data into.
+     * \param[in]  memoryDataSpace Data space for the memory buffer (called `mem_space_id` in hdf5 documentation).
+     * \param[in]  fileDataSpace   Data space for the file buffer (called `file_space_id` in hdf5 documentation).
+     *
+     * \returns True if the read operation was successful, otherwise false.
+     */
+    bool read(ArrayRef<ValueType> values, hid_t memoryDataSpace, hid_t fileDataSpace) const;
+
+    /*! \brief Perform a low-level operation to write \p values into data set.
+     *
+     * \note Assumes that the caller has validated the given handles
+     * and that \p values is of the correct size.
+     *
+     * \param[in] values          Values to write into the data set.
+     * \param[in] memoryDataSpace Data space for the memory buffer (called `mem_space_id` in hdf5 documentation).
+     * \param[in] fileDataSpace   Data space for the file buffer (called `file_space_id` in hdf5 documentation).
+     *
+     * \returns True if the write operation was successful, otherwise false.
+     */
+    bool write(ArrayRef<const ValueType> values, hid_t memoryDataSpace, hid_t fileDataSpace) const;
 
 private:
     /*! \brief Constructor to manage a data set with given \p dataSetHandle.
@@ -122,24 +159,54 @@ private:
      */
     explicit H5mdDataSetBase(hid_t dataSetHandle);
 
-    class Impl;
+    //! \brief Handle to the managed data set.
+    const hid_t dataSet_;
 
-    //!< Handle to implementation object.
-    std::unique_ptr<Impl> impl_;
+    /*! \brief Scope guard which closes the data set handle when the destructor is called.
+     *
+     * \note Must be declared directly below and thus initialized just after the guarded
+     * handle. If not the guard may not be active if a subsequent initialization fails,
+     * resulting in a memory leak.
+     */
+    H5mdGuard dataSetGuard_ = sg::make_scope_guard(H5mdCloser(dataSet_, H5Dclose));
+
+    //! \brief Handle to the stored (in-file) data type of the managed data set.
+    const hid_t storedDataType_;
+
+    /*! \brief Scope guard which closes the data type handle when the destructor is called.
+     *
+     * \note Must be declared directly below and thus initialized just after the guarded
+     * handle. If not the guard may not be active if a subsequent initialization fails,
+     * resulting in a memory leak.
+     */
+    H5mdGuard storedDataTypeGuard_ = sg::make_scope_guard(H5mdCloser(storedDataType_, H5Tclose));
+
+    /*! \brief Handle to the immutable native (in-memory) data type of the managed data set.
+     *
+     * This may be different from \p storedDataType_ when opening a data set from a file
+     * which was created on another machine. When reading data from or writing data to
+     * a data set this is used to convert the data from/to the \p storedDataType_.
+     */
+    const hid_t nativeDataType_;
+
+    /*! \brief Scope guard which closes the data type handle when the destructor is called.
+     *
+     * \note Must be declared directly below and thus initialized just after the guarded
+     * handle. If not the guard may not be active if a subsequent initialization fails,
+     * resulting in a memory leak.
+     */
+    H5mdGuard nativeDataTypeGuard_ = sg::make_scope_guard(H5mdCloser(nativeDataType_, H5Tclose));
+
+    //! \brief Number of dimensions of data set.
+    const hsize_t numDims_;
 };
 
 extern template class H5mdDataSetBase<int32_t>;
-
 extern template class H5mdDataSetBase<int64_t>;
-
 extern template class H5mdDataSetBase<float>;
-
 extern template class H5mdDataSetBase<double>;
-
 extern template class H5mdDataSetBase<BasicVector<float>>;
-
 extern template class H5mdDataSetBase<BasicVector<double>>;
-
 extern template class H5mdDataSetBase<std::string>;
 
 } // namespace gmx

@@ -40,8 +40,10 @@
 
 #include "gromacs/commandline/pargs.h"
 #include "gromacs/fileio/confio.h"
+#include "gromacs/fileio/timecontrol.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/gmxana/gmx_ana.h"
+#include "gromacs/math/units.h"
 #include "gromacs/mdspan/mdspan.h"
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/pbcutil/rmpbc.h"
@@ -49,12 +51,11 @@
 #include "gromacs/topology/topology.h"
 #include "gromacs/trajectory/trajectoryframe.h"
 #include "gromacs/utility/arraysize.h"
+#include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/futil.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/stringutil.h"
 #include "gromacs/utility/vec.h"
-
-static const double bohr = 0.529177249; /* conversion factor to compensate for VMD plugin conversion... */
 
 int gmx_spatial(int argc, char* argv[])
 {
@@ -116,12 +117,12 @@ int gmx_spatial(int argc, char* argv[])
         "option or increasing the [TT]-nab[tt] value."
     };
 
-    static gmx_bool bPBC         = FALSE;
-    static int      iIGNOREOUTER = -1; /*Positive values may help if the surface is spikey */
-    static gmx_bool bCUTDOWN     = TRUE;
-    static real     rBINWIDTH    = 0.05; /* nm */
-    static gmx_bool bCALCDIV     = TRUE;
-    static int      iNAB         = 16;
+    gmx_bool bPBC         = FALSE;
+    int      iIGNOREOUTER = -1; /*Positive values may help if the surface is spikey */
+    gmx_bool bCUTDOWN     = TRUE;
+    real     rBINWIDTH    = 0.05; /* nm */
+    gmx_bool bCALCDIV     = TRUE;
+    int      iNAB         = 16;
 
     t_pargs pa[] = { { "-pbc",
                        FALSE,
@@ -174,6 +175,7 @@ int gmx_spatial(int argc, char* argv[])
     int64_t           tot;
     double            norm;
     gmx_output_env_t* oenv;
+    gmx::TimeControl  timeControl;
     gmx_rmpbc_t       gpbc = nullptr;
 
     t_filenm fnm[] = { { efTPS, nullptr, nullptr, ffREAD }, /* this is for the topology */
@@ -184,8 +186,19 @@ int gmx_spatial(int argc, char* argv[])
 
     /* This is the routine responsible for adding default options,
      * calling the X/motif interface, etc. */
-    if (!parse_common_args(
-                &argc, argv, PCA_CAN_TIME | PCA_CAN_VIEW, NFILE, fnm, asize(pa), pa, asize(desc), desc, asize(bugs), bugs, &oenv))
+    if (!parse_common_args(&argc,
+                           argv,
+                           PCA_CAN_TIME | PCA_CAN_VIEW,
+                           NFILE,
+                           fnm,
+                           asize(pa),
+                           pa,
+                           asize(desc),
+                           desc,
+                           asize(bugs),
+                           bugs,
+                           &oenv,
+                           &timeControl))
     {
         return 0;
     }
@@ -200,7 +213,7 @@ int gmx_spatial(int argc, char* argv[])
     get_index(atoms, ftp2fn_null(efNDX, NFILE, fnm), 1, &nidxp, &indexp, &grpnmp);
 
     /* The first time we read data is a little special */
-    read_first_frame(oenv, &status, ftp2fn(efTRX, NFILE, fnm), &fr, flags);
+    read_first_frame(oenv, &status, ftp2fn(efTRX, NFILE, fnm), &fr, &timeControl, flags);
     natoms = fr.natoms;
 
     /* Memory Allocation */
@@ -271,20 +284,20 @@ int gmx_spatial(int argc, char* argv[])
             int z = static_cast<int>(std::floor((fr.x[index[i]][ZZ] - MINBIN[ZZ]) / rBINWIDTH));
             if (x < 0 || x >= nbin[XX] || y < 0 || y >= nbin[YY] || z < 0 || z >= nbin[ZZ])
             {
-                printf("There was an item outside of the allocated memory. Increase the value "
-                       "given with the -nab option.\n");
-                printf("Memory was allocated for [%f,%f,%f]\tto\t[%f,%f,%f]\n",
-                       MINBIN[XX],
-                       MINBIN[YY],
-                       MINBIN[ZZ],
-                       MAXBIN[XX],
-                       MAXBIN[YY],
-                       MAXBIN[ZZ]);
-                printf("Memory was required for [%f,%f,%f]\n",
-                       fr.x[index[i]][XX],
-                       fr.x[index[i]][YY],
-                       fr.x[index[i]][ZZ]);
-                std::exit(1);
+                gmx_fatal(FARGS,
+                          "There was an item outside of the allocated memory. Increase the value "
+                          "given with the -nab option.\n"
+                          "Memory was allocated for [%f,%f,%f]\tto\t[%f,%f,%f]\n"
+                          "Memory was required for [%f,%f,%f]",
+                          MINBIN[XX],
+                          MINBIN[YY],
+                          MINBIN[ZZ],
+                          MAXBIN[XX],
+                          MAXBIN[YY],
+                          MAXBIN[ZZ],
+                          fr.x[index[i]][XX],
+                          fr.x[index[i]][YY],
+                          fr.x[index[i]][ZZ]);
             }
 
             bin[x][y][z]++;
@@ -317,6 +330,7 @@ int gmx_spatial(int argc, char* argv[])
         /* printf("%f\t%f\t%f\n",box[XX][XX],box[YY][YY],box[ZZ][ZZ]); */
 
     } while (read_next_frame(oenv, status, &fr));
+    close_trx(status);
 
     if (bPBC)
     {
@@ -347,17 +361,18 @@ int gmx_spatial(int argc, char* argv[])
     fprintf(flp, "test\n");
     /*
       Values in .cube file represent the density at the grid point.
-     Corresponding coordinates to the binned value is the center of the bin, i.e. + 0.5 to the bin index.
+      Corresponding coordinates to the binned value is the center of the bin, i.e. + 0.5 to the bin
+      index. Bohr conversion factor is used to compensate for VMD plugin conversion.
    */
     fprintf(flp,
             "%5d%12.6f%12.6f%12.6f\n",
             nidxp,
-            (MINBIN[XX] + (outputStarts[XX] + 0.5) * rBINWIDTH) * 10. / bohr,
-            (MINBIN[YY] + (outputStarts[YY] + 0.5) * rBINWIDTH) * 10. / bohr,
-            (MINBIN[ZZ] + (outputStarts[ZZ] + 0.5) * rBINWIDTH) * 10. / bohr);
-    fprintf(flp, "%5d%12.6f%12.6f%12.6f\n", outputEnds[XX] - outputStarts[XX], rBINWIDTH * 10. / bohr, 0., 0.);
-    fprintf(flp, "%5d%12.6f%12.6f%12.6f\n", outputEnds[YY] - outputStarts[YY], 0., rBINWIDTH * 10. / bohr, 0.);
-    fprintf(flp, "%5d%12.6f%12.6f%12.6f\n", outputEnds[ZZ] - outputStarts[ZZ], 0., 0., rBINWIDTH * 10. / bohr);
+            (MINBIN[XX] + (outputStarts[XX] + 0.5) * rBINWIDTH) / gmx::c_bohr2Nm,
+            (MINBIN[YY] + (outputStarts[YY] + 0.5) * rBINWIDTH) / gmx::c_bohr2Nm,
+            (MINBIN[ZZ] + (outputStarts[ZZ] + 0.5) * rBINWIDTH) / gmx::c_bohr2Nm);
+    fprintf(flp, "%5d%12.6f%12.6f%12.6f\n", outputEnds[XX] - outputStarts[XX], rBINWIDTH / gmx::c_bohr2Nm, 0., 0.);
+    fprintf(flp, "%5d%12.6f%12.6f%12.6f\n", outputEnds[YY] - outputStarts[YY], 0., rBINWIDTH / gmx::c_bohr2Nm, 0.);
+    fprintf(flp, "%5d%12.6f%12.6f%12.6f\n", outputEnds[ZZ] - outputStarts[ZZ], 0., 0., rBINWIDTH / gmx::c_bohr2Nm);
 
     for (int i = 0; i < nidxp; i++)
     {
@@ -386,9 +401,9 @@ int gmx_spatial(int argc, char* argv[])
                 "%5d%12.6f%12.6f%12.6f%12.6f\n",
                 v,
                 0.,
-                fr.x[indexp[i]][XX] * 10.0 / bohr,
-                fr.x[indexp[i]][YY] * 10.0 / bohr,
-                fr.x[indexp[i]][ZZ] * 10.0 / bohr);
+                fr.x[indexp[i]][XX] / gmx::c_bohr2Nm,
+                fr.x[indexp[i]][YY] / gmx::c_bohr2Nm,
+                fr.x[indexp[i]][ZZ] / gmx::c_bohr2Nm);
     }
 
     tot = 0;

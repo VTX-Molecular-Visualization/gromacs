@@ -42,6 +42,7 @@
 #include <string>
 #include <vector>
 
+#include "gromacs/gmxpreprocess/extendableforcefield.h"
 #include "gromacs/gmxpreprocess/fflibutil.h"
 #include "gromacs/gmxpreprocess/grompp_impl.h"
 #include "gromacs/topology/atoms.h"
@@ -58,6 +59,9 @@
 #include "gromacs/utility/stringutil.h"
 
 #include "hackblock.h"
+
+namespace gmx
+{
 
 typedef struct
 {
@@ -143,15 +147,15 @@ static void done_xlatom(int nxlate, t_xlate_atom* xlatom)
     sfree(xlatom);
 }
 
-void rename_atoms(const std::filesystem::path&           xlfile,
-                  const std::filesystem::path&           ffdir,
-                  t_atoms*                               atoms,
-                  t_symtab*                              symtab,
-                  gmx::ArrayRef<const PreprocessResidue> localPpResidue,
-                  bool                                   bResname,
-                  const ResidueTypeMap&                  rt,
-                  bool                                   bReorderNum,
-                  bool                                   bVerbose)
+void rename_atoms(const std::filesystem::path&      xlfile,
+                  const ExtendableForceField&       forceField,
+                  t_atoms*                          atoms,
+                  t_symtab*                         symtab,
+                  ArrayRef<const PreprocessResidue> localPpResidue,
+                  bool                              bResname,
+                  const ResidueTypeMap&             rt,
+                  bool                              bReorderNum,
+                  bool                              bVerbose)
 {
     int           nxlate, a, i, resind;
     t_xlate_atom* xlatom;
@@ -163,12 +167,12 @@ void rename_atoms(const std::filesystem::path&           xlfile,
     xlatom = nullptr;
     if (!xlfile.empty())
     {
-        gmx::FilePtr fp = gmx::openLibraryFile(xlfile);
+        FilePtr fp = openLibraryFile(xlfile);
         get_xlatoms(xlfile, fp.get(), &nxlate, &xlatom);
     }
     else
     {
-        auto fns = fflib_search_file_end(ffdir, ".arn", FALSE);
+        auto fns = forceField.findAllPathsEndingWith(".arn");
         for (const auto& filename : fns)
         {
             FILE* fp = fflib_open(filename);
@@ -214,7 +218,7 @@ void rename_atoms(const std::filesystem::path&           xlfile,
         {
             /* Check if the base file name of the rtp and arn entry match */
             if (localPpResidue.empty()
-                || gmx::equalCaseInsensitive(localPpResidue[resind].filebase, xlatom[i].filebase))
+                || equalCaseInsensitive(localPpResidue[resind].filebase, xlatom[i].filebase))
             {
                 /* Match the residue name */
                 bMatch = (xlatom[i].res == nullptr
@@ -267,3 +271,5 @@ void rename_atoms(const std::filesystem::path&           xlfile,
 
     done_xlatom(nxlate, xlatom);
 }
+
+} // namespace gmx

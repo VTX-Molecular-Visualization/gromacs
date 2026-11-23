@@ -50,10 +50,10 @@
 #include "gromacs/fileio/confio.h"
 #include "gromacs/fileio/filetypes.h"
 #include "gromacs/fileio/oenv.h"
+#include "gromacs/fileio/timecontrol.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/fileio/xvgr.h"
 #include "gromacs/gmxana/gmx_ana.h"
-#include "gromacs/math/functions.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/pbcutil/rmpbc.h"
@@ -66,6 +66,7 @@
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/futil.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/real.h"
@@ -157,12 +158,13 @@ static void periodic_mindist_plot(const char*             trxfn,
                                   int                     n,
                                   int                     index[],
                                   gmx_bool                bSplit,
-                                  const gmx_output_env_t* oenv)
+                                  const gmx_output_env_t* oenv,
+                                  const gmx::TimeControl& timeControl)
 {
     FILE*                      out;
     std::array<std::string, 5> leg = { "min per.", "max int.", "box1", "box2", "box3" };
     t_trxstatus*               status;
-    real                       t;
+    double                     t;
     rvec*                      x;
     matrix                     box;
     int                        natoms, ind_min[2] = { 0, 0 }, ind_mini = 0, ind_minj = 0;
@@ -170,7 +172,7 @@ static void periodic_mindist_plot(const char*             trxfn,
     gmx_bool                   bFirst;
     gmx_rmpbc_t                gpbc = nullptr;
 
-    natoms = read_first_x(oenv, &status, trxfn, &t, &x, box);
+    natoms = read_first_x(oenv, &status, trxfn, &t, &x, box, &timeControl);
 
     check_index(nullptr, n, index, nullptr, natoms);
 
@@ -223,6 +225,7 @@ static void periodic_mindist_plot(const char*             trxfn,
                 norm(box[2]));
         bFirst = FALSE;
     } while (read_next_x(oenv, status, &t, x, box));
+    close_trx(status);
 
     if (nullptr != top)
     {
@@ -386,13 +389,15 @@ static void dist_plot(const char*             fn,
                       gmx_bool                bGroup,
                       gmx_bool                bEachResEachTime,
                       gmx_bool                bPrintResName,
-                      const gmx_output_env_t* oenv)
+                      const gmx_output_env_t* oenv,
+                      const gmx::TimeControl& timeControl)
 {
     FILE *                   atm, *dist, *num;
     t_trxstatus*             trxout;
     char                     buf[256];
     std::vector<std::string> leg;
-    real                     t, dmin, dmax, **mindres = nullptr, **maxdres = nullptr;
+    double                   t;
+    real                     dmin, dmax, **mindres = nullptr, **maxdres = nullptr;
     int                      nmin, nmax;
     t_trxstatus*             status;
     int                      i = -1, j, k;
@@ -405,7 +410,7 @@ static void dist_plot(const char*             fn,
     gmx_bool                 bFirst;
     FILE*                    respertime = nullptr;
 
-    if (read_first_x(oenv, &status, fn, &t, &x0, box) == 0)
+    if (read_first_x(oenv, &status, fn, &t, &x0, box, &timeControl) == 0)
     {
         gmx_fatal(FARGS, "Could not read coordinates from statusfile\n");
     }
@@ -817,6 +822,7 @@ int gmx_mindist(int argc, char* argv[])
         { "-printresname", FALSE, etBOOL, { &bPrintResName }, "Write residue names" }
     };
     gmx_output_env_t* oenv;
+    gmx::TimeControl  timeControl;
     t_topology*       top     = nullptr;
     PbcType           pbcType = PbcType::Unset;
     rvec*             x       = nullptr;
@@ -845,7 +851,8 @@ int gmx_mindist(int argc, char* argv[])
                            desc,
                            0,
                            nullptr,
-                           &oenv))
+                           &oenv,
+                           &timeControl))
     {
         return 0;
     }
@@ -933,7 +940,7 @@ int gmx_mindist(int argc, char* argv[])
 
     if (bPI)
     {
-        periodic_mindist_plot(trxfnm, distfnm, top, pbcType, gnx[0], index[0], bSplit, oenv);
+        periodic_mindist_plot(trxfnm, distfnm, top, pbcType, gnx[0], index[0], bSplit, oenv, timeControl);
     }
     else
     {
@@ -959,7 +966,8 @@ int gmx_mindist(int argc, char* argv[])
                   bGroup,
                   bEachResEachTime,
                   bPrintResName,
-                  oenv);
+                  oenv,
+                  timeControl);
     }
 
     do_view(oenv, distfnm, "-nxy");

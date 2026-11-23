@@ -26,6 +26,12 @@ Output Control
 ..
    Please keep these in alphabetical order!
 
+``GMX_AUTHOR_EMAIL``
+        Email address of corresponding author in ``GMX_AUTHOR_NAME``.
+
+``GMX_AUTHOR_NAME``
+        Name of corresponding author that simulation data is attributed to.
+
 ``GMX_COMPELDUMP``
         Applies for computational electrophysiology setups
         only (see reference manual). The initial structure gets dumped to
@@ -230,6 +236,10 @@ Performance and Run Control
         Enables GPU kernel-initiated communication using NVSHMEM in multi-rank parallel runs
         when build and simulation setup support it.
 
+``GMX_ENABLE_NVSHMEM_FORCE_HALO_SYNC``
+        Inserts a synchronization after the fused force halo exchange kernel
+        when using NVSHMEM. This is a debug/tuning knob.
+
 ``GMX_ENABLE_STAGED_GPU_TO_CPU_PMEPP_COMM``
         Use a staged implementation of GPU communications for PME force
         transfers from the PME GPU to the CPU memory of a PP rank for
@@ -290,12 +300,24 @@ Performance and Run Control
         performance when scaling over many GPUs. Note: this feature still lacks
         substantial testing.
 
+``GMX_GPU_VSITES``
+        Enable the experimental support for virtual sites with GPU update.
+        Virtual sites of linear types 1, 2 and 3 are then constructed, and their
+        forces spread, on the GPU. Not supported with all GPU backends.
+        With domain decomposition, all virtual sites must be within
+        update groups. The force spreading uses atomic operations, so the
+        summation order and thus results are not reproducible between runs.
+
 ``GMX_GPU_DISABLE_BUFFER_OPS``
         Disable coordinate/force transformation to be done on the GPU and execute these
         tasks on the CPU instead.
 
 ``GMX_GPU_PME_PP_COMMS``
         Removed.
+
+``GMX_GPU_TRIANGLE_CONSTRAINTS``
+        Enable support for triangle constraints with LINCS on the GPU. This enables GPU-resident update
+        for systems containing such coupled constraints, which can improve performance.
 
 ``GMX_GPUTASKS``
         set in the same way as ``mdrun -gputasks``, ``GMX_GPUTASKS`` allows the mapping
@@ -321,7 +343,7 @@ Performance and Run Control
         Sets ``heffte::plan_options::use_reorder`` to ``true`` (the default) or ``false``.
         See the `HeFFTe docs`_ for details.
 
-``GMX_IGNORE_FSYNC_FAILURE_ENV``
+``GMX_IGNORE_FSYNC_FAILURE``
         allow :ref:`gmx mdrun` to continue even if
         a file is missing.
 
@@ -341,28 +363,32 @@ Performance and Run Control
         The default value is optimized for supported GPUs
         therefore changing it is not necessary for normal usage, but it can be useful on future architectures.
 
-``GMX_NBNXN_CYCLE``
+``GMX_NBNXM_CYCLE``
         when set, print detailed neighbor search cycle counting.
 
-``GMX_NBNXN_EWALD_ANALYTICAL``
+``GMX_NBNXM_EWALD_ANALYTICAL``
         force the use of analytical Ewald non-bonded kernels,
-        mutually exclusive of ``GMX_NBNXN_EWALD_TABLE``.
+        mutually exclusive of ``GMX_NBNXM_EWALD_TABLE``.
 
-``GMX_NBNXN_EWALD_TABLE``
+``GMX_NBNXM_EWALD_TABLE``
         force the use of tabulated Ewald non-bonded kernels,
-        mutually exclusive of ``GMX_NBNXN_EWALD_ANALYTICAL``.
+        mutually exclusive of ``GMX_NBNXM_EWALD_ANALYTICAL``.
 
-``GMX_NBNXN_PLAINC_1X1``
+``GMX_NBNXM_PLAINC_1X1``
         force the use of the reference 1x1 non-SIMD CPU non-bonded kernel,
-        mutually exclusive of ``GMX_NBNXN_SIMD_2XNN`` and ``GMX_NBNXN_SIMD_4XN``.
+        mutually exclusive of ``GMX_NBNXM_PLAINC_4X4``, ``GMX_NBNXM_SIMD_2XNN`` and ``GMX_NBNXM_SIMD_4XN``.
 
-``GMX_NBNXN_SIMD_2XNN``
+``GMX_NBNXM_PLAINC_4X4``
+        force the use of the reference 4x4 non-SIMD CPU non-bonded kernel,
+        mutually exclusive of ``GMX_NBNXM_PLAINC_1X1``, ``GMX_NBNXM_SIMD_2XNN`` and ``GMX_NBNXM_SIMD_4XN``.
+
+``GMX_NBNXM_SIMD_2XNN``
         force the use of 2x(N+N) SIMD CPU non-bonded kernels,
-        mutually exclusive of ``GMX_NBNXN_PLAINC_1X1`` and ``GMX_NBNXN_SIMD_4XN``.
+        mutually exclusive of ``GMX_NBNXM_PLAINC_1X1``, ``GMX_NBNXM_PLAINC_4X4`` and ``GMX_NBNXM_SIMD_4XN``.
 
-``GMX_NBNXN_SIMD_4XN``
+``GMX_NBNXM_SIMD_4XN``
         force the use of 4xN SIMD CPU non-bonded kernels,
-        mutually exclusive of ``GMX_NBNXN_PLAINC_1X1`` and ``GMX_NBNXN_SIMD_2XNN``.
+        mutually exclusive of ``GMX_NBNXM_PLAINC_1X1``, ``GMX_NBNXM_PLAINC_4X4`` and ``GMX_NBNXM_SIMD_2XNN``.
 
 ``GMX_NO_CART_REORDER``
         used in initializing domain decomposition communicators. Rank reordering
@@ -436,6 +462,14 @@ Performance and Run Control
         should contain multiple masses used for test particle insertion into a cavity.
         The center of mass of the last atoms is used for insertion into the cavity.
 
+``GMX_USE_MPI_THREAD_MULTIPLE``
+        when set to any value, including an empty string or ``0``, request
+        ``MPI_THREAD_MULTIPLE`` when |Gromacs| initializes external MPI.
+        Terminate if the MPI library cannot provide this thread-support level.
+        Required for QM/MM with CP2K versions 2026.2(dev) and later (see :ref:`qmmm`).
+        This can slightly reduce classical MD performance. Leave it unset to
+        retain the default MPI initialization.
+        
 ``GMX_VERLET_BUFFER_PRESSURE_TOLERANCE``
         sets the maximum tolerated error in the pressure in bar for the
         automated tuning of the Verlet pair-list buffering. Can only be used
@@ -596,3 +630,11 @@ Analysis and Core Functions
 
 ``VMDDIR``
         base path of VMD installation.
+
+MDModules
+---------
+
+``GMX_NNPOT_SKIP_MODEL_CHECK``
+        skips the compatibility check between the neural network potential model and
+        its inputs. This can be useful if errors are encountered due to the dummy input,
+        or to prepare :ref:`tpr` files without a Libtorch-compatible installation.

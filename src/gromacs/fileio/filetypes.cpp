@@ -58,25 +58,25 @@ enum
 /* To support multiple file types with one general (eg TRX) we have
  * these arrays.
  */
-static const int trxs[] = { efXTC, efTRR, efCPT, efGRO, efG96, efPDB, efTNG, efH5MD };
+static const int trxs[] = { efXTC, efTRR, efCPT, efGRO, efG96, efPDB, efCIF, efTNG, efH5MD };
 #define NTRXS asize(trxs)
 
-static const int trcompressed[] = { efXTC, efTNG };
+static const int trcompressed[] = { efXTC, efH5MD, efTNG };
 #define NTRCOMPRESSED asize(trcompressed)
 
-static const int tros[] = { efXTC, efTRR, efGRO, efG96, efPDB, efTNG, efH5MD };
+static const int tros[] = { efXTC, efTRR, efGRO, efG96, efPDB, efCIF, efTNG, efH5MD };
 #define NTROS asize(tros)
 
 static const int trns[] = { efTRR, efCPT, efTNG, efH5MD };
 #define NTRNS asize(trns)
 
-static const int stos[] = { efGRO, efG96, efPDB, efBRK, efENT, efESP };
+static const int stos[] = { efGRO, efG96, efPDB, efCIF, efBRK, efENT, efESP };
 #define NSTOS asize(stos)
 
-static const int stxs[] = { efGRO, efG96, efPDB, efBRK, efENT, efESP, efTPR };
+static const int stxs[] = { efGRO, efG96, efPDB, efCIF, efBRK, efENT, efESP, efTPR };
 #define NSTXS asize(stxs)
 
-static const int tpss[] = { efTPR, efGRO, efG96, efPDB, efBRK, efENT };
+static const int tpss[] = { efTPR, efGRO, efG96, efPDB, efCIF, efBRK, efENT };
 #define NTPSS asize(tpss)
 
 typedef struct // NOLINT(clang-analyzer-optin.performance.Padding)
@@ -113,6 +113,7 @@ static const t_deffile deffile[efNR] = {
     { eftASC, ".gro", "conf", "-c", "Coordinate file in Gromos-87 format" },
     { eftASC, ".g96", "conf", "-c", "Coordinate file in Gromos-96 format" },
     { eftASC, ".pdb", "eiwit", "-f", "Protein data bank file" },
+    { eftASC, ".cif", "eiwit", "-f", "Structure file in PDBx/mmCIF format" },
     { eftASC, ".brk", "eiwit", "-f", "Brookhaven data bank file" },
     { eftASC, ".ent", "eiwit", "-f", "Entry in the protein date bank" },
     { eftASC, ".esp", "conf", "-f", "Coordinate file in Espresso format" },

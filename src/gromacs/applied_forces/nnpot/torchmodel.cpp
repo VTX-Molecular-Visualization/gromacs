@@ -41,9 +41,31 @@
 
 #include "torchmodel.h"
 
+#include "config.h"
+
 #include <dlfcn.h>
 
 #include <iostream>
+
+// to avoid conflicts between torch and gromacs DIM macro
+// TODO: convert DIM macro to global static constexpr
+#ifdef DIM
+#    undef DIM
+#    define GMX_RESTORE_DIM_MACRO
+#endif
+
+#include <torch/csrc/jit/runtime/graph_executor.h>
+#include <torch/cuda.h>
+#include <torch/script.h>
+#include <torch/torch.h>
+#if GMX_TORCH_XPU
+#    include <torch/xpu.h>
+#endif
+
+#ifdef GMX_RESTORE_DIM_MACRO
+#    define DIM 3
+#    undef GMX_RESTORE_DIM_MACRO
+#endif
 
 #include "gromacs/gmxlib/network.h"
 #include "gromacs/hardware/device_information.h"
@@ -60,6 +82,12 @@
 
 namespace gmx
 {
+
+/*! \brief Define the torch datatype according to GMX_DOUBLE.
+ *
+ * Important for converting data types, as model inference is always done in float32.
+ */
+static constexpr auto sc_torchRealType = GMX_DOUBLE ? torch::kFloat64 : torch::kFloat32;
 
 //! \brief \internal Helper function to convert a torch::DataPtr to a string.
 static std::string recordToString(std::tuple<at::DataPtr, size_t> data)
@@ -130,9 +158,39 @@ static std::tuple<std::string, std::optional<int>> getMdrunActiveDevice()
         GMX_THROW(InternalError("Could not get active device: hipGetDevice failed."));
     }
     return { "hip", activeDevice };
+#elif GMX_TORCH_XPU
+    // Intel GPUs through the XPU backend of LibTorch. SYCL has no process-wide current device
+    // that could be inherited from mdrun, so the model runs on the first XPU LibTorch
+    // enumerates; ONEAPI_DEVICE_SELECTOR or ZE_AFFINITY_MASK restrict which GPUs it sees.
+    if (torch::xpu::is_available())
+    {
+        return { "xpu", 0 };
+    }
+    return { "xpu", std::nullopt };
 #else
     return { "cpu", std::nullopt };
 #endif
+}
+
+//! \brief \internal Torch device type for a device type string returned by getMdrunActiveDevice()
+static torch::DeviceType torchDeviceTypeFor(const std::string& deviceType)
+{
+    // LibTorch addresses HIP devices through its CUDA API
+    return deviceType == "xpu" ? torch::kXPU : torch::kCUDA;
+}
+
+//! \brief \internal Whether LibTorch can use a GPU of the type returned by getMdrunActiveDevice()
+static bool torchGpuIsAvailable(const std::string& deviceType)
+{
+    if (deviceType == "xpu")
+    {
+#if GMX_TORCH_XPU
+        return torch::xpu::is_available();
+#else
+        return false;
+#endif
+    }
+    return torch::cuda::is_available();
 }
 
 /*! \brief Determine which device to use depending on GMX_NN_DEVICE environment variable
@@ -160,7 +218,7 @@ static torch::Device determineDevice(const MDLogger& logger, const MpiComm& mpiC
         const std::string devLC = toLowerCase(env);
         if (devLC == "gpu" || devLC == "cuda")
         {
-            if (!torch::cuda::is_available())
+            if (!torchGpuIsAvailable(torchDeviceType))
             {
                 GMX_THROW(InternalError(formatString(
                         "GMX_NN_DEVICE was set to '%s', but no matching device is available.", env)));
@@ -169,7 +227,7 @@ static torch::Device determineDevice(const MDLogger& logger, const MpiComm& mpiC
                     activeDevice.has_value(),
                     "Active device couldn't be determined. Ensure that Libtorch and GROMACS "
                     "are compiled with matching GPU support.");
-            device = torch::Device(torch::kCUDA, activeDevice.value());
+            device = torch::Device(torchDeviceTypeFor(torchDeviceType), activeDevice.value());
         }
         else if (devLC != "cpu")
         {
@@ -183,7 +241,7 @@ static torch::Device determineDevice(const MDLogger& logger, const MpiComm& mpiC
     }
     else // not set: automatically determine device
     {
-        if (torch::cuda::is_available() && activeDevice.has_value())
+        if (torchGpuIsAvailable(torchDeviceType) && activeDevice.has_value())
         {
             GMX_LOG(logger.info)
                     .asParagraph()
@@ -191,7 +249,7 @@ static torch::Device determineDevice(const MDLogger& logger, const MpiComm& mpiC
                             "GMX_NN_DEVICE environment variable not found."
                             " Using "
                             + toUpperCase(torchDeviceType) + " device.");
-            device = torch::Device(torch::kCUDA, activeDevice.value());
+            device = torch::Device(torchDeviceTypeFor(torchDeviceType), activeDevice.value());
         }
         else
         {
@@ -205,7 +263,65 @@ static torch::Device determineDevice(const MDLogger& logger, const MpiComm& mpiC
     return device;
 }
 
-TorchModel::TorchModel(const std::string& fileName,
+class TorchModel::Impl
+{
+public:
+    Impl(const std::string& fileName, NNPotEmbedding embedding, const MDLogger& logger, const MpiComm& mpiComm);
+
+    void evaluateModel(gmx_enerdata_t*                  enerd,
+                       ForceWithVirial*                 fOutput,
+                       ArrayRef<const int32_t>          indexLookup,
+                       ArrayRef<const int32_t>          mmIndices,
+                       ArrayRef<RVec>                   positions,
+                       ArrayRef<int32_t>                atomNumbers,
+                       ArrayRef<int32_t>                atomPairs,
+                       ArrayRef<RVec>                   pairShifts,
+                       ArrayRef<RVec>                   positionsMM,
+                       ArrayRef<real>                   chargesMM,
+                       real                             nnpCharge,
+                       ArrayRef<const LinkFrontierAtom> linkFrontier,
+                       matrix&                          box,
+                       PbcType&                         pbcType);
+
+    bool outputsForces() const;
+    bool outputsMMForces() const;
+    bool outputsVirial() const;
+
+private:
+    //! Functions to prepare inputs for NN model. Create input torch::Tensors for the model.
+    //! \{
+    torch::Tensor prepareAtomPositions(ArrayRef<RVec> positions);
+    torch::Tensor prepareAtomNumbers(ArrayRef<int32_t> atomTypes);
+    torch::Tensor prepareBox(matrix& box);
+    torch::Tensor preparePbcType(PbcType& pbcType);
+    torch::Tensor prepareAtomPairs(ArrayRef<int32_t> atomPairs);
+    torch::Tensor preparePairShifts(ArrayRef<RVec> pairShifts);
+    torch::Tensor prepareMMPositions(ArrayRef<RVec> pos);
+    torch::Tensor prepareMMCharges(ArrayRef<real> charges);
+    torch::Tensor prepareNNPCharge(real charge);
+    //! \}
+
+    //! pointer to the communication object
+    const MpiComm& mpiComm_;
+    //! MDLogger during mdrun
+    const MDLogger& logger_;
+
+    const NNPotEmbedding embeddingScheme_;
+
+    //! device to run the model on
+    torch::Device device_;
+    //! TorchScript model
+    torch::jit::script::Module model_;
+
+    //! whether the model outputs forces on NNP atoms directly
+    bool outputsForces_ = false;
+    //! whether the model outputs forces on MM atoms directly (for electrostatic embedding)
+    bool outputsMMForces_ = false;
+    // whether the model outputs virial contribution
+    bool outputsVirial_ = false;
+};
+
+TorchModel::Impl::Impl(const std::string& fileName,
                        NNPotEmbedding     embedding,
                        const MDLogger&    logger,
                        const MpiComm&     mpiComm) :
@@ -221,6 +337,9 @@ TorchModel::TorchModel(const std::string& fileName,
         loadModelExtensions(ext_libs, logger_);
     }
 
+    // disable graph optimizations in torchscript, can cause issues with some models
+    torch::jit::setGraphExecutorOptimize(false);
+
     // try loading the model
     if (mpiComm_.isMainRank())
     {
@@ -233,189 +352,181 @@ TorchModel::TorchModel(const std::string& fileName,
     }
 }
 
-void TorchModel::prepareAtomPositions(ArrayRef<RVec> positions)
+torch::Tensor TorchModel::Impl::prepareAtomPositions(ArrayRef<RVec> positions)
 {
     int N = positions.size();
 
-    auto options = torch::TensorOptions().dtype(torchRealType).requires_grad(true);
+    auto options = torch::TensorOptions().dtype(sc_torchRealType).requires_grad(true);
     // preferrable to use from_blob here because it doesn't allocate new memory
+    // however, it makes gradient computation more complicated
     torch::Tensor posTensor = torch::from_blob(positions.data()->as_vec(), { N, DIM }, options);
-    posTensor               = posTensor.to(torch::kFloat32);
 
-    // important to set requires_grad to true again after moving to GPU
-    // otherwise, the tensor is a leaf node of the computation graph anymore
-    posTensor = posTensor.to(device_).requires_grad_(true);
-
-    inputs_.push_back(posTensor);
+    // important to detach set requires_grad to true again after moving to GPU
+    // otherwise, the tensor is not a true leaf node of the computation graph
+    return posTensor.detach().to(device_).requires_grad_(true);
 }
 
-void TorchModel::prepareAtomNumbers(ArrayRef<int> atomTypes)
+torch::Tensor TorchModel::Impl::prepareAtomNumbers(ArrayRef<int32_t> atomTypes)
 {
     const int     N = atomTypes.size();
     torch::Tensor typesTensor =
             torch::from_blob(atomTypes.data(), { N }, torch::TensorOptions().dtype(torch::kInt32));
     typesTensor = typesTensor.to(device_);
 
-    inputs_.push_back(typesTensor);
+    return typesTensor;
 }
 
-void TorchModel::prepareMMPositions(ArrayRef<RVec> positions)
+torch::Tensor TorchModel::Impl::prepareMMPositions(ArrayRef<RVec> positions)
 {
     int N = positions.size();
 
-    auto options = torch::TensorOptions().dtype(torchRealType).requires_grad(true);
+    auto options = torch::TensorOptions().dtype(sc_torchRealType).requires_grad(true);
     // preferable to use from_blob here because it doesn't allocate new memory
     torch::Tensor posTensor = torch::from_blob(positions.data()->as_vec(), { N, DIM }, options);
-    posTensor               = posTensor.to(torch::kFloat32);
 
-    // important to set requires_grad to true again after moving to GPU
-    // otherwise, the tensor is not a leaf node of the computation graph anymore
-    posTensor = posTensor.to(device_).requires_grad_(true);
-
-    inputs_.push_back(posTensor);
+    // important to detach and set requires_grad to true again after moving to GPU
+    // otherwise, the tensor is not a true leaf node of the computation graph
+    return posTensor.detach().to(torch::kFloat32).to(device_).requires_grad_(true);
 }
 
-void TorchModel::prepareMMCharges(ArrayRef<real> charges)
+torch::Tensor TorchModel::Impl::prepareMMCharges(ArrayRef<real> charges)
 {
     const int     N = charges.size();
     torch::Tensor chargesTensor =
-            torch::from_blob(charges.data(), { N }, torch::TensorOptions().dtype(torchRealType));
-    chargesTensor = chargesTensor.to(torch::kFloat32).to(device_).requires_grad_(true);
-
-    inputs_.push_back(chargesTensor);
+            torch::from_blob(charges.data(), { N }, torch::TensorOptions().dtype(sc_torchRealType));
+    return chargesTensor.detach().to(torch::kFloat32).to(device_).requires_grad_(true);
 }
 
-void TorchModel::prepareBox(matrix* box)
+torch::Tensor TorchModel::Impl::prepareBox(matrix& box)
 {
     torch::Tensor boxTensor =
-            torch::from_blob(*box, { DIM, DIM }, torch::TensorOptions().dtype(torchRealType));
-    boxTensor = boxTensor.to(torch::kFloat32).to(device_);
-    inputs_.push_back(boxTensor);
+            torch::from_blob(box, { DIM, DIM }, torch::TensorOptions().dtype(sc_torchRealType));
+    return boxTensor.to(torch::kFloat32).to(device_);
 }
 
-void TorchModel::preparePbcType(PbcType* pbcType)
+torch::Tensor TorchModel::Impl::preparePbcType(PbcType& pbcType)
 {
     torch::Tensor pbcTensor =
             torch::tensor({ true, true, true }, torch::TensorOptions().dtype(torch::kBool));
-    if (*pbcType == PbcType::XY)
+    if (pbcType == PbcType::XY)
     {
         pbcTensor[2] = false;
     }
-    else if (*pbcType != PbcType::Xyz)
+    else if (pbcType != PbcType::Xyz)
     {
         GMX_THROW(InconsistentInputError(
                 "Option use_pbc was set to true, but PBC type is not supported."));
     }
-    pbcTensor = pbcTensor.to(device_);
-    inputs_.push_back(pbcTensor);
+    return pbcTensor.to(device_);
 }
 
-void TorchModel::prepareAtomPairs(ArrayRef<int> atomPairs)
+torch::Tensor TorchModel::Impl::prepareAtomPairs(ArrayRef<int32_t> atomPairs)
 {
     const int     numPairs    = atomPairs.size() / 2;
     torch::Tensor pairsTensor = torch::from_blob(
             atomPairs.data(), { numPairs, 2 }, torch::TensorOptions().dtype(torch::kInt32));
-    pairsTensor = pairsTensor.to(device_);
-
-    inputs_.push_back(pairsTensor);
+    return pairsTensor.to(device_);
 }
 
-void TorchModel::preparePairShifts(ArrayRef<RVec> pairShifts)
+torch::Tensor TorchModel::Impl::preparePairShifts(ArrayRef<RVec> pairShifts)
 {
     const int     N            = pairShifts.size();
     torch::Tensor shiftsTensor = torch::from_blob(
-            pairShifts.data()->as_vec(), { N, DIM }, torch::TensorOptions().dtype(torchRealType));
-    shiftsTensor = shiftsTensor.to(device_);
-    inputs_.push_back(shiftsTensor);
+            pairShifts.data()->as_vec(), { N, DIM }, torch::TensorOptions().dtype(sc_torchRealType));
+    return shiftsTensor.to(device_);
 }
 
-void TorchModel::prepareNNPCharge(real charge)
+torch::Tensor TorchModel::Impl::prepareNNPCharge(real charge)
 {
-    torch::Tensor chargeTensor = torch::tensor({ charge }, torch::TensorOptions().dtype(torchRealType));
-    chargeTensor = chargeTensor.to(torch::kFloat32).to(device_);
-    inputs_.push_back(chargeTensor);
+    torch::Tensor chargeTensor =
+            torch::tensor({ charge }, torch::TensorOptions().dtype(sc_torchRealType));
+    return chargeTensor.to(torch::kFloat32).to(device_);
 }
 
-void TorchModel::evaluateModel(gmx_enerdata_t*                  enerd,
-                               ArrayRef<RVec>                   forces,
-                               ArrayRef<const int>              indexLookup,
-                               ArrayRef<const int>              mmIndices,
-                               ArrayRef<const std::string>      inputs,
-                               ArrayRef<RVec>                   positions,
-                               ArrayRef<int>                    atomNumbers,
-                               ArrayRef<int>                    atomPairs,
-                               ArrayRef<RVec>                   pairShifts,
-                               ArrayRef<RVec>                   positionsMM,
-                               ArrayRef<real>                   chargesMM,
-                               real                             nnpCharge,
-                               ArrayRef<const LinkFrontierAtom> linkFrontier,
-                               matrix*                          box /* = nullptr*/,
-                               PbcType*                         pbcType /* = nullptr*/)
+void TorchModel::Impl::evaluateModel(gmx_enerdata_t*                  enerd,
+                                     ForceWithVirial*                 fOutput,
+                                     ArrayRef<const int32_t>          indexLookup,
+                                     ArrayRef<const int32_t>          mmIndices,
+                                     ArrayRef<RVec>                   positions,
+                                     ArrayRef<int32_t>                atomNumbers,
+                                     ArrayRef<int32_t>                atomPairs,
+                                     ArrayRef<RVec>                   pairShifts,
+                                     ArrayRef<RVec>                   positionsMM,
+                                     ArrayRef<real>                   chargesMM,
+                                     real                             nnpCharge,
+                                     ArrayRef<const LinkFrontierAtom> linkFrontier,
+                                     matrix&                          box,
+                                     PbcType&                         pbcType)
 {
-    // prepare inputs for NN model
-    // order in input vector is the same as in mdp file
-    for (const std::string& input : inputs)
+    // prepare inputs for NN model as dictionary of input name to tensor
+    c10::Dict<std::string, torch::Tensor> inputData;
+    inputData.insert("positions", prepareAtomPositions(positions));
+    inputData.insert("atomic-numbers", prepareAtomNumbers(atomNumbers));
+    inputData.insert("box", prepareBox(box));
+    inputData.insert("pbc", preparePbcType(pbcType));
+    if (!atomPairs.empty())
     {
-        if (input.empty())
-        {
-            continue;
-        }
-        else if (input == "atom-positions")
-        {
-            prepareAtomPositions(positions);
-        }
-        else if (input == "atom-numbers")
-        {
-            prepareAtomNumbers(atomNumbers);
-        }
-        else if (input == "box")
-        {
-            prepareBox(box);
-        }
-        else if (input == "pbc")
-        {
-            preparePbcType(pbcType);
-        }
-        else if (input == "atom-pairs")
-        {
-            prepareAtomPairs(atomPairs);
-        }
-        else if (input == "pair-shifts")
-        {
-            preparePairShifts(pairShifts);
-        }
-        else if (input == "atom-positions-mm")
-        {
-            prepareMMPositions(positionsMM);
-        }
-        else if (input == "atom-charges-mm")
-        {
-            prepareMMCharges(chargesMM);
-        }
-        else if (input == "nnp-charge")
-        {
-            prepareNNPCharge(nnpCharge);
-        }
-        else
-        {
-            GMX_THROW(InconsistentInputError("Unknown input to NN model: " + input));
-        }
+        inputData.insert("pairs", prepareAtomPairs(atomPairs));
+        inputData.insert("shifts", preparePairShifts(pairShifts));
     }
+    if (embeddingScheme_ == NNPotEmbedding::ElectrostaticModel)
+    {
+        inputData.insert("mm-positions", prepareMMPositions(positionsMM));
+        inputData.insert("mm-charges", prepareMMCharges(chargesMM));
+    }
+    inputData.insert("total-charge", prepareNNPCharge(nnpCharge));
+    torch::Stack                            input{ inputData };
+    torch::Dict<std::string, torch::Tensor> outputs;
 
     // for now: only do inference on main rank
+    torch::Tensor energyTensor;
+    const int     N            = indexLookup.size();
+    const int     numMM        = mmIndices.size();
+    torch::Tensor forceTensor  = torch::zeros({ N, DIM });
+    torch::Tensor virialTensor = torch::zeros({ DIM, DIM });
+    // electrostatic embedding produces additional force corrections on MM atoms
+    torch::Tensor mmForceTensor = torch::zeros({ numMM, DIM });
     if (mpiComm_.isMainRank())
     {
         // run model
         try
         {
-            c10::IValue out = model_.forward(inputs_);
-            outputs_ = out.isTuple() ? out.toTuple() : c10::ivalue::Tuple::create({ out.toTensor() });
+            c10::IValue out = model_.forward(input);
+            GMX_RELEASE_ASSERT(out.isGenericDict(),
+                               "Expected model output to be a dictionary of string to tensor.");
+            for (const auto& item : out.toGenericDict())
+            {
+                GMX_RELEASE_ASSERT(item.key().isString(),
+                                   "Expected model output dictionary to have string keys.");
+                GMX_RELEASE_ASSERT(item.value().isTensor(),
+                                   "Expected model output dictionary to have tensor values.");
+                outputs.insert(item.key().toStringRef(), item.value().toTensor());
+            }
         }
         catch (const std::runtime_error& e)
         {
             // Filter known errors and provide more helpful error messages
-            if (std::string(e.what()).find("RuntimeError: CUDA error: no kernel image is available")
-                != std::string::npos)
+            // This is very likely to break at some point, but it's an easy way to provide better error messages for the user
+            const auto errorMessage     = std::string(e.what());
+            auto       errorMsgContains = [errorMessage](const std::string& substr)
+            { return errorMessage.find(substr) != std::string::npos; };
+            if (errorMsgContains("RuntimeError: KeyError:"))
+            {
+                if (errorMsgContains("positions-mm") || errorMsgContains("charges-mm"))
+                {
+                    GMX_THROW(InternalError(
+                            "Model is missing required electrostatic embedding inputs. Ensure that "
+                            "the nnpot-embedding mdp-option is set to electrostatic-model."));
+                }
+                else if (errorMsgContains("pairs") || errorMsgContains("shifts"))
+                {
+                    GMX_THROW(InternalError(
+                            "Model is missing required pairlist inputs. Ensure that the "
+                            "nnpot-pair-cutoff mdp-option is set to a non-zero value."));
+                }
+            }
+#if GMX_GPU_CUDA
+            if (errorMsgContains("RuntimeError: CUDA error: no kernel image is available"))
             {
                 cudaDeviceProp prop;
                 cudaGetDeviceProperties(&prop, device_.index());
@@ -426,62 +537,61 @@ void TorchModel::evaluateModel(gmx_enerdata_t*                  enerd,
                         prop.major,
                         prop.minor)));
             }
+#endif
             else
             {
                 GMX_THROW(InternalError("Error during evaluation of the neural network model: "
-                                        + std::string(e.what())));
+                                        + errorMessage));
             }
         }
-    }
-    else
-    {
-        // empty tuple for non-main ranks
-        outputs_ = c10::ivalue::Tuple::create({});
-    }
-
-    // check if model outputs forces after the forward pass
-    const bool modelOutputsForces = outputsForces();
-
-    // for now: only evaluate gradient on main rank
-    torch::Tensor energyTensor;
-    const int     N           = indexLookup.size();
-    const int     numMM       = mmIndices.size();
-    torch::Tensor forceTensor = torch::zeros({ N, DIM });
-    // electrostatic embedding produces additional force corrections on MM atoms
-    torch::Tensor mmForceTensor = torch::zeros({ numMM, DIM });
-
-    if (mpiComm_.isMainRank())
-    {
         // get energy
-        energyTensor = outputs_->elements()[0].toTensor();
+        GMX_RELEASE_ASSERT(outputs.contains("energy"),
+                           "Model output does not contain 'energy' key.");
+        energyTensor = outputs.at("energy");
 
         // if the model outputs forces, retrieve them
         // otherwise, we calculate them from the energy
-        if (modelOutputsForces)
+        outputsForces_   = outputs.contains("forces");
+        outputsMMForces_ = outputs.contains("forces-mm");
+        outputsVirial_   = outputs.contains("virial");
+        if (outputsForces_)
         {
-            forceTensor = outputs_->elements()[1].toTensor().to(torch::kCPU);
-            if (embeddingScheme_ == NNPotEmbedding::ElectrostaticModel)
+            forceTensor = outputs.at("forces").to(sc_torchRealType).to(torch::kCPU);
+            if (outputsMMForces_)
             {
-                mmForceTensor = outputs_->elements()[2].toTensor().to(torch::kCPU);
+                mmForceTensor = outputs.at("forces-mm").to(sc_torchRealType).to(torch::kCPU);
             }
         }
         else
         {
-            // compute gradient wrt 1st input (positions) to get forces
-            // .retain_grad() is necessary to keep the gradient in the computation graph!
-            // not sure why, since inputs_[0].toTensor().requires_grad() is still true
-            inputs_[0].toTensor().retain_grad();
+            // compute gradient wrt positions to get forces
+            const torch::Tensor& positionTensor = inputData.at("positions");
             energyTensor.backward();
-            forceTensor = -1. * inputs_[0].toTensor().grad().to(torch::kCPU);
+            forceTensor = -1. * positionTensor.grad();
+            forceTensor = forceTensor.to(sc_torchRealType).to(torch::kCPU);
         }
         // set energy
-        energyTensor = energyTensor.to(torchRealType).to(torch::kCPU);
+        energyTensor = energyTensor.to(sc_torchRealType).to(torch::kCPU);
         enerd->term[InteractionFunction::NeuralNetworkPotentialEnergy] = energyTensor.item<real>();
 
-        forceTensor = forceTensor.to(torchRealType).to(torch::kCPU);
+        // set virial if the model provides it
+        if (outputsVirial_)
+        {
+            virialTensor          = outputs.at("virial").to(sc_torchRealType).to(torch::kCPU);
+            auto   virialAccessor = virialTensor.accessor<real, 2>();
+            matrix virial;
+            for (int i = 0; i < DIM; ++i)
+            {
+                for (int j = 0; j < DIM; ++j)
+                {
+                    virial[i][j] = virialAccessor[i][j];
+                }
+            }
+            fOutput->addVirialContribution(virial);
+        }
     }
 
-    // distribute forces
+    // distribute forces and virial
     if (mpiComm_.isParallel())
     {
         mpiComm_.sumReduce(3 * N, static_cast<real*>(forceTensor.data_ptr()));
@@ -493,10 +603,8 @@ void TorchModel::evaluateModel(gmx_enerdata_t*                  enerd,
     t_pbc pbc;
     if (!linkFrontier.empty())
     {
-        GMX_RELEASE_ASSERT(box && pbcType,
-                           "PBC information required when using link atoms with NNP");
         // set pbc struct
-        set_pbc(&pbc, *pbcType, *box);
+        set_pbc(&pbc, pbcType, box);
     }
     for (const auto& link : linkFrontier)
     {
@@ -522,7 +630,7 @@ void TorchModel::evaluateModel(gmx_enerdata_t*                  enerd,
         }
         for (int d = 0; d < DIM; ++d)
         {
-            forces[indexLookup[i]][d] += forceAccessor[i][d];
+            fOutput->force_[indexLookup[i]][d] += forceAccessor[i][d];
         }
     }
 
@@ -534,18 +642,81 @@ void TorchModel::evaluateModel(gmx_enerdata_t*                  enerd,
         {
             for (int i = 0; i < numMM; ++i)
             {
-                forces[mmIndices[i]][m] += mmForceAccessor[i][m];
+                fOutput->force_[mmIndices[i]][m] += mmForceAccessor[i][m];
             }
         }
     }
+}
 
-    // after output is retrieved: reset input vector
-    inputs_.resize(0);
+bool TorchModel::Impl::outputsForces() const
+{
+    return outputsForces_;
+}
+
+bool TorchModel::Impl::outputsMMForces() const
+{
+    return outputsMMForces_;
+}
+
+bool TorchModel::Impl::outputsVirial() const
+{
+    return outputsVirial_;
+}
+
+TorchModel::TorchModel(const std::string& filename,
+                       NNPotEmbedding     embedding,
+                       const MDLogger&    logger,
+                       const MpiComm&     mpiComm) :
+    impl_(std::make_unique<Impl>(filename, embedding, logger, mpiComm))
+{
+}
+
+TorchModel::~TorchModel() = default;
+
+void TorchModel::evaluateModel(gmx_enerdata_t*                  enerd,
+                               ForceWithVirial*                 fOutput,
+                               ArrayRef<const int32_t>          indexLookup,
+                               ArrayRef<const int32_t>          mmIndices,
+                               ArrayRef<RVec>                   positions,
+                               ArrayRef<int32_t>                atomNumbers,
+                               ArrayRef<int32_t>                atomPairs,
+                               ArrayRef<RVec>                   pairShifts,
+                               ArrayRef<RVec>                   positionsMM,
+                               ArrayRef<real>                   chargesMM,
+                               real                             nnpCharge,
+                               ArrayRef<const LinkFrontierAtom> linkFrontier,
+                               matrix&                          box,
+                               PbcType&                         pbcType)
+{
+    impl_->evaluateModel(enerd,
+                         fOutput,
+                         indexLookup,
+                         mmIndices,
+                         positions,
+                         atomNumbers,
+                         atomPairs,
+                         pairShifts,
+                         positionsMM,
+                         chargesMM,
+                         nnpCharge,
+                         linkFrontier,
+                         box,
+                         pbcType);
 }
 
 bool TorchModel::outputsForces() const
 {
-    return outputs_->elements().size() > 1;
+    return impl_->outputsForces();
+}
+
+bool TorchModel::outputsMMForces() const
+{
+    return impl_->outputsMMForces();
+}
+
+bool TorchModel::outputsVirial() const
+{
+    return impl_->outputsVirial();
 }
 
 } // namespace gmx

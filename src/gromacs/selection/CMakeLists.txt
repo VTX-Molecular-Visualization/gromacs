@@ -34,9 +34,39 @@
 # Set up the module library
 add_library(selection INTERFACE)
 
-file(GLOB SELECTION_SOURCES *.cpp)
-file(GLOB SCANNER_SOURCES scanner.cpp parser.cpp)
-list(REMOVE_ITEM SELECTION_SOURCES ${SCANNER_SOURCES})
+set(SELECTION_SOURCES
+    centerofmass.cpp
+    compiler.cpp
+    evaluate.cpp
+    indexutil.cpp
+    mempool.cpp
+    nbsearch.cpp
+    params.cpp
+    parsetree.cpp
+    poscalc.cpp
+    position.cpp
+    scanner_internal.cpp
+    selection.cpp
+    selectioncollection.cpp
+    selectionoption.cpp
+    selectionoptionbehavior.cpp
+    selectionoptionmanager.cpp
+    selelem.cpp
+    selhelp.cpp
+    selmethod.cpp
+    selvalue.cpp
+    sm_compare.cpp
+    sm_distance.cpp
+    sm_insolidangle.cpp
+    sm_keywords.cpp
+    sm_merge.cpp
+    sm_permute.cpp
+    sm_position.cpp
+    sm_same.cpp
+    sm_simple.cpp
+    symrec.cpp
+    )
+set(SCANNER_SOURCES scanner.cpp parser.cpp)
 # Add the non-generated sources to libgromacs, so that they have only the normal warning suppressions
 target_sources(libgromacs PRIVATE ${SELECTION_SOURCES})
 
@@ -87,6 +117,32 @@ target_link_libraries(selection INTERFACE
 #target_link_libraries(selection PRIVATE NOTHING)
 # TODO: Explicitly link specific modules.
 #target_link_libraries(selection PRIVATE legacy_modules)
+
+# Headers that are installed as part of the legacy API. The module owns its
+# part of the installed include tree and installs it through a target file set.
+target_include_directories(selection INTERFACE
+                           $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+
+target_sources(selection
+    INTERFACE
+        FILE_SET public_headers
+        TYPE HEADERS
+        BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/include
+        FILES
+            include/gromacs/selection/indexutil.h
+            include/gromacs/selection/nbsearch.h
+            include/gromacs/selection/position.h
+            include/gromacs/selection/selection.h
+            include/gromacs/selection/selectioncollection.h
+            include/gromacs/selection/selectionenums.h
+            include/gromacs/selection/selectionoption.h
+            include/gromacs/selection/selectionoptionbehavior.h
+            include/gromacs/selection/selectionoptionmanager.h
+)
+
+if(GMX_INSTALL_LEGACY_API)
+    install(TARGETS selection FILE_SET public_headers DESTINATION include)
+endif()
 
 if (BUILD_TESTING)
     add_subdirectory(tests)

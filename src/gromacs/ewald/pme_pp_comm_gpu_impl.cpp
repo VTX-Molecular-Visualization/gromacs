@@ -50,7 +50,7 @@
 
 #include "gromacs/ewald/pme_pp_comm_gpu.h"
 #include "gromacs/gpu_utils/devicebuffer_datatype.h"
-#include "gromacs/gpu_utils/hostallocator.h"
+#include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/gmxmpi.h"
 #include "gromacs/utility/vectypes.h"
@@ -70,7 +70,6 @@ class PmePpCommGpu::Impl
 /*!\brief Constructor stub. */
 PmePpCommGpu::PmePpCommGpu(MPI_Comm /* comm */,
                            int /* pmeRank */,
-                           gmx::HostVector<gmx::RVec>* /* pmeCpuForceBuffer */,
                            const DeviceContext& /* deviceContext */,
                            const DeviceStream& /* deviceStream */,
                            const bool /*useNvshmem*/) :
@@ -84,23 +83,23 @@ PmePpCommGpu::PmePpCommGpu(MPI_Comm /* comm */,
 PmePpCommGpu::~PmePpCommGpu() = default;
 
 /*!\brief init PME-PP GPU communication stub */
-//NOLINTNEXTLINE(readability-convert-member-functions-to-static)
-void PmePpCommGpu::reinit(int /* size */)
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static)
+void PmePpCommGpu::reinit(ArrayRef<RVec> /* pmeCpuForceReceiveBuffer */)
 {
     GMX_ASSERT(!impl_,
                "A CPU stub for PME-PP GPU communication initialization was called instead of the "
                "correct implementation.");
 }
 
-//NOLINTNEXTLINE(readability-convert-member-functions-to-static)
-void PmePpCommGpu::receiveForceFromPme(RVec* /* recvPtr */, int /* recvSize */, bool /* receivePmeForceToGpu */)
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static)
+void PmePpCommGpu::receiveForceFromPme(bool /* recvPmeForceToGpu */)
 {
     GMX_ASSERT(!impl_,
                "A CPU stub for PME-PP GPU communication was called instead of the correct "
                "implementation.");
 }
 
-//NOLINTNEXTLINE(readability-convert-member-functions-to-static)
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static)
 void PmePpCommGpu::sendCoordinatesToPmeFromGpu(DeviceBuffer<RVec> /* sendPtr */,
                                                int /* sendSize */,
                                                GpuEventSynchronizer* /* coordinatesOnDeviceEvent */,
@@ -111,7 +110,7 @@ void PmePpCommGpu::sendCoordinatesToPmeFromGpu(DeviceBuffer<RVec> /* sendPtr */,
                "implementation.");
 }
 
-//NOLINTNEXTLINE(readability-convert-member-functions-to-static)
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static)
 void PmePpCommGpu::sendCoordinatesToPmeFromCpu(const RVec* /* sendPtr */, int /* sendSize */, bool /* receiveForcesToGpu */)
 {
     GMX_ASSERT(!impl_,
@@ -119,7 +118,7 @@ void PmePpCommGpu::sendCoordinatesToPmeFromCpu(const RVec* /* sendPtr */, int /*
                "implementation.");
 }
 
-//NOLINTNEXTLINE(readability-convert-member-functions-to-static)
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static)
 std::optional<DeviceBuffer<RVec>> PmePpCommGpu::getGpuForceStagingPtr()
 {
     GMX_ASSERT(!impl_,
@@ -128,7 +127,7 @@ std::optional<DeviceBuffer<RVec>> PmePpCommGpu::getGpuForceStagingPtr()
     return DeviceBuffer<gmx::RVec>{};
 }
 
-//NOLINTNEXTLINE(readability-convert-member-functions-to-static)
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static)
 std::optional<GpuEventSynchronizer*> PmePpCommGpu::getForcesReadySynchronizer()
 {
     GMX_ASSERT(!impl_,

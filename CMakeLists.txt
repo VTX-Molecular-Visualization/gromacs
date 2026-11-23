@@ -255,8 +255,8 @@ if(GMX_GPU STREQUAL SYCL)
             set(GMX_SYCL "ACPP")
         else()
             # Check direct compiler support (DPC++)
-            include(CheckCXXCompilerFlag)
-            check_cxx_compiler_flag("-fsycl" HAVE_SYCL_DPCPP)
+            include(CheckCompilerFlag)
+            check_compiler_flag(CXX "-fsycl" HAVE_SYCL_DPCPP)
             if(HAVE_SYCL_DPCPP)
                 set(GMX_SYCL "DPCPP")
                 if (NOT "${GMX_REPORTED_SYCL_BACKEND}" STREQUAL ${GMX_SYCL})
@@ -303,16 +303,11 @@ gmx_dependent_option(
 mark_as_advanced(GMX_BUILD_OWN_FFTW)
 mark_as_advanced(GMX_DISABLE_FFTW_MEASURE)
 
-gmx_dependent_option(
-    GMX_USE_HEFFTE
-    "Use HeFFTe for distributed FFT support. Used with CUDA backend"
-    OFF
-    "GMX_GPU STREQUAL CUDA OR GMX_GPU STREQUAL HIP OR GMX_GPU STREQUAL SYCL;GMX_MPI")
-gmx_dependent_option(
-    GMX_USE_CUFFTMP
-    "Use cuFFTMp for distributed FFT support. Used with CUDA backend"
-    OFF
-    "GMX_GPU STREQUAL CUDA;GMX_MPI")
+option(GMX_USE_HEFFTE "Use HeFFTe for distributed GPU FFT support with an MPI library." OFF)
+
+option(GMX_USE_CUFFTMP "Use cuFFTMp for distributed FFT support. Used with CUDA backend." OFF)
+
+option(GMX_USE_DISTRIBUTED_ROCFFT "Use rocFFT with support for distributed FFT. Only for HIP backend" OFF)
 
 # Here the default GPU FFT library is set up depending
 # on the build configuration. Other choices are
@@ -367,7 +362,8 @@ if (GMX_GPU)
         set("GMX_GPU_FFT_${_gpu_fft_library_upper}" "${_value}" CACHE INTERNAL "Use ${_gpu_fft_library} library for FFTs on GPUs")
     endforeach()
 endif()
-gmx_dependent_option(GMX_NVSHMEM "Build a parallel NVSHMEM multi-GPU code of GROMACS" OFF "GMX_GPU STREQUAL CUDA;GMX_MPI")
+
+option(GMX_NVSHMEM "Build a parallel NVSHMEM multi-GPU code of GROMACS" OFF)
 
 if (GMX_NVSHMEM)
     if (NVSHMEM_ROOT)
@@ -382,7 +378,7 @@ endif()
 gmx_dependent_cache_variable(GMX_SIMD_REF_FLOAT_WIDTH  "Reference SIMD single precision width" STRING "4" "GMX_SIMD STREQUAL REFERENCE")
 gmx_dependent_cache_variable(GMX_SIMD_REF_DOUBLE_WIDTH "Reference SIMD double precision width" STRING "4" "GMX_SIMD STREQUAL REFERENCE")
 
-# This should be moved to a separate NBNXN cmake module when that code is cleaned up and modularized
+# This should be moved to a separate NBNXM cmake module when that code is cleaned up and modularized
 
 option(GMX_BROKEN_CALLOC "Work around broken calloc()" OFF)
 mark_as_advanced(GMX_BROKEN_CALLOC)
@@ -412,7 +408,11 @@ if(GMX_DEVELOPER_BUILD)
     mark_as_advanced(CMAKE_EXPORT_COMPILE_COMMANDS)
 endif()
 
-gmx_set_boolean(GMX_COMPILER_WARNINGS_DEFAULT "NOT SOURCE_IS_SOURCE_DISTRIBUTION")
+if(SOURCE_IS_SOURCE_DISTRIBUTION)
+    set(GMX_COMPILER_WARNINGS_DEFAULT OFF)
+else()
+    set(GMX_COMPILER_WARNINGS_DEFAULT ON)
+endif()
 option(GMX_COMPILER_WARNINGS
     "Enable a default set of compiler warnings"
     ${GMX_COMPILER_WARNINGS_DEFAULT})
@@ -452,7 +452,7 @@ gmx_c_flags()
 # in gmxCFlags nor are SIMD or MPI related.
 #
 # TODO These variables should be consolidated into
-# EXTRA_COMPILER_FLAGS so that we we don't perpetrate bugs where
+# EXTRA_COMPILER_FLAGS so that we don't perpetrate bugs where
 # things that work in C compilation (e.g. merging from old branches)
 # might not also work for C++ compilation.
 set(EXTRA_C_FLAGS "")
@@ -469,7 +469,7 @@ if(GMX_DOUBLE)
 else()
     set(GMX_DOUBLE_VALUE 0)
 endif()
-add_definitions(-DGMX_DOUBLE=${GMX_DOUBLE_VALUE})
+add_compile_definitions(GMX_DOUBLE=${GMX_DOUBLE_VALUE})
 list(APPEND INSTALLED_HEADER_DEFINITIONS "-DGMX_DOUBLE=${GMX_DOUBLE_VALUE}")
 
 option(GMX_IMD "Enable Interactive Molecular Dynamics (IMD) sessions, e.g. with VMD" ON)
@@ -523,6 +523,7 @@ check_cxx_symbol_exists(_commit           io.h         HAVE__COMMIT)
 check_cxx_symbol_exists(sigaction         signal.h     HAVE_SIGACTION)
 
 # We cannot check for the __builtins as symbols, but check if code compiles
+include(CheckCXXSourceCompiles)
 check_cxx_source_compiles("int main(){ return __builtin_clz(1);}"   HAVE_BUILTIN_CLZ)
 check_cxx_source_compiles("int main(){ return __builtin_clzll(1);}" HAVE_BUILTIN_CLZLL)
 if(MSVC)
@@ -533,20 +534,88 @@ elseif(CMAKE_CXX_COMPILER_ID MATCHES "XL")
     check_cxx_source_compiles("int main(){ return __cntlz8(1);}" HAVE_CNTLZ8)
 endif()
 
-include(CheckLibraryExists)
 find_library(LIBM_LIBRARY m)
 mark_as_advanced(LIBM_LIBRARY)
-check_library_exists(rt clock_gettime "" HAVE_CLOCK_GETTIME)
-check_library_exists(m feenableexcept "" HAVE_FEENABLEEXCEPT)
-check_library_exists(m fedisableexcept "" HAVE_FEDISABLEEXCEPT)
 
-include(TestSchedAffinity)
-test_sched_affinity(HAVE_SCHED_AFFINITY)
+# GROMACS sources are compiled with _GNU_SOURCE (see gmxpre.h), which
+# some C libraries (e.g. mingw-w64 for fenv.h) require to declare the
+# functions checked here.
+include(CMakePushCheckState)
+cmake_push_check_state()
+list(APPEND CMAKE_REQUIRED_DEFINITIONS -D_GNU_SOURCE)
+
+# clock_gettime() lives in libc on current glibc and musl, but in librt
+# on older glibc, so only link rt when it is needed. Check it the way
+# src/gromacs/timing uses it, including std::timespec, which libstdc++
+# only provides when the C library has timespec_get() (mingw-w64 has
+# clock_gettime() but not timespec_get()).
+set(SAMPLE_CLOCK_GETTIME_SOURCE "
+#include <ctime>
+int main()
+{
+    std::timespec t;
+    return clock_gettime(CLOCK_REALTIME, &t);
+}")
+check_cxx_source_compiles("${SAMPLE_CLOCK_GETTIME_SOURCE}" HAVE_CLOCK_GETTIME_IN_LIBC)
+if(NOT HAVE_CLOCK_GETTIME_IN_LIBC)
+    cmake_push_check_state()
+    list(APPEND CMAKE_REQUIRED_LIBRARIES rt)
+    check_cxx_source_compiles("${SAMPLE_CLOCK_GETTIME_SOURCE}" HAVE_CLOCK_GETTIME_IN_LIBRT)
+    cmake_pop_check_state()
+endif()
+unset(SAMPLE_CLOCK_GETTIME_SOURCE)
+if(HAVE_CLOCK_GETTIME_IN_LIBC OR HAVE_CLOCK_GETTIME_IN_LIBRT)
+    set(HAVE_CLOCK_GETTIME ON)
+else()
+    set(HAVE_CLOCK_GETTIME OFF)
+endif()
+
+if(LIBM_LIBRARY)
+    list(APPEND CMAKE_REQUIRED_LIBRARIES ${LIBM_LIBRARY})
+endif()
+check_cxx_symbol_exists(feenableexcept fenv.h HAVE_FEENABLEEXCEPT)
+check_cxx_symbol_exists(fedisableexcept fenv.h HAVE_FEDISABLEEXCEPT)
+cmake_pop_check_state()
+
+# Check that the GNU sched.h affinity API works: sched_getaffinity(),
+# sched_setaffinity(), CPU_ZERO(), CPU_SET(), CPU_ISSET(), CPU_CLR() and
+# CPU_COUNT().
+include(CheckSourceCompiles)
+check_source_compiles(C
+    "#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
+#include <sched.h>
+int main(void) {
+  cpu_set_t mask;
+  CPU_ZERO(&mask);
+  sched_getaffinity(0, sizeof(cpu_set_t), &mask);
+  if(CPU_ISSET(0,&mask))
+  {
+    CPU_CLR(0,&mask);
+    CPU_SET(0,&mask);
+  }
+  sched_setaffinity(0, sizeof(cpu_set_t), &mask);
+  return CPU_COUNT(&mask);
+}" HAVE_SCHED_AFFINITY)
 
 # Aligned memory allocation. We need to check for both mm_malloc(),
 # posix_memalign(), memalign(), and on windows also _aligned_malloc()
-include(gmxTestMMMalloc)
-gmx_test_mm_malloc(HAVE__MM_MALLOC)
+check_include_files(mm_malloc.h  HAVE_MM_MALLOC_H)
+check_include_files(malloc.h     HAVE_MALLOC_H)
+# Check for _mm_malloc() in the same header that alignedallocator.cpp
+# will include.
+if(HAVE_MM_MALLOC_H)
+    set(_mm_malloc_header mm_malloc.h)
+elseif(HAVE_MALLOC_H)
+    set(_mm_malloc_header malloc.h)
+elseif(HAVE_XMMINTRIN_H)
+    set(_mm_malloc_header xmmintrin.h)
+endif()
+if(_mm_malloc_header)
+    check_cxx_symbol_exists(_mm_malloc "${_mm_malloc_header}" HAVE__MM_MALLOC)
+endif()
+unset(_mm_malloc_header)
 check_cxx_symbol_exists(posix_memalign    stdlib.h     HAVE_POSIX_MEMALIGN)
 check_cxx_symbol_exists(memalign          stdlib.h     HAVE_MEMALIGN)
 if(MSVC)
@@ -554,10 +623,24 @@ if(MSVC)
     check_cxx_symbol_exists(_aligned_malloc   stdlib.h     HAVE__ALIGNED_MALLOC)
 endif()
 
-include(TestBigEndian)
-test_big_endian(GMX_INTEGER_BIG_ENDIAN)
+# CMAKE_CXX_BYTE_ORDER is empty if compiler detection could not determine
+# the byte order, or if CMAKE_OSX_ARCHITECTURES mixes byte orders. Only
+# then use the deprecated TestBigEndian module, which compiles a test
+# program to find out.
+if(CMAKE_CXX_BYTE_ORDER STREQUAL "BIG_ENDIAN")
+    set(GMX_INTEGER_BIG_ENDIAN ON)
+elseif(CMAKE_CXX_BYTE_ORDER STREQUAL "LITTLE_ENDIAN")
+    set(GMX_INTEGER_BIG_ENDIAN OFF)
+else()
+    include(TestBigEndian)
+    test_big_endian(GMX_INTEGER_BIG_ENDIAN)
+endif()
 
-gmx_set_boolean(GMX_USE_NICE "HAVE_UNISTD_H AND HAVE_NICE")
+if(HAVE_UNISTD_H AND HAVE_NICE)
+    set(GMX_USE_NICE ON)
+else()
+    set(GMX_USE_NICE OFF)
+endif()
 
 ########################################################################
 #Process shared/static library settings
@@ -625,7 +708,7 @@ if (GMX_HWLOC)
     if (HWLOC_FIND_QUIETLY_AFTER_FIRST_RUN)
         set(HWLOC_FIND_QUIETLY TRUE)
     endif()
-    find_package(HWLOC 1.5) 
+    find_package(HWLOC 2.0)
 
     if (HWLOC_FOUND)
         if (HWLOC_LIBRARIES MATCHES ".a$")
@@ -646,10 +729,6 @@ if (GMX_HWLOC)
         endif()
     elseif(GMX_HWLOC_FORCE)
         message(FATAL_ERROR "HWLOC package support required, but not found.")
-    endif()
-
-    if (HWLOC_FOUND AND HWLOC_VERSION VERSION_LESS "2")
-        message(STATUS "Support for hwloc versions 1.x is deprecated")
     endif()
 
     set(HWLOC_FIND_QUIETLY_AFTER_FIRST_RUN TRUE CACHE INTERNAL "Be quiet during future attempts to find HWLOC")
@@ -675,18 +754,32 @@ if(GMX_THREAD_MPI)
 endif()
 # If atomics are manually disabled a define is needed because atomics.h doesn't depend on config.h
 if (TMPI_ATOMICS_DISABLED)
-   add_definitions(-DTMPI_ATOMICS_DISABLED)
+   add_compile_definitions(TMPI_ATOMICS_DISABLED)
 endif()
 
 include(gmxManageTNG)
 
 include(gmxManageHDF5)
 
+include(gmxManageSZ3)
+
 include(gmxManageLmfit)
 
 include(gmxManageMuparser)
 
-include(gmxManageColvars)
+# Build Colvars library as bundled in a GROMACS worktree; not supporting external linkage yet
+gmx_option_multichoice(GMX_USE_COLVARS
+    "Build the collective variables (Colvars) library interfaced with GROMACS"
+    INTERNAL
+    INTERNAL NONE)
+mark_as_advanced(GMX_USE_COLVARS)
+
+if(GMX_USE_COLVARS STREQUAL "INTERNAL")
+    set(GMX_HAVE_COLVARS 1 CACHE INTERNAL "Is colvars found?")
+else()
+    set(GMX_HAVE_COLVARS 0 CACHE INTERNAL "Is colvars found?")
+endif()
+mark_as_advanced(GMX_HAVE_COLVARS)
 
 include(gmxManagePlumed)
 
@@ -765,12 +858,30 @@ if(GMX_GPU)
         endif()
     endif()
 endif()
-set(GMX_GPU_NB_NUM_CLUSTER_PER_CELL_X 2 CACHE STRING "Number of clusters along X in a pair-search grid cell for GPU lists")
-set(GMX_GPU_NB_NUM_CLUSTER_PER_CELL_Y 2 CACHE STRING "Number of clusters along Y in a pair-search grid cell for GPU lists")
-set(GMX_GPU_NB_NUM_CLUSTER_PER_CELL_Z 2 CACHE STRING "Number of clusters along Z in a pair-search grid cell for GPU lists")
-mark_as_advanced(GMX_GPU_NB_NUM_CLUSTER_PER_CELL_X)
-mark_as_advanced(GMX_GPU_NB_NUM_CLUSTER_PER_CELL_Y)
-mark_as_advanced(GMX_GPU_NB_NUM_CLUSTER_PER_CELL_Z)
+
+set(_num_cluster_per_cell_vars 0)
+set(_cluster_per_cell 1)
+foreach(_axis X Y Z)
+    if (DEFINED GMX_GPU_NB_NUM_CLUSTER_PER_CELL_${_axis})
+        if (NOT DEFINED GMX_GPU_NB_NUM_CLUSTER_PER_BIN)
+            message(WARNING "GMX_GPU_NB_NUM_CLUSTER_PER_CELL_${_axis} has been replaced by GMX_GPU_NB_NUM_CLUSTER_PER_BIN. Using its value (${GMX_GPU_NB_NUM_CLUSTER_PER_CELL_${_axis}}) for the new variable.")
+        endif()
+        math(EXPR _num_cluster_per_cell_vars "${_num_cluster_per_cell_vars} + 1")
+        math(EXPR _cluster_per_cell "${_cluster_per_cell} * ${GMX_GPU_NB_NUM_CLUSTER_PER_CELL_${_axis}}")
+    endif()
+endforeach()
+if (DEFINED GMX_GPU_NB_NUM_CLUSTER_PER_BIN)
+    if (_num_cluster_per_cell_vars EQUAL 3 AND NOT GMX_GPU_NB_NUM_CLUSTER_PER_BIN EQUAL _cluster_per_cell)
+        message(FATAL_ERROR "Conflicting values of GMX_GPU_NB_NUM_CLUSTER_PER_CELL_X/Y/Z, product=${_cluster_per_cell} and GMX_GPU_NB_NUM_CLUSTER_PER_BIN=${GMX_GPU_NB_NUM_CLUSTER_PER_BIN}. Clear your CMake cache and reconfigure.")
+    endif()
+else()
+    if (_num_cluster_per_cell_vars EQUAL 3)
+        set(GMX_GPU_NB_NUM_CLUSTER_PER_BIN ${_cluster_per_cell} CACHE STRING "Number of clusters in a pair-search grid bin for GPU lists")
+    else()
+        set(GMX_GPU_NB_NUM_CLUSTER_PER_BIN 8 CACHE STRING "Number of clusters in a pair-search grid bin for GPU lists")
+    endif()
+endif()
+mark_as_advanced(GMX_GPU_NB_NUM_CLUSTER_PER_BIN)
 
 # For build with CUDA/SYCL and Lib-MPI, check if underlying MPI implementation is GPU-aware
 # GPU-aware MPI allows direct GPU communication without staging data through host
@@ -833,6 +944,21 @@ if(GMX_USE_CUFFTMP)
     set(GMX_USE_cuFFTMp ${cuFFTMp_FOUND})
 endif()
 
+if(GMX_USE_DISTRIBUTED_ROCFFT)
+     if(NOT GMX_GPU_HIP)
+         message(FATAL_ERROR "Distributed rocFFT requires a HIP build")
+     endif()
+     if(NOT GMX_GPU_FFT_ROCFFT)
+         message(FATAL_ERROR "Distributed rocFFT needs rocFFT as FFT backend")
+     endif()
+     if (NOT GMX_LIB_MPI)
+         message(FATAL_ERROR "Distributed rocFFT requires a library MPI build")
+     endif()
+     if (GMX_USE_Heffte)
+         message(FATAL_ERROR "Can not have distributed rocFFT and HeFFTe active at the same time")
+     endif()
+endif()
+
 # Set NVSHMEM host and device libs
 include(gmxManageNvshmem)
 
@@ -846,12 +972,9 @@ if(WIN32)
     set(GMX_NATIVE_WINDOWS 1)
     # This makes windows.h not declare min/max as macros that would break
     # C++ code using std::min/std::max.
-    add_definitions(-DNOMINMAX)
+    add_compile_definitions(NOMINMAX)
 endif()
 
-option(GMX_BUILD_UNITTESTS "Build unit tests with BUILD_TESTING" ON)
-mark_as_advanced(GMX_BUILD_UNITTESTS)
-gmx_add_cache_dependency(GMX_BUILD_UNITTESTS BOOL BUILD_TESTING OFF)
 
 ########################################################################
 # Our own GROMACS tests
@@ -871,11 +994,18 @@ mark_as_advanced(GMX_USE_RDTSCP)
 include(gmxTestLargeFiles)
 gmx_test_large_files(GMX_LARGEFILES)
 
-include(gmxTestSignal)
-gmx_test_sigusr1(HAVE_SIGUSR1)
+include(CheckCXXSymbolExists)
+include(CMakePushCheckState)
+cmake_push_check_state(RESET)
+check_cxx_symbol_exists(SIGUSR1 "signal.h" HAVE_SIGUSR1)
+cmake_pop_check_state()
 
-include(gmxTestPipes)
-gmx_test_pipes(HAVE_PIPES)
+cmake_push_check_state(RESET)
+if(CYGWIN)
+    list(APPEND CMAKE_REQUIRED_DEFINITIONS -D_POSIX_C_SOURCE=200809L)
+endif()
+check_cxx_symbol_exists(popen "stdio.h" HAVE_PIPES)
+cmake_pop_check_state()
 
 include(gmxTestXDR)
 gmx_test_xdr(GMX_SYSTEM_XDR)
@@ -908,27 +1038,19 @@ if(GMX_USE_PLUGINS)
     endif()
 endif()
 
-# Link real-time library for POSIX timers. The check for clock_gettime
-# confirms the linkability of rt.
-if(HAVE_TIME_H AND HAVE_UNISTD_H AND HAVE_CLOCK_GETTIME)
+# Link real-time library for POSIX timers where clock_gettime() needs it.
+if(HAVE_TIME_H AND HAVE_UNISTD_H AND NOT HAVE_CLOCK_GETTIME_IN_LIBC AND HAVE_CLOCK_GETTIME_IN_LIBRT)
     list(APPEND GMX_EXTRA_LIBRARIES rt)
 endif()
 
 # Math and thread libraries must often come after all others when linking...
-if (LIBM_LIBRARY)
+# The C++ compiler driver normally links libm itself (it is then listed in
+# CMAKE_CXX_IMPLICIT_LINK_LIBRARIES). Adding it again by full path makes some
+# linkers (e.g. on illumos) see the same library twice, so only add it when
+# the driver does not.
+if (LIBM_LIBRARY AND NOT "m" IN_LIST CMAKE_CXX_IMPLICIT_LINK_LIBRARIES)
     list(APPEND GMX_PUBLIC_LIBRARIES ${LIBM_LIBRARY})
 endif()
-
-option(GMX_NACL "Configure for Native Client builds" OFF)
-if (GMX_NACL)
-  list(APPEND GMX_EXTRA_LIBRARIES nosys)
-  set(GMX_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -lnosys")
-  # TODO: Is this still necessary with the check for its presence?
-  set(GMX_USE_NICE 0)
-  set(GMX_NO_RENAME 1)
-  message(WARNING "Native Client builds deprecated since GROMACS 2026")
-endif()
-mark_as_advanced(GMX_NACL)
 
 if(GMX_FAHCORE)
   set(COREWRAP_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/../corewrap" CACHE STRING

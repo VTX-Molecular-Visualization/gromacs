@@ -267,7 +267,7 @@ void dd_make_local_pull_groups(const gmx::MpiComm& mpiComm, gmx_domdec_t* dd, pu
  * \param mpiComm     Communication object for my group.
  * \param dd          Domain decomposition object, is nullptr when DD is not used.
  * \param atomSets    The manager that handles the pull atom sets
- * \param lambda      FEP lambda.
+ * \param massLambda  FEP lambda for masses.
  */
 struct pull_t* init_pull(FILE*                     fplog,
                          const pull_params_t*      pull_params,
@@ -276,7 +276,7 @@ struct pull_t* init_pull(FILE*                     fplog,
                          const gmx::MpiComm&       mpiComm,
                          gmx_domdec_t*             dd,
                          gmx::LocalAtomSetManager* atomSets,
-                         real                      lambda);
+                         real                      massLambda);
 
 
 /*! \brief Close the pull output files and delete pull.
@@ -394,7 +394,7 @@ real max_pull_distance2(const pull_coord_work_t& pcrd, const t_pbc& pbc);
  * \param[in] pull  The COM pull force calculation data structure
  * \param[in] comPreviousStep  The COM of the previous step of each pull group
  */
-void updatePrevStepPullCom(pull_t* pull, std::optional<gmx::ArrayRef<double>> comPreviousStep);
+void updatePrevStepPullCom(pull_t* pull, std::optional<gmx::ArrayRef<gmx::DVec>> comPreviousStep);
 
 /*! \brief Returns a copy of the previous step pull COM as flat vector
  *
@@ -404,7 +404,7 @@ void updatePrevStepPullCom(pull_t* pull, std::optional<gmx::ArrayRef<double>> co
  * \param[in] pull  The COM pull force calculation data structure
  * \return A copy of the previous step COM
  */
-std::vector<double> prevStepPullCom(const pull_t* pull);
+std::vector<gmx::DVec> prevStepPullCom(const pull_t* pull);
 
 /*! \brief Set the previous step pull COM from a flat vector
  *
@@ -414,7 +414,7 @@ std::vector<double> prevStepPullCom(const pull_t* pull);
  * \param[in] pull  The COM pull force calculation data structure
  * \param[in] prevStepPullCom  The previous step COM to set
  */
-void setPrevStepPullCom(pull_t* pull, gmx::ArrayRef<const double> prevStepPullCom);
+void setPrevStepPullCom(pull_t* pull, gmx::ArrayRef<const gmx::DVec> prevStepPullCom);
 
 /*! \brief Allocates, initializes and communicates the previous step pull COM (if that option is set to true).
  *
@@ -460,12 +460,12 @@ void initPullComFromPrevStep(const gmx::MpiComm&            mpiComm,
  * \param[in] pbcType          The type of periodic boundary conditions.
  * \param[in] comPreviousStep  The COM of the previous step of each pull group.
  */
-void preparePrevStepPullComNewSimulation(const gmx::MpiComm&                    mpiComm,
-                                         pull_t*                                pull_work,
-                                         gmx::ArrayRef<const real>              masses,
-                                         gmx::ArrayRef<const gmx::RVec>         x,
-                                         const matrix                           box,
-                                         PbcType                                pbcType,
-                                         std::optional<gmx::ArrayRef<double>>&& comPreviousStep);
+void preparePrevStepPullComNewSimulation(const gmx::MpiComm&                       mpiComm,
+                                         pull_t*                                   pull_work,
+                                         gmx::ArrayRef<const real>                 masses,
+                                         gmx::ArrayRef<const gmx::RVec>            x,
+                                         const matrix                              box,
+                                         PbcType                                   pbcType,
+                                         std::optional<gmx::ArrayRef<gmx::DVec>>&& comPreviousStep);
 
 #endif

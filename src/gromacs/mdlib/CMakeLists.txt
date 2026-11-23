@@ -33,27 +33,60 @@
 
 add_library(mdlib INTERFACE)
 
-file(GLOB MDLIB_SOURCES *.cpp)
-# To avoid listing all the necessary files manually, we will remove SYCL- and HIP-specific files here:
-list(REMOVE_ITEM MDLIB_SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/gpuforcereduction_impl.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/gpuforcereduction_impl_stubs.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/gpuforcereduction_impl_internal_hip.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/gpuforcereduction_impl_internal_sycl.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/leapfrog_gpu.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/leapfrog_gpu_internal_hip.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/leapfrog_gpu_internal_sycl.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/lincs_gpu.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/lincs_gpu_internal_hip.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/lincs_gpu_internal_sycl.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/mdgraph_gpu_impl_sycl.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/settle_gpu.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/settle_gpu_internal_hip.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/settle_gpu_internal_sycl.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/update_constrain_gpu_impl.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/update_constrain_gpu_impl_stubs.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/update_constrain_gpu_internal_sycl.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/update_constrain_gpu_internal_hip.cpp)
+set(MDLIB_SOURCES
+    boxdeformation.cpp
+    broadcaststructs.cpp
+    calc_verletbuf.cpp
+    calcmu.cpp
+    calcvir.cpp
+    checkpointhandler.cpp
+    constr.cpp
+    constraint_gpu_helpers.cpp
+    constraintrange.cpp
+    coupling.cpp
+    dispersioncorrection.cpp
+    ebin.cpp
+    enerdata_utils.cpp
+    energydrifttracker.cpp
+    energyoutput.cpp
+    expanded.cpp
+    expanded_internal.cpp
+    force.cpp
+    forcerec.cpp
+    freeenergyparameters.cpp
+    gmx_omp_nthreads.cpp
+    groupcoord.cpp
+    lincs.cpp
+    lincs_constraint_group_sizes.cpp
+    md_support.cpp
+    mdebin_bar.cpp
+    mdgraph_gpu_impl.cpp
+    mdoutf.cpp
+    membed.cpp
+    perf_est.cpp
+    rbin.cpp
+    resethandler.cpp
+    rf_util.cpp
+    settle.cpp
+    shake.cpp
+    sighandler.cpp
+    sim_util.cpp
+    simulationsignal.cpp
+    splitter.cpp
+    stat.cpp
+    stophandler.cpp
+    tgroup.cpp
+    trajectory_writing.cpp
+    update.cpp
+    update_vv.cpp
+    updategroups.cpp
+    updategroupscog.cpp
+    vcm.cpp
+    vsite.cpp
+    wall.cpp
+    wholemoleculetransform.cpp
+    )
+list(TRANSFORM MDLIB_SOURCES PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/")
 set(MDLIB_SOURCES ${MDLIB_SOURCES} PARENT_SCOPE)
 
 if(GMX_GPU_CUDA)
@@ -65,6 +98,10 @@ if(GMX_GPU_CUDA)
        lincs_gpu.cpp
        settle_gpu.cpp
        settle_gpu_internal.cu
+       stochasticdynamics_gpu.cpp
+       stochasticdynamics_gpu_internal.cu
+       vsite_gpu.cpp
+       vsite_gpu_internal.cu
        update_constrain_gpu_impl.cpp
        update_constrain_gpu_internal.cu
        mdgraph_gpu_impl.cu
@@ -79,6 +116,8 @@ if(GMX_GPU_CUDA)
        leapfrog_gpu.cpp
        lincs_gpu.cpp
        settle_gpu.cpp
+       stochasticdynamics_gpu.cpp
+       vsite_gpu.cpp
        update_constrain_gpu_impl.cpp
        )
 elseif(GMX_GPU_HIP)
@@ -91,6 +130,9 @@ elseif(GMX_GPU_HIP)
        lincs_gpu_internal_hip.cpp
        settle_gpu.cpp
        settle_gpu_internal_hip.cpp
+       stochasticdynamics_gpu.cpp
+       stochasticdynamics_gpu_internal_hip.cpp
+       vsite_gpu_stubs.cpp
        update_constrain_gpu_impl.cpp
        update_constrain_gpu_internal_hip.cpp
        )
@@ -103,6 +145,9 @@ elseif(GMX_GPU_HIP)
        lincs_gpu_internal_hip.cpp
        settle_gpu.cpp
        settle_gpu_internal_hip.cpp
+       stochasticdynamics_gpu.cpp
+       stochasticdynamics_gpu_internal_hip.cpp
+       vsite_gpu_stubs.cpp
        update_constrain_gpu_impl.cpp
        update_constrain_gpu_internal_hip.cpp
        )
@@ -117,6 +162,9 @@ elseif(GMX_GPU_SYCL)
         mdgraph_gpu_impl_sycl.cpp
         settle_gpu.cpp
         settle_gpu_internal_sycl.cpp
+        stochasticdynamics_gpu.cpp
+        stochasticdynamics_gpu_internal_sycl.cpp
+        vsite_gpu_stubs.cpp
         update_constrain_gpu_impl.cpp
         update_constrain_gpu_internal_sycl.cpp
     )
@@ -132,6 +180,9 @@ elseif(GMX_GPU_SYCL)
         mdgraph_gpu_impl_sycl.cpp
         settle_gpu.cpp
         settle_gpu_internal_sycl.cpp
+        stochasticdynamics_gpu.cpp
+        stochasticdynamics_gpu_internal_sycl.cpp
+        vsite_gpu_stubs.cpp
         update_constrain_gpu_impl.cpp
         update_constrain_gpu_internal_sycl.cpp
     )

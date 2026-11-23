@@ -33,7 +33,56 @@
 
 add_library(utility INTERFACE)
 
-file(GLOB UTILITY_SOURCES *.cpp)
+set(UTILITY_SOURCES
+    alignedallocator.cpp
+    any.cpp
+    basenetwork.cpp
+    baseversion.cpp
+    booltype.cpp
+    compare.cpp
+    coolstuff.cpp
+    cstringutil.cpp
+    datafilefinder.cpp
+    directoryenumerator.cpp
+    errorcodes.cpp
+    errorformat.cpp
+    exceptions.cpp
+    fatalerror.cpp
+    fileredirector.cpp
+    filestream.cpp
+    functions.cpp
+    futil.cpp
+    gmxassert.cpp
+    gmxomp.cpp
+    ikeyvaluetreeerror.cpp
+    init.cpp
+    int64_to_int.cpp
+    keyvaluetree.cpp
+    keyvaluetreemdpwriter.cpp
+    keyvaluetreetransform.cpp
+    logger.cpp
+    loggerbuilder.cpp
+    message_string_collector.cpp
+    mpicomm.cpp
+    mpiinfo.cpp
+    niceheader.cpp
+    path.cpp
+    physicalnodecommunicator.cpp
+    pleasecite.cpp
+    programcontext.cpp
+    smalloc.cpp
+    strconvert.cpp
+    strdb.cpp
+    stringstream.cpp
+    stringutil.cpp
+    sysinfo.cpp
+    textreader.cpp
+    textwriter.cpp
+    txtdump.cpp
+    veccompare.cpp
+    vecdump.cpp
+    )
+list(TRANSFORM UTILITY_SOURCES PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/")
 set(LIBGROMACS_SOURCES ${LIBGROMACS_SOURCES} ${UTILITY_SOURCES} PARENT_SCOPE)
 
 # Public interface for modules, including dependencies and interfaces
@@ -60,6 +109,43 @@ endif ()
 #target_link_libraries(utility PRIVATE common)
 # TODO(#3288): Explicitly link specific modules as legacy_modules is removed.
 #target_link_libraries(utility PRIVATE legacy_modules)
+
+# Headers that are installed as part of the legacy API. The module owns its
+# part of the installed include tree and installs it through a target file set.
+target_sources(utility
+    INTERFACE
+        FILE_SET public_headers
+        TYPE HEADERS
+        BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/include
+        FILES
+            include/gromacs/utility/arrayref.h
+            include/gromacs/utility/basedefinitions.h
+            include/gromacs/utility/baseversion.h
+            include/gromacs/utility/classhelpers.h
+            include/gromacs/utility/current_function.h
+            include/gromacs/utility/enumerationhelpers.h
+            include/gromacs/utility/exceptions.h
+            include/gromacs/utility/fileptr.h
+            include/gromacs/utility/flags.h
+            include/gromacs/utility/functions.h
+            include/gromacs/utility/futil.h
+            include/gromacs/utility/gmxassert.h
+            include/gromacs/utility/listoflists.h
+            include/gromacs/utility/matrix.h
+            include/gromacs/utility/pleasecite.h
+            include/gromacs/utility/programcontext.h
+            include/gromacs/utility/range.h
+            include/gromacs/utility/real.h
+            include/gromacs/utility/smalloc.h
+            include/gromacs/utility/stringutil.h
+            include/gromacs/utility/unique_cptr.h
+            include/gromacs/utility/vec.h
+            include/gromacs/utility/vectypes.h
+)
+
+if(GMX_INSTALL_LEGACY_API)
+    install(TARGETS utility FILE_SET public_headers DESTINATION include)
+endif()
 
 if (BUILD_TESTING)
     add_subdirectory(tests)

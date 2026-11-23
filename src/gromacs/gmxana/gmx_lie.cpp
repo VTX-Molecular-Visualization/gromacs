@@ -46,13 +46,14 @@
 #include "gromacs/commandline/viewit.h"
 #include "gromacs/fileio/enxio.h"
 #include "gromacs/fileio/filetypes.h"
+#include "gromacs/fileio/timecontrol.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/fileio/xvgr.h"
 #include "gromacs/gmxana/gmx_ana.h"
-#include "gromacs/math/functions.h"
 #include "gromacs/trajectory/energyframe.h"
 #include "gromacs/utility/arraysize.h"
 #include "gromacs/utility/basedefinitions.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
 
@@ -65,7 +66,7 @@ typedef struct
     int* qq;
 } t_liedata;
 
-static t_liedata* analyze_names(int nre, gmx_enxnm_t* names, const char* ligand)
+static t_liedata* analyze_names(gmx::ArrayRef<const gmx_enxnm_t> names, const char* ligand)
 {
     t_liedata* ld;
     char       self[256];
@@ -73,17 +74,18 @@ static t_liedata* analyze_names(int nre, gmx_enxnm_t* names, const char* ligand)
     /* Now real analysis: find components of energies */
     sprintf(self, "%s-%s", ligand, ligand);
     snew(ld, 1);
-    for (int i = 0; (i < nre); i++)
+    for (int i = 0; i < gmx::ssize(names); i++)
     {
-        if ((std::strstr(names[i].name, ligand) != nullptr) && (std::strstr(names[i].name, self) == nullptr))
+        if (std::strstr(names[i].name.c_str(), ligand) != nullptr
+            && std::strstr(names[i].name.c_str(), self) == nullptr)
         {
-            if (std::strstr(names[i].name, "LJ") != nullptr)
+            if (names[i].name.find("LJ") != std::string::npos)
             {
                 ld->nlj++;
                 srenew(ld->lj, ld->nlj);
                 ld->lj[ld->nlj - 1] = i;
             }
-            else if (std::strstr(names[i].name, "Coul") != nullptr)
+            else if (names[i].name.find("Coul") != std::string::npos)
             {
                 ld->nqq++;
                 srenew(ld->qq, ld->nqq);
@@ -95,12 +97,12 @@ static t_liedata* analyze_names(int nre, gmx_enxnm_t* names, const char* ligand)
     printf("LJ:  ");
     for (int i = 0; (i < ld->nlj); i++)
     {
-        printf("  %12s", names[ld->lj[i]].name);
+        printf("  %12s", names[ld->lj[i]].name.c_str());
     }
     printf("\nCoul:");
     for (int i = 0; (i < ld->nqq); i++)
     {
-        printf("  %12s", names[ld->qq[i]].name);
+        printf("  %12s", names[ld->qq[i]].name.c_str());
     }
     printf("\n");
 
@@ -139,59 +141,59 @@ int gmx_lie(int argc, char* argv[])
         "are written to the [REF].edr[ref] file. Values from the molecule-in-water simulation",
         "are necessary for supplying suitable values for -Elj and -Eqq."
     };
-    static real        lie_lj = 0, lie_qq = 0, fac_lj = 0.181, fac_qq = 0.5;
-    static const char* ligand = "none";
-    t_pargs            pa[]   = {
+    real        lie_lj = 0, lie_qq = 0, fac_lj = 0.181, fac_qq = 0.5;
+    const char* ligand = "none";
+    t_pargs     pa[]   = {
         { "-Elj",
-                       FALSE,
-                       etREAL,
-                       { &lie_lj },
-                       "Lennard-Jones interaction between ligand and solvent" },
+                FALSE,
+                etREAL,
+                { &lie_lj },
+                "Lennard-Jones interaction between ligand and solvent" },
         { "-Eqq", FALSE, etREAL, { &lie_qq }, "Coulomb interaction between ligand and solvent" },
         { "-Clj",
-                       FALSE,
-                       etREAL,
-                       { &fac_lj },
-                       "Factor in the LIE equation for Lennard-Jones component of energy" },
+                FALSE,
+                etREAL,
+                { &fac_lj },
+                "Factor in the LIE equation for Lennard-Jones component of energy" },
         { "-Cqq",
-                       FALSE,
-                       etREAL,
-                       { &fac_qq },
-                       "Factor in the LIE equation for Coulomb component of energy" },
+                FALSE,
+                etREAL,
+                { &fac_qq },
+                "Factor in the LIE equation for Coulomb component of energy" },
         { "-ligand", FALSE, etSTR, { &ligand }, "Name of the ligand in the energy file" }
     };
 #define NPA asize(pa)
 
     FILE*             out;
-    int               nre, nframes = 0, ct = 0;
+    int               nframes = 0, ct = 0;
     ener_file_t       fp;
     t_liedata*        ld;
-    gmx_enxnm_t*      enm = nullptr;
     t_enxframe*       fr;
     real              lie;
     double            lieaver = 0, lieav2 = 0;
     gmx_output_env_t* oenv;
+    gmx::TimeControl  timeControl;
 
     t_filenm fnm[] = { { efEDR, "-f", "ener", ffREAD }, { efXVG, "-o", "lie", ffWRITE } };
 #define NFILE asize(fnm)
 
     if (!parse_common_args(
-                &argc, argv, PCA_CAN_VIEW | PCA_CAN_TIME, NFILE, fnm, NPA, pa, asize(desc), desc, 0, nullptr, &oenv))
+                &argc, argv, PCA_CAN_VIEW | PCA_CAN_TIME, NFILE, fnm, NPA, pa, asize(desc), desc, 0, nullptr, &oenv, &timeControl))
     {
         return 0;
     }
 
-    fp = open_enx(ftp2fn(efEDR, NFILE, fnm), "r");
-    do_enxnms(fp, &nre, &enm);
+    fp                                 = open_enx(ftp2fn(efEDR, NFILE, fnm), "r");
+    const std::vector<gmx_enxnm_t> enm = readEnxNames(fp);
 
-    ld = analyze_names(nre, enm, ligand);
+    ld = analyze_names(enm, ligand);
     snew(fr, 1);
 
     out = xvgropen(
             ftp2fn(efXVG, NFILE, fnm), "LIE free energy estimate", "Time (ps)", "DGbind (kJ/mol)", oenv);
     while (do_enx(fp, fr))
     {
-        ct = check_times(fr->t);
+        ct = check_times(fr->t, timeControl);
         if (ct == 0)
         {
             lie = calc_lie(ld, fr->ener, lie_lj, lie_qq, fac_lj, fac_qq);
@@ -201,7 +203,7 @@ int gmx_lie(int argc, char* argv[])
             fprintf(out, "%10g  %10g\n", fr->t, lie);
         }
     }
-    close_enx(fp);
+    done_ener_file(fp);
     xvgrclose(out);
     fprintf(stderr, "\n");
 

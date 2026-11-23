@@ -62,7 +62,17 @@ set(EXPECTED_SPHINX_VERSION 4.0.0)
 if(SPHINX_ALREADY_SEARCHED)
     set(Sphinx_FIND_QUIETLY ON)
 endif()
-find_package(Sphinx ${EXPECTED_SPHINX_VERSION} COMPONENTS pygments)
+# The components are the Python modules (by import name) that conf.cmakein.py
+# loads as extensions or uses as the HTML theme; keep the two in sync.  The
+# packages that provide them are listed in requirements.txt.
+find_package(Sphinx ${EXPECTED_SPHINX_VERSION} COMPONENTS
+    furo
+    pygments
+    sphinx_copybutton
+    sphinx_inline_tabs
+    sphinxarg
+    sphinxcontrib.autoprogram
+    )
 set(SPHINX_ALREADY_SEARCHED TRUE CACHE BOOL "True if a search for Sphinx has already been done")
 mark_as_advanced(SPHINX_ALREADY_SEARCHED)
 
@@ -104,10 +114,19 @@ elseif (BUILD_IS_INSOURCE)
     set(MANUAL_BUILD_IS_POSSIBLE OFF)
     set(MANUAL_BUILD_NOT_POSSIBLE_REASON "the build is in-source")
 else()
-    include(manual/UseLATEX.cmake)
+    if (LATEX_FIND_QUIETLY_AFTER_FIRST_RUN)
+        set (LATEX_FIND_QUIETLY TRUE)
+    else()
+        set (LATEX_FIND_QUIETLY FALSE)
+    endif()
+    find_package(LATEX)
+    set(LATEX_FIND_QUIETLY_AFTER_FIRST_RUN TRUE CACHE INTERNAL "Be quiet during future attempts to find LaTeX")
+    if(LATEX_FOUND)
+        include(manual/UseLATEX.cmake)
+    endif()
     if(NOT SPHINX_FOUND)
         set(MANUAL_BUILD_IS_POSSIBLE OFF)
-        set(MANUAL_BUILD_NOT_POSSIBLE_REASON "Sphinx has not been found and is needed to create the LaTex input files")
+        set(MANUAL_BUILD_NOT_POSSIBLE_REASON "Sphinx ${EXPECTED_SPHINX_VERSION} or the packages in docs/requirements.txt are not available, and Sphinx is needed to create the LaTeX input files")
     elseif(NOT PDFLATEX_COMPILER)
         set(MANUAL_BUILD_IS_POSSIBLE OFF)
         set(MANUAL_BUILD_NOT_POSSIBLE_REASON "pdflatex is not available")
@@ -377,16 +396,19 @@ if (SPHINX_FOUND)
         release-notes/2027/major/portability.rst
         release-notes/2027/major/miscellaneous.rst
         release-notes/2027/major/api.rst
+        release-notes/2026/2026.1.rst
+        release-notes/2026/2026.2.rst
+        release-notes/2026/2026.3.rst
+        release-notes/2026/2026.4.rst
+        release-notes/2026/2026.5.rst
         release-notes/2026/major/highlights.rst
         release-notes/2026/major/features.rst
         release-notes/2026/major/performance.rst
-        release-notes/2026/major/tools.rst
         release-notes/2026/major/bugs-fixed.rst
         release-notes/2026/major/removed-functionality.rst
         release-notes/2026/major/deprecated-functionality.rst
         release-notes/2026/major/portability.rst
         release-notes/2026/major/miscellaneous.rst
-        release-notes/2026/major/api.rst
         release-notes/2025/2025.1.rst
         release-notes/2025/2025.2.rst
         release-notes/2025/2025.3.rst
@@ -401,7 +423,6 @@ if (SPHINX_FOUND)
         release-notes/2025/major/deprecated-functionality.rst
         release-notes/2025/major/portability.rst
         release-notes/2025/major/miscellaneous.rst
-        release-notes/2025/major/api.rst
         release-notes/2024/2024.1.rst
         release-notes/2024/2024.2.rst
         release-notes/2024/2024.3.rst
@@ -414,11 +435,9 @@ if (SPHINX_FOUND)
         release-notes/2024/major/performance.rst
         release-notes/2024/major/tools.rst
         release-notes/2024/major/bugs-fixed.rst
-        release-notes/2024/major/removed-functionality.rst
         release-notes/2024/major/deprecated-functionality.rst
         release-notes/2024/major/portability.rst
         release-notes/2024/major/miscellaneous.rst
-        release-notes/2024/major/api.rst
         release-notes/2023/2023.1.rst
         release-notes/2023/2023.2.rst
         release-notes/2023/2023.3.rst
@@ -772,27 +791,28 @@ if (SPHINX_FOUND)
 
 else()
     set(MANUAL_BUILD_IS_POSSIBLE OFF)
-    set(MANUAL_BUILD_NOT_POSSIBLE_REASON "Sphinx expected minimum version ${EXPECTED_SPHINX_VERSION} is not available")
+    set(MANUAL_BUILD_NOT_POSSIBLE_REASON "Sphinx ${EXPECTED_SPHINX_VERSION} or the packages in docs/requirements.txt are not available")
 
     add_custom_target(webpage-sphinx
         COMMAND ${CMAKE_COMMAND} -E echo
-            "HTML pages cannot be built because Sphinx expected minimum version ${EXPECTED_SPHINX_VERSION} is not available"
+            "HTML pages cannot be built because Sphinx ${EXPECTED_SPHINX_VERSION} or the packages in docs/requirements.txt are not available"
         VERBATIM)
     add_custom_target(install-guide
         COMMAND ${CMAKE_COMMAND} -E echo
-            "INSTALL cannot be built because Sphinx expected minimum version ${EXPECTED_SPHINX_VERSION} is not available"
+            "INSTALL cannot be built because Sphinx ${EXPECTED_SPHINX_VERSION} or the packages in docs/requirements.txt are not available"
         VERBATIM)
     add_custom_target(man
         COMMAND ${CMAKE_COMMAND} -E echo
-            "man pages cannot be built because Sphinx expected minimum version ${EXPECTED_SPHINX_VERSION} is not available"
+            "man pages cannot be built because Sphinx ${EXPECTED_SPHINX_VERSION} or the packages in docs/requirements.txt are not available"
         VERBATIM)
     add_custom_target(sphinx-create-texman
         COMMAND ${CMAKE_COMMAND} -E echo
-            "Cannot prepare LaTeX input files because Sphinx expected minimum version ${EXPECTED_SPHINX_VERSION} is not available"
+            "Cannot prepare LaTeX input files because Sphinx ${EXPECTED_SPHINX_VERSION} or the packages in docs/requirements.txt are not available"
         VERBATIM)
     add_custom_target(manual
         COMMAND ${CMAKE_COMMAND} -E echo
-            "manual cannot be built because Sphinx expected minimum version ${EXPECTED_SPHINX_VERSION} is not available")
+            "manual cannot be built because Sphinx ${EXPECTED_SPHINX_VERSION} or the packages in docs/requirements.txt are not available"
+        VERBATIM)
 endif()
 
 if (MAN_PAGE_DIR)
@@ -821,7 +841,7 @@ if (NOT Python3_Interpreter_FOUND)
 elseif (NOT SPHINX_FOUND)
     # Hardly anything gets built if Sphinx is not available, so don't bother.
     set(HTML_BUILD_IS_POSSIBLE OFF)
-    set(HTML_BUILD_NOT_POSSIBLE_REASON "Sphinx expected minimum version ${EXPECTED_SPHINX_VERSION} is required")
+    set(HTML_BUILD_NOT_POSSIBLE_REASON "Sphinx ${EXPECTED_SPHINX_VERSION} and the packages in docs/requirements.txt are required")
 endif()
 if (NOT MANUAL_BUILD_IS_POSSIBLE)
     list(APPEND HTML_BUILD_WARNINGS

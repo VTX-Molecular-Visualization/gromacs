@@ -46,11 +46,14 @@
 #include <cmath>
 #include <cstddef>
 
+#include <array>
 #include <vector>
 
 #include "gromacs/applied_forces/qmmm/qmmmtypes.h"
 #include "gromacs/math/units.h"
 #include "gromacs/utility/enumerationhelpers.h"
+#include "gromacs/utility/exceptions.h"
+#include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/stringutil.h"
 #include "gromacs/utility/vec.h"
 
@@ -58,6 +61,166 @@ enum class PbcType : int;
 
 namespace gmx
 {
+
+namespace
+{
+
+bool isBuiltInFunctional(QMMMQMMethod method)
+{
+    return method == QMMMQMMethod::PBE || method == QMMMQMMethod::PBE_D3
+           || method == QMMMQMMethod::BLYP || method == QMMMQMMethod::BLYP_D3
+           || method == QMMMQMMethod::PBE0 || method == QMMMQMMethod::PBE0_D3
+           || method == QMMMQMMethod::B3LYP || method == QMMMQMMethod::B3LYP_D3;
+}
+
+bool isXtbMethod(QMMMQMMethod method)
+{
+    return method == QMMMQMMethod::GFN1_XTB || method == QMMMQMMethod::GFN2_XTB;
+}
+
+bool isTightBindingMethod(QMMMQMMethod method)
+{
+    return method == QMMMQMMethod::SCC_DFTB || isXtbMethod(method);
+}
+
+/*! The strings with various functional-dependent parameters
+ * 0) Name of functional as accepted by CP2K within &XC_FUNCTIONAL
+ * 1) Name of the REFERENCE_FUNCTIONAL for D3 dispersion correction
+ * 2) Basis set file name
+ * 3) Basis set name
+ * 4) Potential file name
+ * 5) Potential name
+ * 6) For hybrid/range-separated functionals: INTERACTION_TYPE within &INTERACTION_POTENTIAL
+ * 7) For range-separated functionals: OMEGA within &INTERACTION_POTENTIAL
+ * 8) For range-separated functionals: SCALE_COULOMB within &INTERACTION_POTENTIAL
+ * 9) For range-separated functionals: SCALE_LONGRANGE within &INTERACTION_POTENTIAL
+ */
+static const EnumerationArray<QMMMQMMethod, std::array<const char*, 10>> sc_functionalParameters = { {
+        { "PBE", nullptr, "BASIS_MOLOPT", "DZVP-MOLOPT-GTH", "POTENTIAL", "GTH-PBE", nullptr, nullptr, nullptr, nullptr },
+        { "PBE", "PBE", "BASIS_MOLOPT", "DZVP-MOLOPT-GTH", "POTENTIAL", "GTH-PBE", nullptr, nullptr, nullptr, nullptr },
+        { "BLYP", nullptr, "BASIS_MOLOPT", "DZVP-MOLOPT-GTH", "POTENTIAL", "GTH-BLYP", nullptr, nullptr, nullptr, nullptr },
+        { "BLYP", "BLYP", "BASIS_MOLOPT", "DZVP-MOLOPT-GTH", "POTENTIAL", "GTH-BLYP", nullptr, nullptr, nullptr, nullptr },
+        { "PBE0", nullptr, "EMSL_BASIS_SETS", "6-31G*", "POTENTIAL", "ALL", "TRUNCATED", nullptr, nullptr, nullptr },
+        { "PBE0", "PBE0", "EMSL_BASIS_SETS", "6-31G*", "POTENTIAL", "ALL", "TRUNCATED", nullptr, nullptr, nullptr },
+        { "B3LYP", nullptr, "EMSL_BASIS_SETS", "6-31G*", "POTENTIAL", "ALL", "TRUNCATED", nullptr, nullptr, nullptr },
+        { "B3LYP", "B3LYP", "EMSL_BASIS_SETS", "6-31G*", "POTENTIAL", "ALL", "TRUNCATED", nullptr, nullptr, nullptr },
+        { "HYB_GGA_XC_CAM_B3LYP",
+          nullptr,
+          "EMSL_BASIS_SETS",
+          "6-31G*",
+          "POTENTIAL",
+          "ALL",
+          "MIX_CL_TRUNC",
+          "0.33",
+          "0.19",
+          "0.46" },
+        { "HYB_GGA_XC_CAM_B3LYP",
+          "CAMB3LYP",
+          "EMSL_BASIS_SETS",
+          "6-31G*",
+          "POTENTIAL",
+          "ALL",
+          "MIX_CL_TRUNC",
+          "0.33",
+          "0.19",
+          "0.46" },
+        { "HYB_GGA_XC_WB97X",
+          nullptr,
+          "EMSL_BASIS_SETS",
+          "6-31G*",
+          "POTENTIAL",
+          "ALL",
+          "MIX_CL_TRUNC",
+          "0.3",
+          "0.157706",
+          "0.842294" },
+        { "HYB_GGA_XC_WB97X_D3",
+          nullptr,
+          "EMSL_BASIS_SETS",
+          "6-31G*",
+          "POTENTIAL",
+          "ALL",
+          "MIX_CL_TRUNC",
+          "0.25",
+          "0.195728",
+          "0.804272" },
+        // Tight-binding methods
+        { "DFTB", nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr },
+        { "GFN1", nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr },
+        { "GFN2", nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr },
+        // User-provided input
+        { "INPUT", nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr },
+} };
+
+/*! \brief Helper function that returns the next number >= minimumSize that is
+ *  a product of 2, 3 and 5 only.
+ *  \param[in] minimumSize Minimum size of the grid
+ *  \return Next number >= minimumSize that is a product of 2, 3 and 5 only
+ */
+int nextFftFriendlyGridSize(int minimumSize)
+{
+    for (int size = minimumSize > 1 ? minimumSize : 1;; ++size)
+    {
+        int remainder = size;
+        for (const int factor : { 2, 3, 5 })
+        {
+            while (remainder % factor == 0)
+            {
+                remainder /= factor;
+            }
+        }
+        if (remainder == 1)
+        {
+            return size;
+        }
+    }
+}
+
+/*! \brief Helper function that calculates SPME grid sizes for a given box
+ *  \param[in] box Matrix with box vectors
+ *  \return Array with grid sizes for each dimension
+ */
+std::array<int, DIM> spmeGridForBox(const matrix& box)
+{
+    std::array<int, DIM> grid;
+    for (int dimension = 0; dimension < DIM; ++dimension)
+    {
+        // One point per Angstrom is the CP2K recommendation for TB SPME.
+        grid[dimension] =
+                nextFftFriendlyGridSize(static_cast<int>(std::ceil(c_nm2A * norm(box[dimension]))));
+    }
+    return grid;
+}
+
+/*! \brief Helper function that generates &EWALD section for CP2K input for usage of SPME
+ *  \param[in] indentation String with indentation for the section
+ *  \param[in] grid Array with grid sizes for each dimension
+ *  \return String with &EWALD section for CP2K input
+ */
+std::string generateSpmeEwaldSection(const char* indentation, const std::array<int, DIM>& grid)
+{
+    std::string res;
+    res += formatString("%s&EWALD\n", indentation);
+    res += formatString("%s  EWALD_TYPE SPME\n", indentation);
+    res += formatString("%s  ALPHA 0.35\n", indentation);
+    res += formatString("%s  GMAX %d %d %d\n", indentation, grid[XX], grid[YY], grid[ZZ]);
+    res += formatString("%s&END EWALD\n", indentation);
+    return res;
+}
+
+/*! \brief Helper function that returns the minimum length among box vectors
+ *  \param[in] box Matrix with box vectors
+ *  \return minimum length among box vectors
+ */
+float minBoxVectorNorm(const matrix& box)
+{
+    real res = norm(box[0]);
+    res      = norm(box[1]) < res ? norm(box[1]) : res;
+    res      = norm(box[2]) < res ? norm(box[2]) : res;
+    return static_cast<float>(res);
+}
+
+} // namespace
 
 QMMMInputGenerator::QMMMInputGenerator(const QMMMParameters& parameters,
                                        PbcType               pbcType,
@@ -191,46 +354,159 @@ std::string QMMMInputGenerator::generateDFTSection() const
         res += "    UKS\n";
     }
 
-    // Basis files, Grid setup and SCF parameters
-    res += "    BASIS_SET_FILE_NAME  BASIS_MOLOPT\n";
-    res += "    POTENTIAL_FILE_NAME  POTENTIAL\n";
-    res += "    &MGRID\n";
-    res += "      NGRIDS 5\n";
-    res += "      CUTOFF 450\n";
-    res += "      REL_CUTOFF 50\n";
-    res += "      COMMENSURATE\n";
-    res += "    &END MGRID\n";
-    res += "    &SCF\n";
-    res += "      SCF_GUESS RESTART\n";
-    res += "      EPS_SCF 5.0E-8\n";
-    res += "      MAX_SCF 20\n";
-    res += "      &OT  T\n";
-    res += "        MINIMIZER  DIIS\n";
-    res += "        STEPSIZE   0.15\n";
-    res += "        PRECONDITIONER FULL_ALL\n";
-    res += "      &END OT\n";
-    res += "      &OUTER_SCF  T\n";
-    res += "        MAX_SCF 20\n";
-    res += "        EPS_SCF 5.0E-8\n";
-    res += "      &END OUTER_SCF\n";
-    res += "    &END SCF\n";
+    if (isTightBindingMethod(parameters_.qmMethod_))
+    {
+        // Section for DFTB_SCC and xTB methods
+        res += "    &QS\n";
+        if (parameters_.qmMethod_ == QMMMQMMethod::SCC_DFTB)
+        {
+            res += formatString("      METHOD %s\n", sc_functionalParameters[parameters_.qmMethod_][0]);
+            res += "      &DFTB\n";
+            res += "        DISPERSION FALSE\n";
+            res += "        DO_EWALD FALSE\n";
+            res += "        SELF_CONSISTENT TRUE\n";
+            res += "        &PARAMETER\n";
+            res += "          PARAM_FILE_NAME scc_parameter\n";
+            res += "          PARAM_FILE_PATH DFTB/scc\n";
+            res += "        &END PARAMETER\n";
+            res += "      &END DFTB\n";
+        }
+        else
+        {
+            res += "      METHOD xTB\n";
+            res += "      &XTB\n";
+            res += "        GFN_TYPE TBLITE\n";
+            res += "        SCC_MIXER TBLITE\n";
+            res += "        &TBLITE\n";
+            res += formatString("          METHOD %s\n",
+                                sc_functionalParameters[parameters_.qmMethod_][0]);
+            res += "        &END TBLITE\n";
+            res += "      &END XTB\n";
+        }
+        res += "    &END QS\n";
+        res += "    &SCF\n";
+        res += "      SCF_GUESS ATOMIC\n";
+        if (parameters_.qmMethod_ == QMMMQMMethod::SCC_DFTB)
+        {
+            res += "      EPS_SCF 1.0E-10\n";
+        }
+        else
+        {
+            res += "      EPS_SCF 1.0E-8\n";
+        }
+        res += "      MAX_SCF 100\n";
+        res += "    &END SCF\n";
+        res += "  &END DFT\n";
+    }
+    else
+    {
+        // Section for normal DFT methods
+        // Basis files, Grid setup and SCF parameters
+        res += formatString("    BASIS_SET_FILE_NAME  %s\n",
+                            sc_functionalParameters[parameters_.qmMethod_][2]);
+        res += formatString("    POTENTIAL_FILE_NAME  %s\n",
+                            sc_functionalParameters[parameters_.qmMethod_][4]);
+        res += "    &MGRID\n";
+        res += "      NGRIDS 5\n";
+        res += "      CUTOFF 450\n";
+        res += "      REL_CUTOFF 50\n";
+        res += "      COMMENSURATE\n";
+        res += "    &END MGRID\n";
+        res += "    &SCF\n";
+        res += "      SCF_GUESS RESTART\n";
+        res += "      EPS_SCF 5.0E-8\n";
+        res += "      MAX_SCF 20\n";
+        res += "      &OT  T\n";
+        res += "        MINIMIZER  DIIS\n";
+        res += "        STEPSIZE   0.15\n";
+        res += "        PRECONDITIONER FULL_ALL\n";
+        res += "      &END OT\n";
+        res += "      &OUTER_SCF  T\n";
+        res += "        MAX_SCF 20\n";
+        res += "        EPS_SCF 5.0E-8\n";
+        res += "      &END OUTER_SCF\n";
+        res += "    &END SCF\n";
 
-    // DFT functional parameters
-    res += "    &XC\n";
-    res += "      DENSITY_CUTOFF     1.0E-12\n";
-    res += "      GRADIENT_CUTOFF    1.0E-12\n";
-    res += "      TAU_CUTOFF         1.0E-12\n";
-    res += formatString("      &XC_FUNCTIONAL %s\n", c_qmmmQMMethodNames[parameters_.qmMethod_]);
-    res += "      &END XC_FUNCTIONAL\n";
-    res += "    &END XC\n";
-    res += "    &QS\n";
-    res += "     METHOD GPW\n";
-    res += "     EPS_DEFAULT 1.0E-10\n";
-    res += "     EXTRAPOLATION ASPC\n";
-    res += "     EXTRAPOLATION_ORDER  4\n";
-    res += "    &END QS\n";
-    res += "  &END DFT\n";
+        // DFT functional parameters
+        res += "    &XC\n";
+        res += "      DENSITY_CUTOFF     1.0E-12\n";
+        res += "      GRADIENT_CUTOFF    1.0E-12\n";
+        res += "      TAU_CUTOFF         1.0E-12\n";
 
+        // Write main functional section
+        if (isBuiltInFunctional(parameters_.qmMethod_))
+        {
+            res += formatString("      &XC_FUNCTIONAL %s\n",
+                                sc_functionalParameters[parameters_.qmMethod_][0]);
+            res += "      &END XC_FUNCTIONAL\n";
+        }
+        else
+        {
+            res += "      &XC_FUNCTIONAL\n";
+            res += formatString("        &%s\n", sc_functionalParameters[parameters_.qmMethod_][0]);
+            res += formatString("        &END %s\n", sc_functionalParameters[parameters_.qmMethod_][0]);
+            res += "      &END XC_FUNCTIONAL\n";
+        }
+
+        // Write D3 dispersion correction section if needed
+        if (sc_functionalParameters[parameters_.qmMethod_][1])
+        {
+            res += "      &VDW_POTENTIAL\n";
+            res += "          POTENTIAL_TYPE  PAIR_POTENTIAL\n";
+            res += "          &PAIR_POTENTIAL\n";
+            res += "            TYPE  DFTD3\n";
+            res += formatString("            REFERENCE_FUNCTIONAL %s\n",
+                                sc_functionalParameters[parameters_.qmMethod_][1]);
+            res += "            CALCULATE_C9_TERM  T\n";
+            res += "          &END PAIR_POTENTIAL\n";
+            res += "      &END VDW_POTENTIAL\n";
+        }
+
+        // Write for hybrid/range-separated functionals exact exchange section
+        if (sc_functionalParameters[parameters_.qmMethod_][6])
+        {
+            res += "      &HF\n";
+            res += "        &SCREENING\n";
+            res += "          EPS_SCHWARZ 1.0E-10\n";
+            res += "        &END SCREENING\n";
+            res += "        &INTERACTION_POTENTIAL\n";
+            res += formatString("          POTENTIAL_TYPE %s\n",
+                                sc_functionalParameters[parameters_.qmMethod_][6]);
+            res += formatString("          CUTOFF_RADIUS %.1f\n",
+                                minBoxVectorNorm(qmBox_) / 2.0 * 10.0 - 0.1);
+
+            // For range-separated functionals also write OMEGA, SCALE_COULOMB and SCALE_LONGRANGE
+            if (sc_functionalParameters[parameters_.qmMethod_][7])
+            {
+                res += formatString("          OMEGA %s\n",
+                                    sc_functionalParameters[parameters_.qmMethod_][7]);
+                res += formatString("          SCALE_COULOMB %s\n",
+                                    sc_functionalParameters[parameters_.qmMethod_][8]);
+                res += formatString("          SCALE_LONGRANGE %s\n",
+                                    sc_functionalParameters[parameters_.qmMethod_][9]);
+            }
+            res += "        &END INTERACTION_POTENTIAL\n";
+            res += "      &END HF\n";
+        }
+
+        res += "    &END XC\n";
+        res += "    &QS\n";
+
+        // For hybrid/range-separated functionals use GAPW method, otherwise GPW
+        if (sc_functionalParameters[parameters_.qmMethod_][6])
+        {
+            res += "     METHOD GAPW\n";
+        }
+        else
+        {
+            res += "     METHOD GPW\n";
+        }
+        res += "     EPS_DEFAULT 1.0E-10\n";
+        res += "     EXTRAPOLATION ASPC\n";
+        res += "     EXTRAPOLATION_ORDER  4\n";
+        res += "    &END QS\n";
+        res += "  &END DFT\n";
+    }
     return res;
 }
 
@@ -261,21 +537,67 @@ std::string QMMMInputGenerator::generateQMMMSection() const
     res += "      PERIODIC XYZ\n";
     res += "    &END CELL\n";
 
-    res += "    CENTER EVERY_STEP\n";
+    if (isTightBindingMethod(parameters_.qmMethod_))
+    {
+        // Re-centering every finite-difference evaluation makes TB numerical
+        // and analytical forces inconsistent in CP2K.
+        res += "    CENTER SETUP_ONLY\n";
+    }
+    else
+    {
+        res += "    CENTER EVERY_STEP\n";
+    }
     res += "    CENTER_GRID TRUE\n";
     res += "    &WALLS\n";
     res += "      TYPE REFLECTIVE\n";
     res += "    &END WALLS\n";
 
-    res += "    ECOUPL GAUSS\n";
-    res += "    USE_GEEP_LIB 12\n";
-    res += "    &PERIODIC\n";
-    res += "      GMAX     1.0E+00\n";
-    res += "      &MULTIPOLE ON\n";
-    res += "         RCUT     1.0E+01\n";
-    res += "         EWALD_PRECISION     1.0E-06\n";
-    res += "      &END\n";
-    res += "    &END PERIODIC\n";
+    // Print electrostatic coupling section
+
+    if (isTightBindingMethod(parameters_.qmMethod_))
+    {
+        /* For tight-binding methods we could use either Gauss or Point Charge coupling
+         * and SPME for QM subsystem periodic coupling.
+         */
+        if (parameters_.electrostaticCoupling_ == QMMMElectrostaticCoupling::Gauss)
+        {
+            res += "    ECOUPL GAUSS\n";
+            res += "    NOCOMPATIBILITY\n";
+            res += "    USE_GEEP_LIB 12\n";
+            res += "    &PERIODIC\n";
+            res += "      &POISSON\n";
+            res += generateSpmeEwaldSection("        ", spmeGridForBox(box_));
+            res += "      &END POISSON\n";
+            res += "    &END PERIODIC\n";
+        }
+        else
+        {
+            GMX_RELEASE_ASSERT(parameters_.electrostaticCoupling_ == QMMMElectrostaticCoupling::PointCharge,
+                               "Unexpected coupling method");
+            res += "    ECOUPL POINT_CHARGE\n";
+            res += "    NOCOMPATIBILITY\n";
+            res += "    &PERIODIC\n";
+            res += "      &POISSON\n";
+            res += generateSpmeEwaldSection("        ", spmeGridForBox(box_));
+            res += "      &END POISSON\n";
+            res += "    &END PERIODIC\n";
+        }
+    }
+    else
+    {
+        /* For normal DFT methods we should use Gauss coupling
+         * and multipole expansion for QM cell periodic decopuling/recoulping
+         */
+        res += "    ECOUPL GAUSS\n";
+        res += "    USE_GEEP_LIB 12\n";
+        res += "    &PERIODIC\n";
+        res += "      GMAX     1.0E+00\n";
+        res += "      &MULTIPOLE ON\n";
+        res += "         RCUT     1.0E+01\n";
+        res += "         EWALD_PRECISION     1.0E-06\n";
+        res += "      &END\n";
+        res += "    &END PERIODIC\n";
+    }
 
     // Print indices of QM atoms
     // Loop over counter of QM atom types
@@ -324,6 +646,7 @@ std::string QMMMInputGenerator::generateMMSection()
     res += "      DO_NONBONDED FALSE\n";
     res += "    &END FORCEFIELD\n";
     res += "    &POISSON\n";
+    // GROMACS already evaluates the classical MM electrostatics.
     res += "      &EWALD\n";
     res += "        EWALD_TYPE NONE\n";
     res += "      &END EWALD\n";
@@ -339,8 +662,6 @@ std::string QMMMInputGenerator::generateSubsysSection() const
 
     // Init some numbers
     size_t nQm = parameters_.qmIndices_.size();
-    size_t nMm = parameters_.mmIndices_.size();
-    size_t nAt = nQm + nMm;
 
     // Count the numbers of individual QM atoms per type
     std::vector<int> num_atoms(periodic_system.size(), 0);
@@ -368,25 +689,25 @@ std::string QMMMInputGenerator::generateSubsysSection() const
     res += "      COORD_FILE_FORMAT PDB\n";
     res += "      CHARGE_EXTENDED TRUE\n";
     res += "      CONNECTIVITY OFF\n";
-    res += "      &GENERATE\n";
-    res += "         &ISOLATED_ATOMS\n";
-    res += formatString("            LIST %d..%d\n", 1, static_cast<int>(nAt));
-    res += "         &END\n";
-    res += "      &END GENERATE\n";
     res += "    &END TOPOLOGY\n";
 
-    // Now we will print basises for all types of QM atoms
-    // Loop over counter of QM atom types
-    for (size_t i = 0; i < num_atoms.size(); i++)
+    // Tight-binding methods need no Gaussian basis or pseudopotential files.
+    if (!isTightBindingMethod(parameters_.qmMethod_))
     {
-        if (num_atoms[i] > 0)
+        // Now we will print basises for all types of QM atoms
+        // Loop over counter of QM atom types
+        for (size_t i = 0; i < num_atoms.size(); i++)
         {
-            res += "    &KIND " + periodic_system[i] + "\n";
-            res += "      ELEMENT " + periodic_system[i] + "\n";
-            res += "      BASIS_SET DZVP-MOLOPT-GTH\n";
-            res += "      POTENTIAL GTH-" + std::string(c_qmmmQMMethodNames[parameters_.qmMethod_]);
-            res += "\n";
-            res += "    &END KIND\n";
+            if (num_atoms[i] > 0)
+            {
+                res += "    &KIND " + periodic_system[i] + "\n";
+                res += "      ELEMENT " + periodic_system[i] + "\n";
+                res += formatString("      BASIS_SET %s\n",
+                                    sc_functionalParameters[parameters_.qmMethod_][3]);
+                res += formatString("      POTENTIAL %s\n",
+                                    sc_functionalParameters[parameters_.qmMethod_][5]);
+                res += "    &END KIND\n";
+            }
         }
     }
 
@@ -481,7 +802,6 @@ const matrix& QMMMInputGenerator::qmBox() const
 {
     return qmBox_;
 }
-
 
 RVec computeQMBoxVec(const RVec& a, const RVec& b, const RVec& c, real h, real minNorm, real maxNorm)
 {

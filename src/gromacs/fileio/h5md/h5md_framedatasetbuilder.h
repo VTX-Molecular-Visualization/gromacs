@@ -76,9 +76,10 @@ public:
     using Base::Base;
 
     //! \copydoc H5mdDataSetBuilder::withCompression()
-    H5mdFrameDataSetBuilder& withCompression(const H5mdCompression compression)
+    H5mdFrameDataSetBuilder& withCompression(const H5mdCompression compression,
+                                             const double          absoluteError = 0.0)
     {
-        Base::withCompression(compression);
+        Base::withCompression(compression, absoluteError);
         return *this;
     }
 
@@ -109,7 +110,7 @@ public:
         return *this;
     }
 
-    //! \brief Set the frame data set to use a fixed size string with maximum length \p maxLength.
+    //! \brief Set the frame data set to use a fixed length string with maximum length \p maxLength.
     //
     // \note The max length must be positive and count the null-terminator character.
     // If neither withMaxStringLength() nor withVariableStringLength() is called,
@@ -119,7 +120,7 @@ public:
         // Use int to prevent the integer overflow if passed a negative value
         GMX_H5MD_THROW_UPON_ERROR(
                 maxLength <= 0,
-                "Cannot create fixed-size string data set with non-positive maximum length");
+                "Cannot create fixed-length string data set with non-positive maximum length");
         Base::withMaxStringLength(maxLength);
         return *this;
     }

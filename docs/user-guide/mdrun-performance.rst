@@ -33,7 +33,7 @@ of 2. So it can be useful go through the checklist.
 * Make sure your compiler supports OpenMP (some versions of Clang do not).
 * If you have GPUs that support either CUDA, OpenCL, SYCL or HIP use them.
 
-  * Configure with ``-DGMX_GPU=CUDA``, ``-DGMX_GPU=OpenCL``, or ``-DGMX_GPU=SYCL``.
+  * Configure with ``-DGMX_GPU=CUDA``, ``-DGMX_GPU=OpenCL``, ``-DGMX_GPU=SYCL`` or ``-DGMX_GPU=HIP``.
   * For GPUs, use the newest available SDK for your GPU to take advantage of the
     latest performance enhancements.
   * Use a recent GPU driver.
@@ -256,8 +256,13 @@ definitions. Experienced HPC users can skip this section.
     SYCL
         An open standard based on C++17 for targeting heterogeneous systems.
         SYCL has several implementations, of which |Gromacs| supports two:
-        `Intel oneAPI DPC++`_ and AdaptiveCpp_. |Gromacs| uses SYCL for GPU acceleration
+        `Intel oneAPI DPC++`_ and AdaptiveCpp_. |Gromacs| can use SYCL for GPU acceleration
         on AMD and Intel GPUs. There is experimental support for NVIDIA GPUs too.
+
+    HIP
+        A parallel computing framework and API developed by AMD to target their
+        (and theoretically NVIDIA) accelerator hardware. |Gromacs| can use HIP
+        for GPU acceleration on GCN, CDNA and RDNA AMD hardware.
 
     SIMD
         A type of CPU instruction by which modern CPU cores can execute multiple
@@ -692,14 +697,15 @@ behavior.
 ``-update``
     Used to set where to execute update and constraints, when present.
     Can be set to "auto," "cpu" or "gpu."
-    Defaults to "auto," which currently always uses the CPU.
-    Setting "gpu" requires that a compatible CUDA or SYCL GPU is available,
-    the simulation uses a single rank.
-    Update and constraints on a GPU is currently not supported
-    with mass and constraints free-energy perturbation, domain
-    decomposition, virtual sites, Ewald surface correction,
-    replica exchange, constraint pulling, orientation restraints
-    and computational electrophysiology.
+    Defaults to "auto," which uses GPU when possible and falls back to CPU.
+    Setting "gpu" requires that a compatible GPU is available.
+    Update and constraints on a GPU are currently not supported
+    with mass and constraints free-energy perturbation, virtual sites,
+    Ewald surface correction, replica exchange, constraint pulling,
+    orientation restraints and computational electrophysiology.
+    The combination of constraints and domain decomposition is only
+    supported when all constraints are within so-called "update groups"
+    (see :ref:`Avoiding communication for constraints <avoid-communication-for-constraints>`).
 
 ``-gpu_id``
     A string that specifies the ID numbers of the GPUs that
@@ -903,6 +909,29 @@ as the hardware and MPI setup will permit. If the
 MPI setup is restricted to one node, then the resulting
 :ref:`gmx mdrun` will be local to that node.
 
+::
+
+    gmx mdrun -ntmpi 8 -nb gpu -pme gpu -npme 1 -bonded gpu -update gpu
+
+Starts :ref:`mdrun <gmx mdrun>` using eight thread-MPI ranks that
+will use all available CPU cores and GPUs. All interaction types that can run
+on a GPU will do so. A single GPU (and MPI rank) are dedicated to the long-range
+forces. This may be optimal on hardware using data-center GPUs.
+
+::
+
+    mpirun -np 8 gmx_mpi mdrun -nb gpu -pme gpu -npme 2 -bonded gpu -update gpu
+
+Starts :ref:`mdrun <gmx mdrun>` using eight MPI ranks that will allow
+``mpirun`` to decide on the mapping of CPU cores and GPUs to MPI ranks.
+All interaction types that can run on a GPU will do so. Two GPUs (and
+MPI ranks) are dedicated to the long-range forces, which will work
+only when |Gromacs| is configured with a suitable library for a
+distributed GPU 3D-FFT (e.g. cuFFTMp, HeFFTe or MPI enabled rocFFT), and when the
+environment variable ``GMX_GPU_PME_DECOMPOSITION`` is set (to enable
+this run path, which is currently pending validation). This may be
+optimal on an HPC node with specialized interconnects like NVLINK.
+
 .. _gmx-mdrun-multiple-nodes:
 
 Running :ref:`mdrun <gmx mdrun>` on more than one node
@@ -1063,6 +1092,23 @@ to be suitable when there are ten nodes, each with two
 GPUs, but there is no need to specify ``-gpu_id`` for the
 normal case where all the GPUs on the node are available
 for use.
+
+::
+
+    mpirun -np 16 gmx_mpi mdrun -nb gpu -pme gpu -npme 4 -bonded gpu -update gpu
+
+Starts :ref:`mdrun <gmx mdrun>` using 16 MPI ranks that will allow
+``mpirun`` to decide on the mapping of CPU cores and GPUs to MPI ranks.
+Normally you would do this on e.g. two nodes each containing eight
+GPUs. All interaction types that can run on a GPU will do so. Four
+GPUs (and MPI ranks) are dedicated to the long-range forces, which
+will work only when |Gromacs| is configured with a suitable library
+for a distributed GPU 3D-FFT (e.g. cuFFTMp, HeFFTe or MPI enabled rcoFFT), and when the
+environment variable ``GMX_GPU_PME_DECOMPOSITION`` is set (to enable
+this run path, which is currently pending validation). This may be
+optimal on HPC nodes with specialized interconnects like NVLINK.
+
+.. _avoid-communication-for-constraints:
 
 Avoiding communication for constraints
 --------------------------------------
@@ -1280,8 +1326,8 @@ this problem and thus reduce the calculation time.
 
 .. _gmx-gpu-pme:
 
-GPU accelerated calculation of PME (not for AMD HIP)
-....................................................
+GPU accelerated calculation of PME
+..................................
 
 .. todo:: again, extend this and add some actual useful information concerning performance etc...
 
@@ -1302,9 +1348,10 @@ Known limitations
 - Multiple ranks (hence multiple GPUs) computing PME have limited support:
   experimental PME decomposition in hybrid mode (``-pmefft cpu``) with
   CUDA from the 2022 release and full GPU PME decomposition since the
-  2023 release with CUDA or SYCL (when |Gromacs| is built with
-  :ref:`cuFFTMp <cufftmp installation>` or
-  :ref:`HeFFTe <heffte installation>`).
+  2023 release with CUDA or SYCL, and since the 2026 release with HIP (when |Gromacs| is built with
+  :ref:`cuFFTMp <cufftmp installation>`,
+  :ref:`HeFFTe <heffte installation>` or 
+  :ref:`MPI enabled rocFFT <rocfftmp installation>`).
 
 - Only dynamical integrators are supported (ie. leap-frog, Velocity Verlet,
   stochastic dynamics)
@@ -1316,7 +1363,7 @@ Known limitations
 
 .. _gmx-gpu-bonded:
 
-GPU accelerated calculation of bonded interactions (CUDA and SYCL)
+GPU accelerated calculation of bonded interactions (CUDA, SYCL, HIP)
 .......................................................................
 
 .. todo:: again, extend this and add some actual useful information concerning performance etc...
@@ -1332,10 +1379,10 @@ A typical case for the latter is free-energy calculations.
 
 .. _gmx-gpu-update:
 
-GPU accelerated calculation of constraints and coordinate update (CUDA and SYCL only)
+GPU accelerated calculation of constraints and coordinate update (CUDA, SYCL, HIP)
 .....................................................................................
 
-.. TODO again, extend this with information on when is GPU update supported
+.. todo:: again, extend this with information on when GPU update is supported
 
 |Gromacs| makes it possible to also perform the coordinate update and (if requested)
 constraint calculation on a GPU.
@@ -1617,8 +1664,8 @@ or ``ROCR_VISIBLE_DEVICES``, could be used to select GPUs.
 Running HIP version of mdrun
 ----------------------------
 
-Currently only limited offload capabilities are implemented for AMD HIP support. Please ensure you have a recent
-version of the ROCm toolkit and check the :ref:`AMD HIP installation guide <AMD-HIP>`.
+Please ensure you have a recent version of the ROCm toolkit and check the :ref:`AMD HIP installation guide <AMD-HIP>`.
 
 If you are using CDNA hardware, please ensure that your |Gromacs| build has been configured to use 64-wide
-execution on the device.
+execution on the device. For using RDNA hardware, try to use VkFFT (the default) as the GMX_GPU_FFT_LIBRARY,
+as official support for RDNA is not universal in rocFFT, and could lead to the runtime refusing to use the device.

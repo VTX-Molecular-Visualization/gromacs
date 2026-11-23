@@ -46,7 +46,6 @@
 #include <numeric>
 #include <vector>
 
-#include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
 #include "gromacs/math/utilities.h"
 #include "gromacs/mdtypes/df_history.h"
@@ -64,6 +63,7 @@
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
@@ -1581,7 +1581,7 @@ static void simulatedTemperingUpdateTemperature(const t_inputrec&               
     if (inputrecNptTrotter(&ir) || inputrecNphTrotter(&ir) || inputrecNvtTrotter(&ir))
     {
         /* we need to recalculate the masses if the temperature has changed */
-        init_npt_masses(ir, *ekind, state, MassQ, FALSE);
+        gmx::init_npt_masses(ir, *ekind, state, MassQ, FALSE);
         for (int i = 0; i < state->nnhpres; i++)
         {
             for (int j = 0; j < ir.opts.nhchainlength; j++)

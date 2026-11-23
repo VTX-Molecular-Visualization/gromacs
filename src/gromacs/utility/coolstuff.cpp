@@ -1710,6 +1710,22 @@ std::string getCoolQuote()
           "used is sufficient to justify the enormous usage of computer power and energy.",
           "Anonymous reviewer, upon reading a draft of 10.1002/jcc.70059" },
         { "Software was a mistake.", "Paul Bauer" },
+        { "Rule #1, don't trust anything with electricity in it.",
+          "Ian Bogle, while discussing GPU kernel debugging." },
+        { "Of course, ff14SB is the acronym for Amber's force field from 2014 with Stony Brook "
+          "refinements, not Final Fantasy XIV: Shadowbringers.",
+          "Vedran Miletic" },
+        { "Ken Thompson said one of his most productive days was throwing away a thousand lines of "
+          "code. I enjoyed the day I removed the former particle-decomposition scheme!",
+          "Mark Abraham" },
+        { "We trust DFT... well, I don't trust DFT ever.", "Gerrit Groenhof" },
+        { "One event is no event.", "Gerrit Groenhof" },
+        { "People [whose names are shown] in red are people that did something here, I think. "
+          "[Berk Hess's name was shown in black.]",
+          "Gerrit Groenhof" },
+        { "Your metadata should outlive your trajectories!", "Yang Zhang" },
+        { "Fear neither hardship nor darkness.", "Margaret Nearl" },
+        { "Hard times coming your way", "Cro-Mags" },
     };
 
     if (beCool())

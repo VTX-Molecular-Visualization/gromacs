@@ -45,6 +45,7 @@
 #include <string>
 #include <vector>
 
+#include "gromacs/gmxpreprocess/extendableforcefield.h"
 #include "gromacs/gmxpreprocess/fflibutil.h"
 #include "gromacs/gmxpreprocess/notset.h"
 #include "gromacs/topology/atoms.h"
@@ -58,6 +59,9 @@
 #include "gromacs/utility/vectypes.h"
 
 #include "hackblock.h"
+
+namespace gmx
+{
 
 /* Number of control atoms for each 'add' type.
  *
@@ -146,7 +150,7 @@ static void read_h_db_file(const std::filesystem::path& hfn, std::vector<Molecul
     while (fgets2(line, STRLEN - 1, in))
     {
         // Skip lines that are only whitespace
-        if (gmx::countWords(line) == 0)
+        if (countWords(line) == 0)
         {
             continue;
         }
@@ -207,13 +211,13 @@ static void read_h_db_file(const std::filesystem::path& hfn, std::vector<Molecul
     }
 }
 
-int read_h_db(const std::filesystem::path& ffdir, std::vector<MoleculePatchDatabase>* globalPatches)
+int read_h_db(const ExtendableForceField& forceField, std::vector<MoleculePatchDatabase>* globalPatches)
 {
     /* Read the hydrogen database file(s).
      * Do not generate an error when no files are found.
      */
 
-    auto hdbf = fflib_search_file_end(ffdir, ".hdb", FALSE);
+    auto hdbf = forceField.findAllPathsEndingWith(".hdb");
     globalPatches->clear();
     for (const auto& filename : hdbf)
     {
@@ -222,11 +226,13 @@ int read_h_db(const std::filesystem::path& ffdir, std::vector<MoleculePatchDatab
     return globalPatches->size();
 }
 
-gmx::ArrayRef<const MoleculePatchDatabase>::iterator
-search_h_db(gmx::ArrayRef<const MoleculePatchDatabase> globalPatches, const char* key)
+ArrayRef<const MoleculePatchDatabase>::iterator search_h_db(ArrayRef<const MoleculePatchDatabase> globalPatches,
+                                                            const char* key)
 {
     return std::find_if(globalPatches.begin(),
                         globalPatches.end(),
                         [&key](const MoleculePatchDatabase& a)
-                        { return gmx::equalCaseInsensitive(key, a.name); });
+                        { return equalCaseInsensitive(key, a.name); });
 }
+
+} // namespace gmx

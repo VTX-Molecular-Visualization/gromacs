@@ -66,6 +66,7 @@ elseif(GMX_GPU_CUDA)
     _gmx_add_files_to_property(CUDA_SOURCES
         binary_information.cpp
         device_stream_manager.cpp
+        hostallocator.cpp
         nvshmem_manager.cpp
         )
 elseif(GMX_GPU_HIP)
@@ -79,6 +80,7 @@ elseif(GMX_GPU_HIP)
         binary_information.cpp
         device_stream_hip.cpp
         gpu_utils_hip.cpp
+        hostallocator.cpp
         pmalloc_hip.cpp
         )
 elseif(GMX_GPU_SYCL)
@@ -92,10 +94,10 @@ elseif(GMX_GPU_SYCL)
     _gmx_add_files_to_property(SYCL_SOURCES
         binary_information.cpp
         devicebuffer_sycl.cpp
-        device_context_manager.cpp
         device_context_sycl.cpp
         device_stream_manager.cpp
         device_stream_sycl.cpp
+        hostallocator.cpp
         pmalloc_sycl.cpp
         )
 else()

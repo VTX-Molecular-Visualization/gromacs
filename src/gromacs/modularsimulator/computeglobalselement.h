@@ -67,6 +67,7 @@ struct t_inputrec;
 
 namespace gmx
 {
+class DeviceStreamManager;
 class FreeEnergyPerturbationData;
 class LegacySimulatorData;
 class MDAtoms;
@@ -123,7 +124,7 @@ public:
                           const MDLogger&             mdlog,
                           t_commrec*                  cr,
                           const t_inputrec*           inputrec,
-                          const MDAtoms*              mdAtoms,
+                          const MDAtoms&              mdAtoms,
                           t_nrnb*                     nrnb,
                           gmx_wallcycle*              wcycle,
                           t_forcerec*                 fr,
@@ -161,6 +162,7 @@ public:
      * \param freeEnergyPerturbationData  Pointer to the \c FreeEnergyPerturbationData object
      * \param globalCommunicationHelper   Pointer to the \c GlobalCommunicationHelper object
      * \param observablesReducer          Pointer to the \c ObservablesReducer object
+     * \param deviceStreamManager         Pointer to the device stream manager
      *
      * \throws std::bad_any_cast  on internal error in VelocityVerlet algorithm builder.
      * \throws std::bad_alloc  when out of memory.
@@ -173,7 +175,8 @@ public:
                                                     EnergyData*          energyData,
                                                     FreeEnergyPerturbationData* freeEnergyPerturbationData,
                                                     GlobalCommunicationHelper* globalCommunicationHelper,
-                                                    ObservablesReducer* observablesReducer);
+                                                    ObservablesReducer*        observablesReducer,
+                                                    const DeviceStreamManager* deviceStreamManager);
 
 private:
     //! IEnergySignallerClient implementation
@@ -232,7 +235,7 @@ private:
     //! Full system topology - only needed for checkNumberOfBondedInteractions.
     const gmx_mtop_t& top_global_;
     //! Atom parameters for this domain.
-    const MDAtoms* mdAtoms_;
+    const MDAtoms& mdAtoms_;
     //! Handles constraints.
     Constraints* constr_;
     //! Manages flop accounting.

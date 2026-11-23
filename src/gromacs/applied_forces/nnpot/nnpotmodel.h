@@ -51,6 +51,7 @@ namespace gmx
 {
 class MpiComm;
 class LinkFrontierAtom;
+class ForceWithVirial;
 
 /*! \brief NNPot Module
  *
@@ -78,23 +79,26 @@ public:
      *   - pbc type (PbcType): boolean flags for periodic boundary conditions in x, y, z
      */
     virtual void evaluateModel(gmx_enerdata_t* /* enerData */,
-                               ArrayRef<RVec> /* forces */,
-                               ArrayRef<const int> /* idxLookup */,
-                               ArrayRef<const int> /* mmIndices */,
-                               ArrayRef<const std::string> /* inputs */,
+                               ForceWithVirial* /* fOutput */,
+                               ArrayRef<const int32_t> /* idxLookup */,
+                               ArrayRef<const int32_t> /* mmIndices */,
                                ArrayRef<RVec> /* positions */,
-                               ArrayRef<int> /* atomNumbers */,
-                               ArrayRef<int> /* atomPairs */,
+                               ArrayRef<int32_t> /* atomNumbers */,
+                               ArrayRef<int32_t> /* atomPairs */,
                                ArrayRef<RVec> /* pairShifts */,
                                ArrayRef<RVec> /* positionsMM */,
                                ArrayRef<real> /* chargesMM */,
                                real /* nnpCharge */,
                                ArrayRef<const LinkFrontierAtom> /* linkFrontier */,
-                               matrix* /* box */,
-                               PbcType* /* pbcType */) = 0;
+                               matrix& /* box */,
+                               PbcType& /* pbcType */) = 0;
 
     //! helper function to check if model outputs forces
     virtual bool outputsForces() const = 0;
+    //! helper function to check if model outputs forces on MM atoms
+    virtual bool outputsMMForces() const = 0;
+    //! helper function to check if model outputs virial contribution
+    virtual bool outputsVirial() const = 0;
 };
 
 } // namespace gmx

@@ -43,8 +43,8 @@
 #ifndef GMX_MODULARSIMULATOR_PARRINELLORAHMANBAROSTAT_H
 #define GMX_MODULARSIMULATOR_PARRINELLORAHMANBAROSTAT_H
 
-#include "gromacs/math/matrix.h"
 #include "gromacs/utility/logger.h"
+#include "gromacs/utility/matrix.h"
 #include "gromacs/utility/vectypes.h"
 
 #include "modularsimulatorinterfaces.h"
@@ -56,6 +56,7 @@ struct t_commrec;
 namespace gmx
 {
 enum class CheckpointDataOperation;
+class DeviceStreamManager;
 class EnergyData;
 class LegacySimulatorData;
 class MDAtoms;
@@ -84,7 +85,7 @@ public:
                              EnergyData*          energyData,
                              const MDLogger&      mdlog,
                              const t_inputrec*    inputrec,
-                             const MDAtoms*       mdAtoms);
+                             const MDAtoms&       mdAtoms);
 
     /*! \brief Register run function for step / time
      *
@@ -126,6 +127,7 @@ public:
      * \param freeEnergyPerturbationData  Pointer to the \c FreeEnergyPerturbationData object
      * \param globalCommunicationHelper   Pointer to the \c GlobalCommunicationHelper object
      * \param observablesReducer          Pointer to the \c ObservablesReducer object
+     * \param deviceStreamManager         Pointer to the device stream manager
      * \param propagatorTag  Tag of the propagator to connect to
      * \param offset  The step offset at which the barostat is applied
      *
@@ -139,6 +141,7 @@ public:
                           FreeEnergyPerturbationData gmx_unused*  freeEnergyPerturbationData,
                           GlobalCommunicationHelper gmx_unused*   globalCommunicationHelper,
                           ObservablesReducer*                     observablesReducer,
+                          const DeviceStreamManager*              deviceStreamManager,
                           Offset                                  offset,
                           const PropagatorTag&                    propagatorTag);
 
@@ -200,7 +203,7 @@ private:
     //! Contains user input mdp options.
     const t_inputrec* inputrec_;
     //! Atom parameters for this domain.
-    const MDAtoms* mdAtoms_;
+    const MDAtoms& mdAtoms_;
 };
 
 } // namespace gmx

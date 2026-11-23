@@ -43,6 +43,7 @@
 #include "gromacs/commandline/filenm.h"
 #include "gromacs/commandline/pargs.h"
 #include "gromacs/fileio/filetypes.h"
+#include "gromacs/fileio/timecontrol.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/fileio/xvgr.h"
 #include "gromacs/gmxana/gmx_ana.h"
@@ -87,7 +88,7 @@ int gmx_helixorient(int argc, char* argv[])
     };
 
     t_topology*  top = nullptr;
-    real         t;
+    double       t;
     rvec*        x = nullptr;
     matrix       box;
     t_trxstatus* status;
@@ -142,10 +143,11 @@ int gmx_helixorient(int argc, char* argv[])
     PbcType pbcType;
 
     gmx_output_env_t* oenv;
+    gmx::TimeControl  timeControl;
     gmx_rmpbc_t       gpbc = nullptr;
 
-    static gmx_bool bSC          = FALSE;
-    static gmx_bool bIncremental = FALSE;
+    gmx_bool bSC          = FALSE;
+    gmx_bool bIncremental = FALSE;
 
     t_pargs pa[] = {
         { "-sidechain",
@@ -172,7 +174,7 @@ int gmx_helixorient(int argc, char* argv[])
 #define NFILE asize(fnm)
 
     if (!parse_common_args(
-                &argc, argv, PCA_CAN_TIME, NFILE, fnm, NPA, pa, asize(desc), desc, 0, nullptr, &oenv))
+                &argc, argv, PCA_CAN_TIME, NFILE, fnm, NPA, pa, asize(desc), desc, 0, nullptr, &oenv, &timeControl))
     {
         return 0;
     }
@@ -225,7 +227,7 @@ int gmx_helixorient(int argc, char* argv[])
         }
     }
 
-    natoms = read_first_x(oenv, &status, ftp2fn(efTRX, NFILE, fnm), &t, &x, box);
+    natoms = read_first_x(oenv, &status, ftp2fn(efTRX, NFILE, fnm), &t, &x, box, &timeControl);
 
     fpaxis    = gmx_ffopen(opt2fn("-oaxis", NFILE, fnm), "w");
     fpcenter  = gmx_ffopen(opt2fn("-ocenter", NFILE, fnm), "w");

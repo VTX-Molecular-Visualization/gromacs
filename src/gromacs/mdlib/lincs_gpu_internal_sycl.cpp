@@ -98,6 +98,8 @@ using mode = sycl::access_mode;
  * \param[in]     gm_inverseMasses               1/mass for all atoms.
  * \param[in]     numIterations                  Number of iterations used to correct the projection.
  * \param[in]     expansionOrder                 Order of expansion when inverting the matrix.
+ * \param[in]     gm_triangleBits                Per-constraint bitmask of triangle couplings.
+ * \param[in]     hasTriangleConstraints         Whether any constraints are part of triangles.
  * \param[in]     gm_x                           Unconstrained positions.
  * \param[in,out] gm_xp                          Positions at the previous step, will be updated.
  * \param[in]     invdt                          Inverse timestep (needed to update velocities).
@@ -118,6 +120,8 @@ auto lincsKernel(CommandGroupHandler& cgh,
                  const float* __restrict__ gm_inverseMasses,
                  const int numIterations,
                  const int expansionOrder,
+                 const int* __restrict__ gm_triangleBits,
+                 const bool hasTriangleConstraints,
                  const Float3* __restrict__ gm_x,
                  Float3* __restrict__ gm_xp,
                  const float invdt,
@@ -167,6 +171,10 @@ auto lincsKernel(CommandGroupHandler& cgh,
         // i == -1 indicates dummy constraint at the end of the thread block.
         bool isDummyThread = (i == -1);
 
+        // Triangle bitmask: bit n set means coupling slot n is a triangle coupling.
+        // Zero for dummy threads and non-triangle constraints.
+        const int triangleBits = isDummyThread ? 0 : gm_triangleBits[threadIndex];
+
         // Everything computed for these dummies will be equal to zero
         if (isDummyThread)
         {
@@ -190,8 +198,7 @@ auto lincsKernel(CommandGroupHandler& cgh,
             xi = gm_x[i];
             xj = gm_x[j];
 
-            Float3 dx;
-            pbcDxAiucGpu(pbcAiuc, xi, xj, dx);
+            Float3 dx = pbcDxAiuc(pbcAiuc, xi, xj);
 
             float rlen = sycl::rsqrt(dx[XX] * dx[XX] + dx[YY] * dx[YY] + dx[ZZ] * dx[ZZ]);
             rc         = rlen * dx;
@@ -234,8 +241,7 @@ auto lincsKernel(CommandGroupHandler& cgh,
             xj[ZZ] = atomicLoad(gm_xp[j][ZZ]);
         }
 
-        Float3 dx;
-        pbcDxAiucGpu(pbcAiuc, xi, xj, dx);
+        Float3 dx = pbcDxAiuc(pbcAiuc, xi, xj);
 
         float sol = sqrtReducedMass * ((rc[XX] * dx[XX] + rc[YY] * dx[YY] + rc[ZZ] * dx[ZZ]) - targetLength);
 
@@ -268,6 +274,34 @@ auto lincsKernel(CommandGroupHandler& cgh,
                 sm_buffer[threadInBlock + c_threadsPerBlock * ((rec + 1) % 2)] = mvb;
 
                 sol = sol + mvb;
+            }
+
+            // Extra expansionOrder iterations for triangle constraints only.
+            // Triangle constraints have higher coupling-matrix eigenvalues (~0.7 vs ~0.4 for
+            // bonds), requiring additional expansion depth to achieve the same accuracy.
+            if (hasTriangleConstraints)
+            {
+                for (int rec = 0; rec < expansionOrder; rec++)
+                {
+                    itemIdx.barrier(fence_space::local_space);
+                    float mvb = 0.0F;
+                    if (triangleBits != 0)
+                    {
+                        for (int n = 0; n < coupledConstraintsCount; n++)
+                        {
+                            if (triangleBits & (1 << n))
+                            {
+                                int index = n * numConstraintsThreads + threadIndex;
+                                int c1    = gm_coupledConstraintsIndices[index];
+                                mvb       = mvb
+                                      + gm_matrixA[index]
+                                                * sm_buffer[c1 + c_threadsPerBlock * ((expansionOrder + rec) % 2)];
+                            }
+                        }
+                    }
+                    sm_buffer[threadInBlock + c_threadsPerBlock * ((expansionOrder + rec + 1) % 2)] = mvb;
+                    sol = sol + mvb;
+                }
             }
         }
 
@@ -311,8 +345,7 @@ auto lincsKernel(CommandGroupHandler& cgh,
                 xj[ZZ] = atomicLoad(gm_xp[j][ZZ]);
             }
 
-            Float3 dx;
-            pbcDxAiucGpu(pbcAiuc, xi, xj, dx);
+            Float3 dx = pbcDxAiuc(pbcAiuc, xi, xj);
 
             float len2  = targetLength * targetLength;
             float dlen2 = 2.0F * len2 - (dx[XX] * dx[XX] + dx[YY] * dx[YY] + dx[ZZ] * dx[ZZ]);
@@ -352,6 +385,32 @@ auto lincsKernel(CommandGroupHandler& cgh,
 
                     sm_buffer[threadInBlock + c_threadsPerBlock * ((rec + 1) % 2)] = mvb;
                     sol                                                            = sol + mvb;
+                }
+
+                if (hasTriangleConstraints)
+                {
+                    for (int rec = 0; rec < expansionOrder; rec++)
+                    {
+                        itemIdx.barrier(fence_space::local_space);
+                        float mvb = 0.0F;
+                        if (triangleBits != 0)
+                        {
+                            for (int n = 0; n < coupledConstraintsCount; n++)
+                            {
+                                if (triangleBits & (1 << n))
+                                {
+                                    int index = n * numConstraintsThreads + threadIndex;
+                                    int c1    = gm_coupledConstraintsIndices[index];
+                                    mvb       = mvb
+                                          + gm_matrixA[index]
+                                                    * sm_buffer[c1 + c_threadsPerBlock * ((expansionOrder + rec) % 2)];
+                                }
+                            }
+                        }
+                        sm_buffer[threadInBlock + c_threadsPerBlock * ((expansionOrder + rec + 1) % 2)] =
+                                mvb;
+                        sol = sol + mvb;
+                    }
                 }
             }
 
@@ -514,6 +573,8 @@ void launchLincsGpuKernel(LincsGpuKernelParameters*   kernelParams,
                       kernelParams->d_inverseMasses.get_pointer(),
                       kernelParams->numIterations,
                       kernelParams->expansionOrder,
+                      kernelParams->d_triangleBits.get_pointer(),
+                      kernelParams->hasTriangleConstraints,
                       d_x.get_pointer(),
                       d_xp.get_pointer(),
                       invdt,

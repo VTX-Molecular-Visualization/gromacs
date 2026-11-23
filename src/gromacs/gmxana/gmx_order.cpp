@@ -48,12 +48,12 @@
 #include "gromacs/commandline/viewit.h"
 #include "gromacs/fileio/confio.h"
 #include "gromacs/fileio/filetypes.h"
+#include "gromacs/fileio/timecontrol.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/fileio/xvgr.h"
 #include "gromacs/gmxana/cmat.h"
 #include "gromacs/gmxana/gmx_ana.h"
 #include "gromacs/gmxana/gstat.h"
-#include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
 #include "gromacs/math/utilities.h"
 #include "gromacs/pbcutil/pbc.h"
@@ -68,6 +68,7 @@
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/functions.h"
 #include "gromacs/utility/futil.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/real.h"
@@ -288,14 +289,15 @@ static void calc_tetra_order_parm(const char*             fnNDX,
                                   int                     slice_dim,
                                   const char*             sgslfn,
                                   const char*             skslfn,
-                                  const gmx_output_env_t* oenv)
+                                  const gmx_output_env_t* oenv,
+                                  const gmx::TimeControl& timeControl)
 {
     FILE *       fpsg = nullptr, *fpsk = nullptr;
     t_topology   top;
     PbcType      pbcType;
     t_trxstatus* status;
     int          natoms;
-    real         t;
+    double       t;
     rvec *       xtop, *x;
     matrix       box;
     real         sg, sk;
@@ -322,7 +324,7 @@ static void calc_tetra_order_parm(const char*             fnNDX,
     get_index(&top.atoms, fnNDX, ng, isize, index, grpname);
 
     /* Analyze trajectory */
-    natoms = read_first_x(oenv, &status, fnTRX, &t, &x, box);
+    natoms = read_first_x(oenv, &status, fnTRX, &t, &x, box, &timeControl);
     if (natoms > top.atoms.nr)
     {
         gmx_fatal(FARGS, "Topology (%d atoms) does not match trajectory (%d atoms)", top.atoms.nr, natoms);
@@ -419,7 +421,8 @@ static void calc_order(const char*                     fn,
                        gmx_bool                        distcalc,
                        const char*                     radfn,
                        real***                         distvals,
-                       const gmx_output_env_t*         oenv)
+                       const gmx_output_env_t*         oenv,
+                       const gmx::TimeControl&         timeControl)
 {
     /* if permolecule = TRUE, order parameters will be calculed per molecule
      * and stored in slOrder with #slices = # molecules */
@@ -431,11 +434,11 @@ static void calc_order(const char*                     fn,
             Sx, Sy, Sz,        /* the three molecular axes                       */
             tmp1, tmp2,        /* temp. rvecs for calculating dot products       */
             frameorder;        /* order parameters for one frame                 */
-    real* slFrameorder;        /* order parameter for one frame, per slice      */
-    real  length,              /* total distance between two atoms               */
-            t,                 /* time from trajectory                           */
-            z_ave, z1, z2;     /* average z, used to det. which slice atom is in */
-    int natoms,                /* nr. atoms in trj                               */
+    real*  slFrameorder;       /* order parameter for one frame, per slice      */
+    real   length;             /* total distance between two atoms               */
+    double t;                  /* time from trajectory                           */
+    real   z_ave, z1, z2;      /* average z, used to det. which slice atom is in */
+    int    natoms,             /* nr. atoms in trj                               */
             nr_tails,          /* nr tails, to check if index file is correct    */
             size = 0,          /* nr. of atoms in group. same as nr_tails        */
             i, j, m, k, slice; /* current slice number                           */
@@ -454,7 +457,7 @@ static void calc_order(const char*                     fn,
     /* Initiate the pbc structure */
     std::memset(&pbc, 0, sizeof(pbc));
 
-    if ((natoms = read_first_x(oenv, &status, fn, &t, &x0, box)) == 0)
+    if ((natoms = read_first_x(oenv, &status, fn, &t, &x0, box, &timeControl)) == 0)
     {
         gmx_fatal(FARGS, "Could not read coordinates from statusfile\n");
     }
@@ -731,6 +734,7 @@ static void calc_order(const char*                     fn,
 
     } while (read_next_x(oenv, status, &t, x0, box));
     /*********** done with status file **********/
+    close_trx(status);
 
     fprintf(stderr, "\nRead trajectory. Printing parameters to file\n");
     gmx_rmpbc_done(gpbc);
@@ -875,7 +879,8 @@ static void write_bfactors(t_filenm*                       fnm,
                            real**                          order,
                            const t_topology*               top,
                            real**                          distvals,
-                           gmx_output_env_t*               oenv)
+                           gmx_output_env_t*               oenv,
+                           const gmx::TimeControl&         timeControl)
 {
     /*function to write order parameters as B factors in PDB file using
           first frame of trajectory*/
@@ -888,7 +893,7 @@ static void write_bfactors(t_filenm*                       fnm,
     const int ngrps = gmx::ssize(indexGroups) - 2;
 
     nout = nslices * ngrps;
-    read_first_frame(oenv, &status, ftp2fn(efTRX, nfile, fnm), &fr, TRX_NEED_X);
+    read_first_frame(oenv, &status, ftp2fn(efTRX, nfile, fnm), &fr, &timeControl, TRX_NEED_X);
 
     close_trx(status);
     frout        = fr;
@@ -967,36 +972,36 @@ int gmx_order(int argc, char* argv[])
         "worked ever since it was added and has thus been removed."
     };
 
-    static int         nslices       = 1;     /* nr of slices defined       */
-    static gmx_bool    bSzonly       = FALSE; /* True if only Sz is wanted  */
-    static bool        bUnsatRemoved = false; /* Removed because it doesn't work. */
-    static const char* normal_axis[] = { nullptr, "z", "x", "y", nullptr };
-    static gmx_bool    permolecule   = FALSE; /*compute on a per-molecule basis */
-    static gmx_bool    radial        = FALSE; /*compute a radial membrane normal */
-    static gmx_bool    distcalc      = FALSE; /*calculate distance from a reference group */
-    t_pargs            pa[]          = {
+    int         nslices       = 1;     /* nr of slices defined       */
+    gmx_bool    bSzonly       = FALSE; /* True if only Sz is wanted  */
+    bool        bUnsatRemoved = false; /* Removed because it doesn't work. */
+    const char* normal_axis[] = { nullptr, "z", "x", "y", nullptr };
+    gmx_bool    permolecule   = FALSE; /*compute on a per-molecule basis */
+    gmx_bool    radial        = FALSE; /*compute a radial membrane normal */
+    gmx_bool    distcalc      = FALSE; /*calculate distance from a reference group */
+    t_pargs     pa[]          = {
         { "-d", FALSE, etENUM, { normal_axis }, "Direction of the normal on the membrane" },
         { "-sl",
-                              FALSE,
-                              etINT,
-                              { &nslices },
-                              "Calculate order parameter as function of box length, dividing the box"
-                                                  " into this number of slices." },
+                       FALSE,
+                       etINT,
+                       { &nslices },
+                       "Calculate order parameter as function of box length, dividing the box"
+                                    " into this number of slices." },
         { "-szonly",
-                              FALSE,
-                              etBOOL,
-                              { &bSzonly },
-                              "Only give Sz element of order tensor. (axis can be specified with [TT]-d[tt])" },
+                       FALSE,
+                       etBOOL,
+                       { &bSzonly },
+                       "Only give Sz element of order tensor. (axis can be specified with [TT]-d[tt])" },
         { "-unsat",
-                              FALSE,
-                              etBOOL,
-                              { &bUnsatRemoved },
-                              "HIDDENThis option has been removed as it didn't ever properly work." },
+                       FALSE,
+                       etBOOL,
+                       { &bUnsatRemoved },
+                       "HIDDENThis option has been removed as it didn't ever properly work." },
         { "-permolecule",
-                              FALSE,
-                              etBOOL,
-                              { &permolecule },
-                              "Compute per-molecule Scd order parameters" },
+                       FALSE,
+                       etBOOL,
+                       { &permolecule },
+                       "Compute per-molecule Scd order parameters" },
         { "-radial", FALSE, etBOOL, { &radial }, "Compute a radial membrane normal" },
         { "-calcdist", FALSE, etBOOL, { &distcalc }, "Compute distance from a reference" },
     };
@@ -1028,9 +1033,21 @@ int gmx_order(int argc, char* argv[])
     real**            distvals = nullptr;
     const char *      sgfnm, *skfnm, *ndxfnm, *tpsfnm, *trxfnm;
     gmx_output_env_t* oenv;
+    gmx::TimeControl  timeControl;
 
-    if (!parse_common_args(
-                &argc, argv, PCA_CAN_VIEW | PCA_CAN_TIME, NFILE, fnm, asize(pa), pa, asize(desc), desc, asize(bugs), bugs, &oenv))
+    if (!parse_common_args(&argc,
+                           argv,
+                           PCA_CAN_VIEW | PCA_CAN_TIME,
+                           NFILE,
+                           fnm,
+                           asize(pa),
+                           pa,
+                           asize(desc),
+                           desc,
+                           asize(bugs),
+                           bugs,
+                           &oenv,
+                           &timeControl))
     {
         return 0;
     }
@@ -1085,7 +1102,8 @@ int gmx_order(int argc, char* argv[])
                               axis,
                               opt2fn("-Sgsl", NFILE, fnm),
                               opt2fn("-Sksl", NFILE, fnm),
-                              oenv);
+                              oenv,
+                              timeControl);
         /* view xvgr files */
         do_view(oenv, opt2fn("-Sg", NFILE, fnm), nullptr);
         do_view(oenv, opt2fn("-Sk", NFILE, fnm), nullptr);
@@ -1153,7 +1171,8 @@ int gmx_order(int argc, char* argv[])
                    distcalc,
                    opt2fn_null("-nr", NFILE, fnm),
                    &distvals,
-                   oenv);
+                   oenv,
+                   timeControl);
 
         if (radial)
         {
@@ -1182,7 +1201,7 @@ int gmx_order(int argc, char* argv[])
             }
             else
             {
-                write_bfactors(fnm, NFILE, indexGroups, nslices, slOrder, top, distvals, oenv);
+                write_bfactors(fnm, NFILE, indexGroups, nslices, slOrder, top, distvals, oenv, timeControl);
             }
         }
 

@@ -444,6 +444,20 @@ void please_cite(FILE* fp, const char* key)
           "Journal of Chemical Information and Modeling",
           2024,
           "10.1021/acs.jcim.3c02087" },
+        { "Morozov2026",
+          "D. Morozov, C. Blau, O. Schütt, V. Mironov, A. Proeme, H. Judge, T. D. Kühne, B. Hess, "
+          "G. Groenhof",
+          "Seamless QM/MM Simulations via a GROMACS-CP2K Interface",
+          "Journal of Chemical Information and Modeling",
+          2026,
+          "10.1021/acs.jcim.6c02073" },
+        { "Miletic2026",
+          "V. Miletić, M. Wieczór, C. Simmerling, M. Rampp, B. L. de Groot, C. Kutzner, V. Gapsys",
+          "Force Fields and Simulation Engines: Lessons Learned from Porting Amber ff14SB and "
+          "ff19SB to GROMACS",
+          "J. Chem. Theory Comput.",
+          2026,
+          "10.1021/acs.jctc.6c01592" },
     };
 #define NSTR static_cast<int>(asize(citedb))
 

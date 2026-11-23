@@ -68,7 +68,6 @@ struct gmx_mdoutf;
 enum class PbcType : int;
 struct t_inputrec;
 class t_state;
-struct t_mdatoms;
 struct t_trxframe;
 struct gmx_mtop_t;
 
@@ -76,6 +75,7 @@ namespace gmx
 {
 enum class CheckpointDataOperation;
 enum class ConstraintVariable;
+class DeviceStreamManager;
 class EnergyData;
 class FreeEnergyPerturbationData;
 class GlobalCommunicationHelper;
@@ -117,18 +117,19 @@ class StatePropagatorData final
 {
 public:
     //! Constructor
-    StatePropagatorData(int                numAtoms,
-                        FILE*              fplog,
-                        const t_commrec*   cr,
-                        t_state*           globalState,
-                        t_state*           localState,
-                        bool               useGPU,
-                        bool               canMoleculesBeDistributedOverPBC,
-                        bool               writeFinalConfiguration,
-                        const std::string& finalConfigurationFilename,
-                        const t_inputrec*  inputrec,
-                        const t_mdatoms*   mdatoms,
-                        const gmx_mtop_t&  globalTop);
+    StatePropagatorData(int                        numAtoms,
+                        FILE*                      fplog,
+                        const t_commrec*           cr,
+                        t_state*                   globalState,
+                        t_state*                   localState,
+                        const DeviceStreamManager* deviceStreamManager,
+                        bool                       useGPU,
+                        bool                       canMoleculesBeDistributedOverPBC,
+                        bool                       writeFinalConfiguration,
+                        const std::string&         finalConfigurationFilename,
+                        const t_inputrec*          inputrec,
+                        const MDAtoms&             mdAtoms,
+                        const gmx_mtop_t&          globalTop);
 
     //! Destructor (allows forward declaration of internal type)
     ~StatePropagatorData();
@@ -367,6 +368,7 @@ public:
      * \param freeEnergyPerturbationData  Pointer to the \c FreeEnergyPerturbationData object
      * \param globalCommunicationHelper   Pointer to the \c GlobalCommunicationHelper object
      * \param observablesReducer          Pointer to the \c ObservablesReducer object
+     * \param deviceStreamManager         Pointer to the device stream manager
      *
      * \return  Pointer to the element to be added. Element needs to have been stored using \c storeElement
      */
@@ -376,7 +378,8 @@ public:
                                                     EnergyData*          energyData,
                                                     FreeEnergyPerturbationData* freeEnergyPerturbationData,
                                                     GlobalCommunicationHelper* globalCommunicationHelper,
-                                                    ObservablesReducer* observablesReducer);
+                                                    ObservablesReducer*        observablesReducer,
+                                                    const DeviceStreamManager* deviceStreamManager);
 
 private:
     //! Pointer to the associated StatePropagatorData
@@ -391,7 +394,10 @@ private:
     //! The compressed position writeout frequency
     const int nstxout_compressed_;
 
-    //! Pointer to keep a backup of the state for later writeout
+    /*! \brief Pointer to keep a backup of the state for later writeout
+     *
+     * Its buffers are not used directly in GPU transfers so do not need
+     * to be allocated accordingly. */
     std::unique_ptr<t_state> localStateBackup_;
     /*! \brief Whether the contents of localStateBackup_ are logically valid
      *

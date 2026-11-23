@@ -58,9 +58,9 @@
 
 #include "gromacs/gpu_utils/devicebuffer_datatype.h"
 #include "gromacs/gpu_utils/hostallocator.h"
-#include "gromacs/math/matrix.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/gmxassert.h"
+#include "gromacs/utility/matrix.h"
 
 class DeviceContext;
 class DeviceStream;
@@ -169,9 +169,14 @@ public:
      * and temperature coupling groups. Copies inverse masses and temperature coupling groups
      * to the GPU.
      *
+     * The copies to the GPU are asynchronous, so both \p inverseMasses and \p tempScaleGroups
+     * have to be page-locked (pinned) host memory and have to stay alive until they have
+     * completed, and the device stream has to be synchronized between calls.
+     *
      * \param[in] numAtoms        Number of atoms in the system.
-     * \param[in] inverseMasses   Inverse masses of atoms.
-     * \param[in] tempScaleGroups Maps the atom index to temperature scale value.
+     * \param[in] inverseMasses   Inverse masses of atoms, in pinned host memory.
+     * \param[in] tempScaleGroups Maps the atom index to temperature scale value, in pinned
+     *                            host memory.
      */
     void set(int numAtoms, ArrayRef<const real> inverseMasses, ArrayRef<const unsigned short> tempScaleGroups);
 

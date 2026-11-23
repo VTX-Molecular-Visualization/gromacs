@@ -44,29 +44,30 @@
 
 #include "gromacs/utility/vectypes.h"
 
-struct bonded_threading_t;
 struct gmx_domdec_t;
 struct gmx_localtop_t;
 struct gmx_mtop_t;
-struct gmx_shellfc_t;
+struct gmx_wallcycle;
 struct t_forcerec;
 struct t_inputrec;
-struct t_mdatoms;
 
 namespace gmx
 {
+struct shellfc_t;
 class Constraints;
 class ForceBuffers;
 class MDAtoms;
+class SimulationWorkload;
+class StatePropagatorDataGpu;
 class VirtualSitesHandler;
 
 /*! \brief Gets the local shell with domain decomposition
  *
  * \param[in]     dd        Domain decomposition struct, can be nullptr
- * \param[in]     md        The MD atom data
+ * \param[in]     mdAtoms   The MD atom data
  * \param[in,out] shfc      The shell/flexible-constraint data
  */
-void make_local_shells(const gmx_domdec_t* dd, const t_mdatoms& md, gmx_shellfc_t* shfc);
+void make_local_shells(const gmx_domdec_t* dd, const MDAtoms& mdAtoms, shellfc_t* shfc);
 
 /*! \brief Sets atom data for several MD algorithms
  *
@@ -75,27 +76,35 @@ void make_local_shells(const gmx_domdec_t* dd, const t_mdatoms& md, gmx_shellfc_
  * This routine sets the atom data for the (locally available) atoms.
  * This is called at the start of serial runs and during domain decomposition.
  *
- * \param[in]     dd         Domain decomposition struct, can be nullptr
+ * \param[in]     simulationWork The simulation workload
+ * \param[in,out] dd         Domain decomposition struct, can be nullptr
  * \param[in]     inputrec   Input parameter record
  * \param[in]     top_global The global topology
  * \param[in,out] top        The local topology
  * \param[in,out] fr         The force calculation parameter/data record
  * \param[out]    force      The force buffer
+ * \param[in]     massLambda The FEP lambda value relevant to mass perturbation
  * \param[out]    mdAtoms    The MD atom data
  * \param[in,out] constr     The constraints handler, can be NULL
  * \param[in,out] vsite      The virtual site data, can be NULL
  * \param[in,out] shellfc    The shell/flexible-constraint data, can be NULL
+ * \param[in]     stateGpu   The state-on-GPU manager, can be NULL
+ * \param[in]     wcycle     The wallcycle counter manager, can be NULL
  */
-void mdAlgorithmsSetupAtomData(const gmx_domdec_t*  dd,
-                               const t_inputrec&    inputrec,
-                               const gmx_mtop_t&    top_global,
-                               gmx_localtop_t*      top,
-                               t_forcerec*          fr,
-                               ForceBuffers*        force,
-                               MDAtoms*             mdAtoms,
-                               Constraints*         constr,
-                               VirtualSitesHandler* vsite,
-                               gmx_shellfc_t*       shellfc);
+void mdAlgorithmsSetupAtomData(const SimulationWorkload& simulationWork,
+                               gmx_domdec_t*             dd,
+                               const t_inputrec&         inputrec,
+                               const gmx_mtop_t&         top_global,
+                               gmx_localtop_t*           top,
+                               t_forcerec*               fr,
+                               ForceBuffers*             force,
+                               real                      massLambda,
+                               MDAtoms*                  mdAtoms,
+                               Constraints*              constr,
+                               VirtualSitesHandler*      vsite,
+                               shellfc_t*                shellfc,
+                               StatePropagatorDataGpu*   stateGpu,
+                               gmx_wallcycle*            wcycle);
 
 } // namespace gmx
 

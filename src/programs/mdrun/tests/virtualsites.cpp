@@ -66,6 +66,7 @@
 #include "config.h"
 
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 
@@ -78,6 +79,9 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include "gromacs/gpu_utils/capabilities.h"
+#include "gromacs/hardware/device_management.h"
+#include "gromacs/hardware/hw_info.h"
 #include "gromacs/topology/idef.h"
 #include "gromacs/topology/ifunc.h"
 #include "gromacs/topology/topology.h"
@@ -92,19 +96,55 @@
 #include "gromacs/utility/vectypes.h"
 
 #include "testutils/mpitest.h"
+#include "testutils/naming.h"
+#include "testutils/setenv.h"
 #include "testutils/simulationdatabase.h"
 #include "testutils/testasserts.h"
+#include "testutils/testfilemanager.h"
 #include "testutils/testmatchers.h"
 #include "testutils/trajectoryreader.h"
 
 #include "moduletest.h"
 #include "simulatorcomparison.h"
+#include "trajectorycomparison.h"
 
-namespace gmx::test
+namespace gmx
+{
+namespace test
 {
 namespace
 {
-using VirtualSiteTestParams = std::tuple<std::string, std::string, std::string>;
+/*! \brief Simulation name, bond type, whether to test N-type virtual sites,
+ * integrator, temperature coupling and pressure coupling
+ *
+ * The bond type is either InteractionFunction::GROMOS96Bonds or
+ * InteractionFunction::Bonds (harmonic). GROMOS96 bonds can not be
+ * computed on GPUs, so they are computed on the host also when the other
+ * bonded interactions are offloaded, while harmonic bonds can be offloaded.
+ *
+ * When N-type virtual sites are not tested, the test system constructs
+ * them with other types instead, if it has any.
+ */
+using VirtualSiteTestParams =
+        std::tuple<std::string, InteractionFunction, bool, std::string, std::string, std::string>;
+
+//! Returns the name of the bond type, for use in test and file names
+std::string bondTypeName(const InteractionFunction bondType)
+{
+    return interaction_function[bondType].name;
+}
+
+//! Returns a name for whether N-type virtual sites are tested, for use in test and file names
+std::string virtualSitesNName(const bool testVirtualSitesN)
+{
+    return testVirtualSitesN ? "VSITEN" : "NO_VSITEN";
+}
+
+//! Names the tests from their parameters
+const NameOfTestFromTuple<VirtualSiteTestParams> sc_testNamer{
+    std::make_tuple(useString, bondTypeName, virtualSitesNName, useString, useString, useString)
+};
+
 class VirtualSiteTest : public MdrunTestFixture, public ::testing::WithParamInterface<VirtualSiteTestParams>
 {
 public:
@@ -115,7 +155,8 @@ public:
      * Check that the positions and velocities of virtual sites are equal to the reference
      * implementation, within a given tolerance. This loops over the trajectory, calculates
      * the virtual site positions and velocities using a reference implementation, and
-     * compares it with the reported virtual site positions and velocities.
+     * compares it with the reported virtual site positions and velocities. It also checks that
+     * forces on virtual sites are cleared after spreading.
      *
      * The expectation is that the trajectory and the reference calculations are identical.
      * This ensures that neither the real atoms nor the virtual sites are changed between
@@ -140,20 +181,47 @@ public:
         {
             const auto frame = trajectoryFrameReader.frame();
             SCOPED_TRACE(formatString("Checking frame %s", frame.frameName().c_str()));
-            std::vector<RVec> positions;
-            std::vector<RVec> velocities;
-            std::vector<RVec> refPositions;
-            std::vector<RVec> refVelocities;
-            for (const auto& vSite : virtualSites)
+            // Output intervals differ, so a frame can contain any subset of x, v and f.
+            // Positions can be checked in all frames with x, velocities only in frames
+            // which also have x, since the reference velocities depend on the positions.
+            const bool haveX = !frame.x().empty();
+            const bool haveV = !frame.v().empty();
+            const bool haveF = !frame.f().empty();
+            if (haveX)
             {
-                auto [refPosition, refVelocity] = vSite.calculate(frame.x(), frame.v());
-                refPositions.emplace_back(refPosition);
-                refVelocities.emplace_back(refVelocity);
-                positions.emplace_back(frame.x().at(vSite.atomIdx));
-                velocities.emplace_back(frame.v().at(vSite.atomIdx));
+                const std::vector<RVec> zeroVelocities(haveV ? 0 : frame.x().size(), { 0, 0, 0 });
+                const ArrayRef<const RVec> frameVelocities =
+                        haveV ? frame.v() : ArrayRef<const RVec>(zeroVelocities);
+                std::vector<RVec> positions;
+                std::vector<RVec> velocities;
+                std::vector<RVec> refPositions;
+                std::vector<RVec> refVelocities;
+                for (const auto& vSite : virtualSites)
+                {
+                    auto [refPosition, refVelocity] = vSite.calculate(frame.x(), frameVelocities);
+                    refPositions.emplace_back(refPosition);
+                    refVelocities.emplace_back(refVelocity);
+                    positions.emplace_back(frame.x().at(vSite.atomIdx));
+                    velocities.emplace_back(frameVelocities[vSite.atomIdx]);
+                }
+                EXPECT_THAT(refPositions, Pointwise(RVecEq(tolerance), positions));
+                if (haveV)
+                {
+                    EXPECT_THAT(refVelocities, Pointwise(RVecEq(tolerance), velocities));
+                }
             }
-            EXPECT_THAT(refPositions, Pointwise(RVecEq(tolerance), positions));
-            EXPECT_THAT(refVelocities, Pointwise(RVecEq(tolerance), velocities));
+            if (haveF)
+            {
+                // The forces on the virtual sites are spread to the constructing atoms
+                // and then cleared, so the output must have exactly zero force on them.
+                std::vector<RVec> forces;
+                for (const auto& vSite : virtualSites)
+                {
+                    forces.emplace_back(frame.f().at(vSite.atomIdx));
+                }
+                const std::vector<RVec> zeroForces(forces.size(), { 0, 0, 0 });
+                EXPECT_THAT(zeroForces, Pointwise(RVecEq(absoluteTolerance(0)), forces));
+            }
         }
     }
 
@@ -191,15 +259,17 @@ public:
         std::vector<VirtualSite> virtualSites = {
             { InteractionFunction::VirtualSite1, 6, { 0 }, {} },
             { InteractionFunction::VirtualSite2, 6, { 0, 1 }, { 0.710573 } },
-            { InteractionFunction::VirtualSite2FlexibleDistance, 6, { 0, 1 }, { 0.292430 } },
+            { InteractionFunction::VirtualSite2FixedDistance, 6, { 0, 1 }, { 0.292430 } },
             { InteractionFunction::VirtualSite3, 6, { 0, 1, 2 }, { 0.060990, 0.543636 } },
-            { InteractionFunction::VirtualSite3FlexibleDistance, 6, { 0, 1, 2 }, { 0.125024, 0.444587 } },
-            { InteractionFunction::VirtualSite3FlexibleAngleDistance, 6, { 0, 1, 2 }, { 0.414850, 0.349767 } },
+            { InteractionFunction::VirtualSite3FixedDistance, 6, { 0, 1, 2 }, { 0.125024, 0.444587 } },
+            { InteractionFunction::VirtualSite3FixedAngleDistance, 6, { 0, 1, 2 }, { 0.414850, 0.349767 } },
             { InteractionFunction::VirtualSite3Outside, 6, { 0, 1, 2 }, { 0.779323, 0.093773, 0.743164 } },
-            { InteractionFunction::VirtualSite4FlexibleDistanceNormalization,
+            { InteractionFunction::VirtualSite4FixedDistanceNormalization,
               6,
               { 0, 1, 2, 3 },
-              { 0.975111, 0.952180, 0.757594 } }
+              { 0.975111, 0.952180, 0.757594 } },
+            // The weight of the first constructing atom is implied by the weights summing to 1
+            { InteractionFunction::VirtualSiteN, 6, { 0, 1, 2, 3 }, { 0.211335, 0.197166, 0.394332 } }
         };
 
         // Make integration step
@@ -215,6 +285,19 @@ public:
             halfStepPositions.emplace_back(startPositions[idx]
                                            + real(0.5) * timeStep * halfStepVelocities[idx]);
         }
+
+        /* The displacements are differences of positions of magnitude up to ~4 nm (see vsite_test.gro),
+         * so they cannot be more accurate than a few ULP of those positions. When a displacement
+         * component is small (e.g. when the weighted velocities nearly cancel), a purely
+         * relative tolerance would fall below that rounding floor. We therefore accept
+         * differences within either an absolute rounding floor or a relative tolerance.
+         * This is still far tighter than any error from a wrong velocity expression,
+         * which would be of the order of the displacement itself.
+         */
+        constexpr double c_maxPositionMagnitude = 4.0;
+        constexpr double c_absoluteTolerance    = 8 * GMX_DOUBLE_EPS * c_maxPositionMagnitude;
+        const FloatingPointTolerance displacementTolerance(
+                0, c_absoluteTolerance, 0, 1e-9, UINT64_MAX, UINT64_MAX, false);
 
         // Check that displacement equals the calculated velocities
         for (const auto& vSite : virtualSites)
@@ -260,15 +343,9 @@ public:
             ASSERT_GT(std::abs(displacement1[ZZ]), 0)
                     << "adjust choice of coordinates or time step.";
 
-            EXPECT_REAL_EQ_TOL(displacement1[XX],
-                               displacement2[XX],
-                               relativeToleranceAsFloatingPoint(displacement1[XX], 1e-9));
-            EXPECT_REAL_EQ_TOL(displacement1[YY],
-                               displacement2[YY],
-                               relativeToleranceAsFloatingPoint(displacement1[YY], 1e-9));
-            EXPECT_REAL_EQ_TOL(displacement1[ZZ],
-                               displacement2[ZZ],
-                               relativeToleranceAsFloatingPoint(displacement1[ZZ], 1e-9));
+            EXPECT_REAL_EQ_TOL(displacement1[XX], displacement2[XX], displacementTolerance);
+            EXPECT_REAL_EQ_TOL(displacement1[YY], displacement2[YY], displacementTolerance);
+            EXPECT_REAL_EQ_TOL(displacement1[ZZ], displacement2[ZZ], displacementTolerance);
         }
     }
 
@@ -295,6 +372,111 @@ public:
                                                             ArrayRef<const RVec> velocities) const;
     };
 
+    /*! \brief Run a simulation and check its virtual sites against the reference implementation
+     *
+     * Prepares the tpr file for the given simulation and settings, runs mdrun (passing
+     * \p mdrunOptions on to mdrun), and compares the virtual sites in the resulting
+     * trajectory to the reference implementation.
+     */
+    void runTest(const std::vector<SimulationOptionTuple>& mdrunOptions)
+    {
+        prepareTpr();
+        if (HasFatalFailure())
+        {
+            return;
+        }
+        runMdrunAndCheckVirtualSites(std::get<3>(GetParam()), mdrunOptions);
+    }
+
+    //! Runs grompp to make the tpr file of \c runner_ for the settings of this test
+    void prepareTpr()
+    {
+        const auto& [simulationName, bondType, testVirtualSitesN, integrator, tcoupling, pcoupling] =
+                GetParam();
+
+        const real timeStep = 0.001;
+
+        // Prepare mdp input
+        auto mdpFieldValues = prepareMdpFieldValues(simulationName, integrator, tcoupling, pcoupling);
+        // The output and coupling intervals are chosen to be coprime, so that steps
+        // with every combination of x, v and f output occur, as well as every
+        // combination of virial computation with any two kinds of output.
+        // (Every combination of all four would need 140 steps.)
+        // Choosing them as multiples of each other would hide errors in quantities
+        // which are only computed or transferred for one kind of output.
+        mdpFieldValues["nsteps"]        = "36";
+        mdpFieldValues["nstxout"]       = "3";
+        mdpFieldValues["nstvout"]       = "4";
+        mdpFieldValues["nstfout"]       = "5";
+        mdpFieldValues["nstcalcenergy"] = "7";
+        mdpFieldValues["nstenergy"]     = "7";
+        mdpFieldValues["nstcomm"]       = "7";
+        mdpFieldValues["nsttcouple"]    = "7";
+        mdpFieldValues["nstpcouple"]    = "7";
+        mdpFieldValues["dt"]            = toString(timeStep);
+        mdpFieldValues["constraints"]   = "none";
+        GMX_RELEASE_ASSERT(bondType == InteractionFunction::GROMOS96Bonds
+                                   || bondType == InteractionFunction::Bonds,
+                           "The test systems only have GROMOS96 and harmonic bond variants");
+        std::string defines;
+        if (bondType == InteractionFunction::Bonds)
+        {
+            defines += " -DHARMONIC_BONDS";
+        }
+        if (!testVirtualSitesN && simulationName == "vsite_test")
+        {
+            defines += " -DREPLACE_VIRTUAL_SITES_N";
+        }
+        if (!defines.empty())
+        {
+            mdpFieldValues["define"] = defines;
+        }
+        if (tcoupling != "no" || integrator == "sd" || integrator == "bd")
+        {
+            mdpFieldValues["tc-grps"] = "system";
+            mdpFieldValues["ref-t"]   = "298";
+            mdpFieldValues["tau-t"]   = "1";
+        }
+        if (pcoupling == "parrinello-rahman")
+        {
+            mdpFieldValues["tau-p"] = "2";
+        }
+
+        if (pcoupling == "c-rescale" && tcoupling == "no" && integrator != "sd"
+            && integrator != "bd")
+        {
+            mdpFieldValues["ensemble-temperature-setting"] = "constant";
+            mdpFieldValues["ensemble-temperature"]         = "298";
+        }
+
+        runner_.useTopGroAndNdxFromDatabase(simulationName);
+        runner_.useStringAsMdpFile(prepareMdpFileContents(mdpFieldValues));
+        ASSERT_EQ(0, runner_.callGrompp());
+    }
+
+    /*! \brief Run mdrun on the prepared tpr file and check the virtual sites in the trajectory
+     *
+     * Passes \p mdrunOptions on to mdrun, and compares the virtual sites in the resulting
+     * trajectory to the reference implementation.
+     */
+    void runMdrunAndCheckVirtualSites(const std::string&                        integrator,
+                                      const std::vector<SimulationOptionTuple>& mdrunOptions)
+    {
+        runMdrun(&runner_, mdrunOptions);
+
+        TopologyInformation topologyInformation;
+        topologyInformation.fillFromInputFile(runner_.tprFileName_);
+        const auto virtualSites = vSiteList(topologyInformation);
+
+        // This is in line with other tests (e.g. exact continuation, rerun), which
+        // never reach the same reproducibility for BD as for the other integrators.
+        const auto tolerance =
+                (integrator == "bd") ? relativeToleranceAsUlp(1.0, 100) : defaultRealTolerance();
+
+        checkVirtualSitesAgainstReferenceImplementation(
+                runner_.fullPrecisionTrajectoryFileName_, virtualSites, tolerance);
+    }
+
     /*! \brief Helper function returning a list of virtual sites from the topology
      *
      * This also prints the indices of the virtual sites. If any tests fail, this
@@ -307,17 +489,17 @@ public:
         printf("Reading virtual site types...\n");
         for (InteractionFunction vsiteType : { InteractionFunction::VirtualSite1,
                                                InteractionFunction::VirtualSite2,
-                                               InteractionFunction::VirtualSite2FlexibleDistance,
+                                               InteractionFunction::VirtualSite2FixedDistance,
                                                InteractionFunction::VirtualSite3,
-                                               InteractionFunction::VirtualSite3FlexibleDistance,
-                                               InteractionFunction::VirtualSite3FlexibleAngleDistance,
+                                               InteractionFunction::VirtualSite3FixedDistance,
+                                               InteractionFunction::VirtualSite3FixedAngleDistance,
                                                InteractionFunction::VirtualSite3Outside,
-                                               InteractionFunction::VirtualSite4FlexibleDistance,
-                                               InteractionFunction::VirtualSite4FlexibleDistanceNormalization,
+                                               InteractionFunction::VirtualSite4FixedDistance,
+                                               InteractionFunction::VirtualSite4FixedDistanceNormalization,
                                                InteractionFunction::VirtualSiteN })
         {
             const auto& interactionList = localTopology.idef.il[vsiteType];
-            if (vsiteType == InteractionFunction::VirtualSite4FlexibleDistance || interactionList.empty())
+            if (vsiteType == InteractionFunction::VirtualSite4FixedDistance || interactionList.empty())
             {
                 // 4FD is deprecated. Interaction list empty means system doesn't contain this type.
                 continue;
@@ -343,9 +525,9 @@ public:
                     VirtualSite vSite{ vsiteType, virtualSiteIdx, { interactionList.iatoms[i + 2] }, {} };
                     for (int j = 3; j < 3 * vSiteNConstructingAtoms; j += 3)
                     {
-                        vSite.constructingAtomIdx.push_back(interactionList.iatoms[j + 2]);
+                        vSite.constructingAtomIdx.push_back(interactionList.iatoms[i + j + 2]);
                         vSite.parameters.push_back(
-                                localTopology.idef.iparams[interactionList.iatoms[j]].vsiten.a);
+                                localTopology.idef.iparams[interactionList.iatoms[i + j]].vsiten.a);
                     }
                     virtualSites.push_back(std::move(vSite));
                     i += 3 * vSiteNConstructingAtoms;
@@ -387,7 +569,7 @@ VirtualSiteTest::VirtualSite::calculateVSite<InteractionFunction::VirtualSite2>(
 }
 template<>
 [[nodiscard]] std::tuple<RVec, RVec>
-VirtualSiteTest::VirtualSite::calculateVSite<InteractionFunction::VirtualSite2FlexibleDistance>(
+VirtualSiteTest::VirtualSite::calculateVSite<InteractionFunction::VirtualSite2FixedDistance>(
         ArrayRef<const RVec> positions,
         ArrayRef<const RVec> velocities) const
 {
@@ -420,7 +602,7 @@ VirtualSiteTest::VirtualSite::calculateVSite<InteractionFunction::VirtualSite3>(
 }
 template<>
 [[nodiscard]] std::tuple<RVec, RVec>
-VirtualSiteTest::VirtualSite::calculateVSite<InteractionFunction::VirtualSite3FlexibleDistance>(
+VirtualSiteTest::VirtualSite::calculateVSite<InteractionFunction::VirtualSite3FixedDistance>(
         ArrayRef<const RVec> positions,
         ArrayRef<const RVec> velocities) const
 {
@@ -446,7 +628,7 @@ VirtualSiteTest::VirtualSite::calculateVSite<InteractionFunction::VirtualSite3Fl
 }
 template<>
 [[nodiscard]] std::tuple<RVec, RVec>
-VirtualSiteTest::VirtualSite::calculateVSite<InteractionFunction::VirtualSite3FlexibleAngleDistance>(
+VirtualSiteTest::VirtualSite::calculateVSite<InteractionFunction::VirtualSite3FixedAngleDistance>(
         ArrayRef<const RVec> positions,
         ArrayRef<const RVec> velocities) const
 {
@@ -503,7 +685,7 @@ VirtualSiteTest::VirtualSite::calculateVSite<InteractionFunction::VirtualSite3Ou
 }
 template<>
 [[nodiscard]] std::tuple<RVec, RVec>
-VirtualSiteTest::VirtualSite::calculateVSite<InteractionFunction::VirtualSite4FlexibleDistanceNormalization>(
+VirtualSiteTest::VirtualSite::calculateVSite<InteractionFunction::VirtualSite4FixedDistanceNormalization>(
         ArrayRef<const RVec> positions,
         ArrayRef<const RVec> velocities) const
 {
@@ -543,7 +725,7 @@ VirtualSiteTest::VirtualSite::calculateVSite<InteractionFunction::VirtualSiteN>(
 {
     const auto& ri = positions[constructingAtomIdx.at(0)];
     const auto& vi = velocities[constructingAtomIdx.at(0)];
-    GMX_RELEASE_ASSERT(constructingAtomIdx.size() == parameters.size() - 1,
+    GMX_RELEASE_ASSERT(parameters.size() == constructingAtomIdx.size() - 1,
                        "VSITEN atom / parameters mismatch.");
 
     RVec rSum(0, 0, 0);
@@ -571,23 +753,23 @@ VirtualSiteTest::VirtualSite::calculate(ArrayRef<const RVec> constructingPositio
         case InteractionFunction::VirtualSite2:
             return calculateVSite<InteractionFunction::VirtualSite2>(constructingPositions,
                                                                      constructingVelocities);
-        case InteractionFunction::VirtualSite2FlexibleDistance:
-            return calculateVSite<InteractionFunction::VirtualSite2FlexibleDistance>(
+        case InteractionFunction::VirtualSite2FixedDistance:
+            return calculateVSite<InteractionFunction::VirtualSite2FixedDistance>(
                     constructingPositions, constructingVelocities);
         case InteractionFunction::VirtualSite3:
             return calculateVSite<InteractionFunction::VirtualSite3>(constructingPositions,
                                                                      constructingVelocities);
-        case InteractionFunction::VirtualSite3FlexibleDistance:
-            return calculateVSite<InteractionFunction::VirtualSite3FlexibleDistance>(
+        case InteractionFunction::VirtualSite3FixedDistance:
+            return calculateVSite<InteractionFunction::VirtualSite3FixedDistance>(
                     constructingPositions, constructingVelocities);
-        case InteractionFunction::VirtualSite3FlexibleAngleDistance:
-            return calculateVSite<InteractionFunction::VirtualSite3FlexibleAngleDistance>(
+        case InteractionFunction::VirtualSite3FixedAngleDistance:
+            return calculateVSite<InteractionFunction::VirtualSite3FixedAngleDistance>(
                     constructingPositions, constructingVelocities);
         case InteractionFunction::VirtualSite3Outside:
             return calculateVSite<InteractionFunction::VirtualSite3Outside>(constructingPositions,
                                                                             constructingVelocities);
-        case InteractionFunction::VirtualSite4FlexibleDistanceNormalization:
-            return calculateVSite<InteractionFunction::VirtualSite4FlexibleDistanceNormalization>(
+        case InteractionFunction::VirtualSite4FixedDistanceNormalization:
+            return calculateVSite<InteractionFunction::VirtualSite4FixedDistanceNormalization>(
                     constructingPositions, constructingVelocities);
         case InteractionFunction::VirtualSiteN:
             return calculateVSite<InteractionFunction::VirtualSiteN>(constructingPositions,
@@ -599,85 +781,153 @@ VirtualSiteTest::VirtualSite::calculate(ArrayRef<const RVec> constructingPositio
 
 TEST(VirtualSiteVelocityTest, ReferenceIsCorrect)
 {
-    // Test is too sensitive to run in single precision
-    if constexpr (GMX_DOUBLE)
+    if (!GMX_DOUBLE)
     {
-        VirtualSiteTest::checkReferenceImplementation();
+        GTEST_SKIP() << "Test is too sensitive to run in single precision";
     }
+    VirtualSiteTest::checkReferenceImplementation();
 }
 
 TEST_P(VirtualSiteTest, WithinToleranceOfReference)
 {
-    const auto& params         = GetParam();
-    const auto& integrator     = std::get<0>(params);
-    const auto& tcoupling      = std::get<1>(params);
-    const auto& pcoupling      = std::get<2>(params);
-    const real  timeStep       = 0.001;
-    const auto& simulationName = "vsite_test";
+    const auto& [simulationName, bondType, testVirtualSitesN, integrator, tcoupling, pcoupling] =
+            GetParam();
 
     if (integrator == "md-vv" && pcoupling == "parrinello-rahman")
     {
-        // Parrinello-Rahman is not implemented in md-vv
-        return;
+        GTEST_SKIP() << "Parrinello-Rahman is not implemented in md-vv";
     }
 
     if ((integrator == "sd" || integrator == "bd") && tcoupling != "no")
     {
-        // bd and sd handle temperature coupling implicitly and would set tcoupling to "no" anyway
-        return;
+        GTEST_SKIP() << "bd and sd handle temperature coupling implicitly and would set tcoupling "
+                        "to \"no\" anyway";
     }
 
-    // Prepare mdp input
-    auto mdpFieldValues = prepareMdpFieldValues(simulationName, integrator, tcoupling, pcoupling);
-    mdpFieldValues["nsteps"]      = "8";
-    mdpFieldValues["nstxout"]     = "4";
-    mdpFieldValues["nstvout"]     = "4";
-    mdpFieldValues["dt"]          = toString(timeStep);
-    mdpFieldValues["constraints"] = "none";
-    if (tcoupling != "no" || integrator == "sd" || integrator == "bd")
+    // The test binary is registered with CTest both with one rank and with multiple ranks.
+    // The single-rank registration is needed for VirtualSiteGpuTest, but it also runs these
+    // cases again. When the GROMACS CI system runs the tests under compute-sanitizer
+    // racecheck, that brings the single-rank run close to its timeout, so we skip these
+    // CPU-only cases under racecheck.
+    const char* const computeSanitizerTool = std::getenv("GMX_CI_COMPUTE_SANITIZER");
+    if (getNumberOfTestMpiRanks() == 1 && computeSanitizerTool != nullptr
+        && std::string(computeSanitizerTool) == "racecheck")
     {
-        mdpFieldValues["tc-grps"] = "system";
-        mdpFieldValues["ref-t"]   = "298";
-        mdpFieldValues["tau-t"]   = "1";
-    }
-    if (pcoupling == "parrinello-rahman")
-    {
-        mdpFieldValues["tau-p"] = "2";
+        GTEST_SKIP() << "Under racecheck in the GROMACS CI system, the CPU-update cases only "
+                        "run with multiple ranks";
     }
 
-    if (pcoupling == "c-rescale" && tcoupling == "no" && integrator != "sd" && integrator != "bd")
-    {
-        mdpFieldValues["ensemble-temperature-setting"] = "constant";
-        mdpFieldValues["ensemble-temperature"]         = "298";
-    }
-
-
-    // Run grompp
-    runner_.useTopGroAndNdxFromDatabase(simulationName);
-    runner_.useStringAsMdpFile(prepareMdpFileContents(mdpFieldValues));
-    runGrompp(&runner_);
-    // Run mdrun
-    runMdrun(&runner_);
-
-    TopologyInformation topologyInformation;
-    topologyInformation.fillFromInputFile(runner_.tprFileName_);
-    const auto virtualSites = vSiteList(topologyInformation);
-
-    // This is in line with other tests (e.g. exact continuation, rerun), which
-    // never reach the same reproducibility for BD as for the other integrators.
-    const auto tolerance =
-            (integrator == "bd") ? relativeToleranceAsUlp(1.0, 100) : defaultRealTolerance();
-
-    checkVirtualSitesAgainstReferenceImplementation(
-            runner_.fullPrecisionTrajectoryFileName_, virtualSites, tolerance);
+    runTest({});
 }
 
 INSTANTIATE_TEST_SUITE_P(
         VelocitiesConformToExpectations,
         VirtualSiteTest,
-        ::testing::Combine(::testing::Values("md", "md-vv", "sd", "bd"),
+        // The bond type only matters for which forces are computed on the GPU, so
+        // the CPU tests use only the default.
+        ::testing::Combine(::testing::Values("vsite_test", "vsite_test_linear"),
+                           ::testing::Values(InteractionFunction::GROMOS96Bonds),
+                           ::testing::Values(true),
+                           ::testing::Values("md", "md-vv", "sd", "bd"),
                            ::testing::Values("no", "v-rescale", "nose-hoover"),
-                           ::testing::Values("no", "c-rescale", "parrinello-rahman")));
+                           ::testing::Values("no", "c-rescale", "parrinello-rahman")),
+        sc_testNamer);
+
+/*! \brief Test fixture for virtual sites constructed on the GPU
+ *
+ * Runs the same checks as VirtualSiteTest, but with the update and constraints
+ * (and hence the virtual site construction) offloaded to the GPU.
+ */
+class VirtualSiteGpuTest : public VirtualSiteTest
+{
+};
+
+TEST_P(VirtualSiteGpuTest, WithinToleranceOfReference)
+{
+    if (!GpuConfigurationCapabilities::UpdateVsite)
+    {
+        GTEST_SKIP() << "GPU update does not support virtual sites with this GPU backend.";
+    }
+    if (getCompatibleDevices(s_hwinfo->deviceInfoList).empty())
+    {
+        GTEST_SKIP() << "No compatible GPUs to test on.";
+    }
+    if (getNumberOfTestMpiRanks() > 1)
+    {
+        // With domain decomposition, the GPU update requires all virtual sites to be
+        // within update groups. The test systems are not designed to allow update
+        // groups to be used, so this can only be tested with a single rank. The test
+        // binary is registered with CTest both with a single rank and with multiple
+        // ranks, so this is still covered.
+        GTEST_SKIP() << "Virtual sites with GPU update require a single rank for this system.";
+    }
+
+    const auto& [simulationName, bondType, testVirtualSitesN, integrator, tcoupling, pcoupling] =
+            GetParam();
+    if (integrator == "sd" && (tcoupling != "no" || pcoupling == "parrinello-rahman"))
+    {
+        GTEST_SKIP() << "sd handles temperature coupling implicitly, and the GPU update does not "
+                        "support it with Parrinello-Rahman pressure coupling.";
+    }
+
+    // Constructing virtual sites on the GPU is experimental, and needs to be enabled explicitly.
+    GmxEnvGuard gpuVsiteEnvGuard("GMX_GPU_VSITES", "1");
+
+    prepareTpr();
+    if (HasFatalFailure())
+    {
+        return;
+    }
+
+    // The test system uses plain cut-off electrostatics, so the non-bonded
+    // interactions have to be offloaded for the GPU update to be possible.
+    // The bonded interactions are required to run on the GPU too. With harmonic
+    // bonds, all forces are then computed on the GPU. GROMOS96 bonds can not run
+    // on GPUs, so they are then computed on the host, which tests that the host
+    // forces are also spread from the virtual sites.
+    runMdrunAndCheckVirtualSites(integrator,
+                                 { { "-update", "gpu" }, { "-nb", "gpu" }, { "-bonded", "gpu" } });
+    const std::string gpuUpdateTrajectoryName = runner_.fullPrecisionTrajectoryFileName_;
+
+    // The above only checks frames individually, so we also compare the whole trajectory to
+    // one using the CPU update. The non-bonded and bonded interactions stay on the GPU,
+    // so that the main part of any difference stems from the update and virtual sites.
+    runner_.fullPrecisionTrajectoryFileName_ =
+            fileManager_.getTemporaryFilePath("cpu-update.trr").string();
+    runMdrunAndCheckVirtualSites(integrator,
+                                 { { "-update", "cpu" }, { "-nb", "gpu" }, { "-bonded", "gpu" } });
+
+    TrajectoryFrameMatchSettings matchSettings;
+    matchSettings.mustCompareBox        = true;
+    matchSettings.coordinatesComparison = ComparisonConditions::CompareIfReferenceFound;
+    matchSettings.velocitiesComparison  = ComparisonConditions::CompareIfReferenceFound;
+    matchSettings.forcesComparison      = ComparisonConditions::CompareIfReferenceFound;
+    // Set the tolerances for the trajectory comparison
+    // Loosen the tolerance for the forces and esp. the SD integrator, which has larger rounding
+    // differences between CPU and GPU implementations
+    TrajectoryTolerances tolerances = TrajectoryComparison::s_defaultTrajectoryTolerances;
+    tolerances.coordinates          = relativeToleranceAsFloatingPoint(1.0, 1.0e-5);
+    tolerances.velocities = relativeToleranceAsFloatingPoint(1.0, integrator == "sd" ? 1.0e-3 : 5.0e-4);
+    tolerances.forces = relativeToleranceAsFloatingPoint(100.0, integrator == "sd" ? 1.0e-2 : 5.0e-3);
+    compareTrajectories(runner_.fullPrecisionTrajectoryFileName_,
+                        gpuUpdateTrajectoryName,
+                        TrajectoryComparison(matchSettings, tolerances));
+}
+
+INSTANTIATE_TEST_SUITE_P(
+        VelocitiesConformToExpectations,
+        VirtualSiteGpuTest,
+        // GPU update only supports the linear virtual site types so far.
+        // N-type virtual sites are not tested, as GPU update will support them later
+        // than the other types; this can be changed once it does.
+        ::testing::Combine(::testing::Values("vsite_test_linear"),
+                           ::testing::Values(InteractionFunction::GROMOS96Bonds, InteractionFunction::Bonds),
+                           ::testing::Values(false),
+                           ::testing::Values("md", "sd"),
+                           ::testing::Values("no", "v-rescale"),
+                           ::testing::Values("no", "c-rescale", "parrinello-rahman")),
+        sc_testNamer);
 
 } // namespace
-} // namespace gmx::test
+} // namespace test
+} // namespace gmx
