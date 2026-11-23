@@ -1387,10 +1387,11 @@ void gmx::LegacySimulator::do_md()
             //       prior to GPU update.
             // TODO: When the output flags will be included in step workload, this copy can be combined with the
             //       copy call in do_force(...).
-            // NOTE: The forces should not be copied here if the vsites are present, since they were modified
+            // NOTE: The forces should not be copied here if the vsites or CPU-staged PP-PME comms are present, since they were modified
             //       on host after the D2H copy in do_force(...).
             if (runScheduleWork_->stepWork.useGpuFBufferOps
-                && (simulationWork.useGpuUpdate && !virtualSites_) && do_per_step(step, ir->nstfout))
+                && (simulationWork.useGpuUpdate && !virtualSites_ && !simulationWork.useCpuPmePpCommunication)
+                && do_per_step(step, ir->nstfout))
             {
                 stateGpu->copyForcesFromGpu(f.view().force(), AtomLocality::Local);
                 stateGpu->waitForcesReadyOnHost(AtomLocality::Local);
@@ -1715,9 +1716,17 @@ void gmx::LegacySimulator::do_md()
                 // update): with PME tuning, since the GPU kernels
                 // chosen by the FFT library can vary with grid size;
                 // or with an odd nstlist, since the odd/even step
-                // pruning pattern will change
-                bool forceGraphReinstantiation =
-                        (pmeLoadBal && pmeLoadBal->isActive()) || ((ir->nstlist % 2) == 1);
+                // pruning pattern will change.
+                // We also must reinstantiate to handle the one-time parity flip
+                // caused by an odd init_step with an even nstlist during the
+                // first neighbour search interval.
+                bool isFirstNsIntervalWithParityFlip =
+                        (((ir->init_step % 2) != 0) && ((ir->nstlist % 2) == 0)
+                         && (step <= ir->init_step + ir->nstlist + 1));
+
+                bool forceGraphReinstantiation = (pmeLoadBal && pmeLoadBal->isActive())
+                                                 || ((ir->nstlist % 2) == 1)
+                                                 || isFirstNsIntervalWithParityFlip;
                 mdGraph->createExecutableGraph(forceGraphReinstantiation);
             }
             if (mdGraph->useGraphThisStep())

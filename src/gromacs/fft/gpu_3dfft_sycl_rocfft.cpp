@@ -84,7 +84,7 @@ namespace
  *
  * Because these require device-side allocations, some of them must be
  * done in a SYCL queue. */
-RocfftPlan makePlan(const std::string&     descriptiveString,
+RocfftPlan makePlan(const char*            descriptiveString,
                     rocfft_transform_type  transformType,
                     const PlanSetupData&   inputPlanSetupData,
                     const PlanSetupData&   outputPlanSetupData,
@@ -320,7 +320,7 @@ void Gpu3dFft::ImplSyclRocfft::perform3dFft(gmx_fft_direction dir, CommandEvent*
         outputGrid = &impl_->realGrid_;
     }
     // Enqueue the 3D FFT work
-    gmx::syclSubmitWithoutEvent(
+    gmx::syclSubmitWithCghWithoutEvent(
             impl_->queue_,
             [&](sycl::handler& cgh)
             {

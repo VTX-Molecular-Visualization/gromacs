@@ -221,6 +221,20 @@ TEST_F(H5mdIoTest, SetupFileFromInputWritesMetadataGroup)
             << "Program version must match";
 }
 
+TEST_F(H5mdIoTest, AuthorNameIsNA)
+{
+    gmx_mtop_t mtop;
+    mtop.natoms = 1;
+    t_inputrec inputRecord;
+
+    file().setupFileFromInput(mtop, inputRecord);
+
+    const auto [group, groupGuard]             = makeH5mdGroupGuard(openGroup(fileid(), "h5md"));
+    const auto [authorGroup, authorGroupGuard] = makeH5mdGroupGuard(openGroup(group, "author"));
+    EXPECT_THAT(getAttribute<std::string>(authorGroup, "name"), ::testing::Optional(::testing::StrEq("N/A")))
+            << "Author name must be written";
+}
+
 TEST_F(H5mdIoTest, SetupFileFromInputWritesModuleInformation)
 {
     gmx_mtop_t mtop;
@@ -498,8 +512,10 @@ TEST_F(H5mdIoTest, SetupFileFromInputTopologyWritesAtomicProperties)
     // Check attributes for the topology group.
     EXPECT_EQ(getAttributeVector<int>(group, "version").value_or(std::vector<int>{}), std::vector<int>({ 0, 1 }))
             << "The internal topology version is 0.1 in the current implementation";
-    EXPECT_EQ(getAttributeVector<std::string>(group, "molecule_names").value_or(std::vector<std::string>{}),
+    EXPECT_EQ(getAttributeVector<std::string>(group, "molecule_block_names").value_or(std::vector<std::string>{}),
               std::vector<std::string>({ "Alanine_dipeptide", "SOL" }));
+    EXPECT_EQ(getAttributeVector<int32_t>(group, "molecule_block_counts").value_or(std::vector<int32_t>{}),
+              std::vector<int32_t>({ 1, 298 }));
     EXPECT_EQ(getAttribute<std::string>(group, "system_name").value_or("NotASystem"), *(mtop.name));
 
     for (auto& moltype : mtop.moltype)
@@ -510,9 +526,8 @@ TEST_F(H5mdIoTest, SetupFileFromInputTopologyWritesAtomicProperties)
         const auto [molGroup, molGroupGuard] = makeH5mdGroupGuard(openGroup(fileid(), molPath.c_str()));
 
         // Check attributes for each molecule type.
-        EXPECT_GT(getAttribute<int64_t>(molGroup, "nr_particles").value_or(-1), 0);
-        EXPECT_GT(getAttribute<int>(molGroup, "nr_residues").value_or(-1), 0);
-        EXPECT_GT(getAttribute<int>(molGroup, "nr_blocks").value_or(-1), 0);
+        EXPECT_GT(getAttribute<int64_t>(molGroup, "particle_count").value_or(-1), 0);
+        EXPECT_GT(getAttribute<int>(molGroup, "residue_count").value_or(-1), 0);
 
         // Check atomic properties datasets for each molecule type.
         EXPECT_NO_THROW(H5mdDataSetBase<int64_t>(molGroup, "id"));
@@ -540,7 +555,7 @@ TEST_F(H5mdIoTest, SetupFileFromInputTopologyWritesConnectivity)
     EXPECT_NO_THROW(openGroup(fileid(), "/connectivity"));
     const auto [connGroup, connGroupGuard] =
             makeH5mdGroupGuard(openGroup(fileid(), "/connectivity"));
-    EXPECT_NO_THROW(getAttribute<int64_t>(connGroup, "nr_bonds"));
+    EXPECT_NO_THROW(getAttribute<int64_t>(connGroup, "bond_count"));
     EXPECT_NO_THROW(H5mdDataSetBase<int64_t>(connGroup, "bonds"));
 }
 
@@ -1030,6 +1045,7 @@ TEST_F(H5mdReadNextFrame, Works)
     EXPECT_FALSE(file().readNextFrame(frame))
             << "Must return false when no more frames exist to read";
     done_frame(frame);
+    sfree(frame);
 }
 
 TEST_F(H5mdReadNextFrame, ReturnsFalseBeforeDataIsWritten)
@@ -1050,6 +1066,7 @@ TEST_F(H5mdReadNextFrame, ReturnsFalseBeforeDataIsWritten)
     file().writeNextFrame(valuesToWrite, valuesToWrite, valuesToWrite, c_unusedBox, 0, 0.0);
     EXPECT_TRUE(file().readNextFrame(frame));
     done_frame(frame);
+    sfree(frame);
 }
 
 TEST_F(H5mdReadNextFrame, WorksIfNoDataSetsExists)
@@ -1073,6 +1090,7 @@ TEST_F(H5mdReadNextFrame, WorksIfNoDataSetsExists)
     EXPECT_FALSE(frame->bStep);
     EXPECT_FALSE(frame->bTime);
     done_frame(frame);
+    sfree(frame);
 }
 
 TEST_F(H5mdReadNextFrame, WorksIfOnlyPositionDataExists)
@@ -1104,6 +1122,7 @@ TEST_F(H5mdReadNextFrame, WorksIfOnlyPositionDataExists)
                         ::testing::FloatEq(),
                         constArrayRefFromArray(reinterpret_cast<real*>(boxToWrite), DIM * DIM)));
     done_frame(frame);
+    sfree(frame);
 }
 
 TEST_F(H5mdReadNextFrame, WorksIfOnlyVelocityDataExists)
@@ -1130,6 +1149,7 @@ TEST_F(H5mdReadNextFrame, WorksIfOnlyVelocityDataExists)
     EXPECT_FALSE(frame->bF);
     EXPECT_FALSE(frame->bBox);
     done_frame(frame);
+    sfree(frame);
 }
 
 TEST_F(H5mdReadNextFrame, WorksIfOnlyForceDataExists)
@@ -1157,6 +1177,7 @@ TEST_F(H5mdReadNextFrame, WorksIfOnlyForceDataExists)
     EXPECT_THAT(asRVecArray(frame->f, frame->natoms), ::testing::Pointwise(::testing::Eq(), valuesToWrite));
     EXPECT_FALSE(frame->bBox);
     done_frame(frame);
+    sfree(frame);
 }
 
 TEST_F(H5mdReadNextFrame, DataSetsWithDifferentStepFrequenciesAreReadInOrder)
@@ -1272,6 +1293,7 @@ TEST_F(H5mdReadNextFrame, DataSetsWithDifferentStepFrequenciesAreReadInOrder)
         EXPECT_FLOAT_EQ(frame->time, static_cast<double>(step5));
     }
     done_frame(frame);
+    sfree(frame);
 }
 
 TEST_F(H5mdReadNextFrame, MissingTimeDataSetsAreHandled)
@@ -1367,6 +1389,7 @@ TEST_F(H5mdReadNextFrame, MissingTimeDataSetsAreHandled)
         EXPECT_FLOAT_EQ(frame->time, time6);
     }
     done_frame(frame);
+    sfree(frame);
 }
 
 TEST_F(H5mdReadNextFrame, NonTrajectoryFrameBoolsInTrxFrameAreFalse)
@@ -1401,6 +1424,7 @@ TEST_F(H5mdReadNextFrame, NonTrajectoryFrameBoolsInTrxFrameAreFalse)
 #endif
 
     done_frame(frame);
+    sfree(frame);
 }
 
 } // namespace

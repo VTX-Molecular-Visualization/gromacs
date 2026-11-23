@@ -76,7 +76,7 @@ constexpr char c_particleNameIndicesName[] = "particle_name";
 //! \brief Name of dataset for the particle name lookup table.
 constexpr char c_particleNameTableName[] = "particle_name_table";
 //! \brief Name of attribute for the number of the particles.
-constexpr char c_numParticlesAttributeKey[] = "nr_particles";
+constexpr char c_numParticlesAttributeKey[] = "particle_count";
 //! \brief Name of dataset for the residue identifier of the particles.
 constexpr char c_residueIdName[] = "residue_id";
 //! \brief Name of dataset for the residue names of the particles.
@@ -86,11 +86,11 @@ constexpr char c_residueNameTableName[] = "residue_name_table";
 //! \brief Name of dataset for the residue sequence.
 constexpr char c_residueSequenceName[] = "sequence";
 //! \brief Name of attribute for the number of the residues.
-constexpr char c_numResiduesAttributeKey[] = "nr_residues";
+constexpr char c_numResiduesAttributeKey[] = "residue_count";
 //! \brief Name of bond dataset inside connectivity group
 constexpr char c_bondsConnectivityName[] = "bonds";
 //! \brief Name of the attribute storing number of bonds
-constexpr char c_numberOfBondsAttributeKey[] = "nr_bonds";
+constexpr char c_numberOfBondsAttributeKey[] = "bond_count";
 //! \brief Name of disulfide bonds within the special bonds group
 constexpr char c_disulfideBondsName[] = "disulfide_bonds";
 //! \brief Name of attribute for the version of internal topology.
@@ -98,12 +98,9 @@ constexpr char c_h5mdInternalTopologyVersionAttributeKey[] = "version";
 //! \brief Name of attribute for topology name.
 constexpr char c_h5mdInternalTopologyNameAttributeKey[] = "system_name";
 //! \brief Name of attribute for the names of the molecule types.
-constexpr char c_moleculeNamesAttributeKey[] = "molecule_names";
+constexpr char c_moleculeNamesAttributeKey[] = "molecule_block_names";
 //! \brief Name of attribute for the number of blocks for each molecule types
-constexpr char c_numMolBlocksAttributeKey[] = "nr_blocks";
-//! \brief Name of attribute for the position restraints of the molecules.
-constexpr char c_positionRestraintsAName[] = "posres_xA";
-constexpr char c_positionRestraintsBName[] = "posres_xB";
+constexpr char c_numMolBlocksAttributeKey[] = "molecule_block_counts";
 
 namespace
 {
@@ -250,8 +247,8 @@ void writeAtomicProperties(AtomRange&                     atomRange,
 {
     if (selectedAtomsIndexMap.has_value() && selectedAtomsIndexMap->size() == 0)
     {
-        throw InternalError(
-                "The index map is empty when writing atomic properties with selection.");
+        GMX_THROW(InternalError(
+                "The index map is empty when writing atomic properties with selection."));
     }
     const int         totalAtoms = selectedAtomsIndexMap.has_value() ? selectedAtomsIndexMap->size()
                                                                      : atomRange.end()->globalAtomNumber();
@@ -356,81 +353,90 @@ void writeResidueInfo(AtomRange& atomRange, const hid_t baseContainer, const std
 {
     if (selectedAtomsIndexMap.has_value() && selectedAtomsIndexMap->size() == 0)
     {
-        throw InternalError(
-                "The index map is empty when writing atomic properties with selection.");
+        GMX_THROW(InternalError(
+                "The index map is empty when writing atomic properties with selection."));
     }
     const int totalAtoms = selectedAtomsIndexMap.has_value() ? selectedAtomsIndexMap->size()
                                                              : atomRange.end()->globalAtomNumber();
-    std::vector<int32_t> residueIds;
-    residueIds.reserve(totalAtoms);
-    std::vector<int32_t> residueNames;
-    residueNames.reserve(totalAtoms);
+    std::vector<int32_t> residueNumbers;
+    residueNumbers.reserve(totalAtoms);
+    // Indices of residue names in the lookup table `residueNameTable`.
+    std::vector<int32_t> residueNameIds;
+    residueNameIds.reserve(totalAtoms);
     std::vector<int32_t> sequence;
-    sequence.reserve(totalAtoms / 3); // A rough estimation of the number of residues (3 atoms per residue)
-    std::vector<int32_t> cachedResIDs;
-    cachedResIDs.reserve(totalAtoms / 3);
+    // A rough estimation of the number of residues (3 atoms per residue)
+    sequence.reserve(totalAtoms / 3);
 
-    // Build the residue index map to re-order the residue indices if `selectedAtomsIndexMap` is given
-    std::vector<std::string> existingResidueNames;
-    existingResidueNames.reserve(1024); // Guess a reasonable size for the lookup table
-    std::vector<int32_t> residueIndices(atomRange.end()->globalAtomNumber(), -1);
-    int                  residueCount = 0;
-    int                  maxStrLength = 0;
+    std::vector<std::string> residueNameTable;
+    // Initialize with a reasonable large residue name lookup table
+    residueNameTable.reserve(1024);
+    int maxStrLength = 0;
+
+    // Residue look-up is unsafe (residue numbers is not bounded by the number of atoms,
+    // may be zero or negative). As atoms in a residue are contiguous within a molecule,
+    // counting the changes gives a unique index without any lookup table.
+    int globalResidueIndex      = -1;
+    int previousLocalResidueId  = -1;
+    int lastEmittedResidueIndex = -1;
+    int selectedResidueCount    = 0;
     for (auto it = atomRange.begin(); it != atomRange.end(); ++it)
     {
-        const int resind = it->residueNumber();
-
-        if (selectedAtomsIndexMap.has_value())
+        const int localResidueId = it->atom().resind;
+        if (it->atomNumberInMol() == 0 || localResidueId != previousLocalResidueId)
         {
-            if (selectedAtomsIndexMap->find(it->globalAtomNumber()) == selectedAtomsIndexMap->end())
-            {
-                continue;
-            }
-
-            // This avoids the expensive find operation for every atom
-            if (residueIndices[resind] == -1)
-            {
-                residueIndices[resind] = residueCount;
-                residueCount += 1;
-            }
-
-            // Switch the indices to 1-based indexing
-            residueIds.push_back(residueIndices[resind] + 1);
+            ++globalResidueIndex;
         }
-        else
+        previousLocalResidueId = localResidueId;
+
+        if (selectedAtomsIndexMap.has_value()
+            && selectedAtomsIndexMap->find(it->globalAtomNumber()) == selectedAtomsIndexMap->end())
         {
-            // Switch the indices to 1-based indexing
-            residueIds.push_back(resind + 1);
+            // The selection exists and does not include this atom, so
+            // do not emit residue information for this atom.
+            continue;
         }
 
-        // Put unique residue names into the string table
-        if (std::find(existingResidueNames.begin(), existingResidueNames.end(), it->residueName())
-            == existingResidueNames.end())
+        // Residues are contiguous, so a change of index is the first atom written of a residue
+        const bool isFirstAtomOfResidue = globalResidueIndex != lastEmittedResidueIndex;
+        if (isFirstAtomOfResidue)
         {
-            existingResidueNames.push_back(it->residueName());
-            maxStrLength = std::max(maxStrLength, static_cast<int32_t>(std::strlen(it->residueName())));
+            ++selectedResidueCount;
+            lastEmittedResidueIndex = globalResidueIndex;
         }
 
-        // Get the index of the atom name and put to residue name list and sequence
-        const int indexOfResidue =
-                std::find(existingResidueNames.begin(), existingResidueNames.end(), it->residueName())
-                - existingResidueNames.begin();
+        /* Without a selection, the original residue numbers of the input are kept. If a
+         * selection is applied, the residues it keeps are renumbered, since the ones left
+         * out would otherwise leave gaps. */
+        residueNumbers.push_back(selectedAtomsIndexMap.has_value() ? selectedResidueCount
+                                                                   : it->residueNumber());
 
-        residueNames.push_back(indexOfResidue);
-        if (std::find(cachedResIDs.begin(), cachedResIDs.end(), resind) == cachedResIDs.end())
+        // As it->residueName() does some non-trivial pointer chasing, store it as local variable.
+        const char* residueName = it->residueName();
+
+        // Put unique residue names into the string table. A name that is not in the table
+        // yet lands at its end, which is the index the search has already computed.
+        const auto foundName = std::find(residueNameTable.begin(), residueNameTable.end(), residueName);
+        const int indexOfResidue = foundName - residueNameTable.begin();
+        if (foundName == residueNameTable.end())
+        {
+            residueNameTable.emplace_back(residueName);
+            maxStrLength = std::max(maxStrLength, static_cast<int32_t>(std::strlen(residueName)));
+        }
+
+        residueNameIds.push_back(indexOfResidue);
+        if (isFirstAtomOfResidue)
         {
             sequence.push_back(indexOfResidue);
-            cachedResIDs.push_back(resind);
         }
     }
 
     // Create the datasets for residue information
     H5mdFixedDataSet<int32_t> datasetResidueId = H5mdDataSetBuilder<int32_t>(baseContainer, c_residueIdName)
-                                                         .withDimension({ residueIds.size() })
+                                                         .withDimension({ residueNumbers.size() })
                                                          .build();
     H5mdFixedDataSet<int32_t> datasetResidueName =
             H5mdDataSetBuilder<int32_t>(baseContainer, c_residueNameIndicesName)
-                    .withDimension({ residueNames.size() })
+                    .withDimension({ residueNameIds.size() })
                     .build();
     H5mdFixedDataSet<int32_t> datasetSequence =
             H5mdDataSetBuilder<int32_t>(baseContainer, c_residueSequenceName)
@@ -438,15 +444,15 @@ void writeResidueInfo(AtomRange& atomRange, const hid_t baseContainer, const std
                     .build();
     H5mdFixedDataSet<std::string> datasetResidueNameTable =
             H5mdDataSetBuilder<std::string>(baseContainer, c_residueNameTableName)
-                    .withDimension({ existingResidueNames.size() })
+                    .withDimension({ residueNameTable.size() })
                     .withMaxStringLength(maxStrLength + 1)
                     .build();
 
     // Write cached data to the datasets
-    datasetResidueId.writeData(residueIds);
-    datasetResidueName.writeData(residueNames);
+    datasetResidueId.writeData(residueNumbers);
+    datasetResidueName.writeData(residueNameIds);
     datasetSequence.writeData(sequence);
-    datasetResidueNameTable.writeData(existingResidueNames);
+    datasetResidueNameTable.writeData(residueNameTable);
 
     setAttribute<int32_t>(baseContainer, c_numResiduesAttributeKey, sequence.size());
 }
@@ -455,8 +461,8 @@ void writeBonds(const gmx_mtop_t& topology, const hid_t baseContainer, const std
 {
     if (selectedAtomsIndexMap.has_value() && selectedAtomsIndexMap->size() == 0)
     {
-        throw InternalError(
-                "The index map is empty when writing atomic properties with selection.");
+        GMX_THROW(InternalError(
+                "The index map is empty when writing atomic properties with selection."));
     }
     // NOTE: Initialize the bond container and reserve enough space, assuming the
     //       number of bonds is smaller than the number of atoms
@@ -508,8 +514,8 @@ void writeDisulfideBonds(const gmx_mtop_t&              topology,
 {
     if (selectedAtomsIndexMap.has_value() && selectedAtomsIndexMap->size() == 0)
     {
-        throw InternalError(
-                "The index map is empty when writing atomic properties with selection.");
+        GMX_THROW(InternalError(
+                "The index map is empty when writing atomic properties with selection."));
     }
     // Obtain the disulfide bonds from the topology
     std::vector<int64_t> systemBonds;
@@ -562,23 +568,18 @@ void labelTopologyName(const hid_t baseContainer, const char* topName)
     setAttribute(baseContainer, c_h5mdInternalTopologyNameAttributeKey, topName);
 }
 
-void writeMoleculeTypes(const hid_t baseContainer, const ArrayRef<const gmx_moltype_t> moltypes)
+void writeMoleculeTypes(const hid_t baseContainer, const ArrayRef<const gmx_moltype_t> molTypes)
 {
-    const int numMolTypes = moltypes.size();
-    // Nothing to write
-    if (moltypes.empty())
+    if (molTypes.empty())
     {
         return;
     }
-
-    std::vector<std::string> moltypeNames(numMolTypes);
+    const int numMolTypes = molTypes.size();
     for (int index = 0; index < numMolTypes; ++index)
     {
-        const gmx_moltype_t& moltype     = moltypes[index];
-        const std::string&   moltypeName = *(moltype.name);
-        moltypeNames[index]              = moltypeName;
-        const auto [molContainer, molGuard] =
-                makeH5mdGroupGuard(createGroup(baseContainer, moltypeName.c_str()));
+        const gmx_moltype_t& moltype     = molTypes[index];
+        const char*          moltypeName = *(moltype.name);
+        const auto [molContainer, molGuard] = makeH5mdGroupGuard(createGroup(baseContainer, moltypeName));
 
         // Create an AtomRange to iterate over the molecule type
         gmx_mtop_t tempMtop;
@@ -593,52 +594,36 @@ void writeMoleculeTypes(const hid_t baseContainer, const ArrayRef<const gmx_molt
 
         // TODO: Write interaction list and exclusions list - MR !5524/!5523
     }
-    setAttributeVector(baseContainer, c_moleculeNamesAttributeKey, moltypeNames);
 }
 
-void writeMoleculeBlocks(const hid_t baseContainer, const ArrayRef<const gmx_molblock_t> molBlocks)
+void writeMoleculeBlocks(const hid_t                          baseContainer,
+                         const ArrayRef<const gmx_molblock_t> molBlocks,
+                         const ArrayRef<const gmx_moltype_t>  molTypes)
 {
-    // Molecule types must match the number of molecule blocks
-    const auto molNames = getAttributeVector<std::string>(baseContainer, c_moleculeNamesAttributeKey);
-    if (!molNames.has_value())
+    if (molBlocks.empty())
     {
-        throw FileIOError("Failed to read molecule names attribute");
-    }
-    else if (molNames->size() != molBlocks.size())
-    {
-        throw FileIOError(
-                "Failed to match the number of molecule names with the number of molecule blocks.");
+        return;
     }
 
-    for (int index = 0; index < gmx::ssize(molBlocks); ++index)
+    // Number of unique molecule types might not match the number of molecule blocks
+    // record them separately
+    const int                numMolBlocks = molBlocks.size();
+    std::vector<std::string> namesPerBlock(numMolBlocks);
+    std::vector<int>         numMolsPerBlock(numMolBlocks);
+    for (int index = 0; index < numMolBlocks; ++index)
     {
-        const gmx_molblock_t& molBlock     = molBlocks[index];
-        const std::string&    molBlockName = molNames->at(index);
-
-        const auto [molContainer, molGuard] =
-                makeH5mdGroupGuard(openGroup(baseContainer, molBlockName.c_str()));
-
-        // Write MolBlock attributes
-        setAttribute<int32_t>(molContainer, c_numMolBlocksAttributeKey, molBlock.nmol);
-
-        if (molBlock.posres_xA.size() > 0)
+        const gmx_molblock_t& molBlock = molBlocks[index];
+        // Molecule block should always refer to a valid molecule type
+        if (molBlock.type >= gmx::ssize(molTypes))
         {
-            H5mdFixedDataSet<RVec> dataPosresX =
-                    H5mdDataSetBuilder<RVec>(molContainer, c_positionRestraintsAName)
-                            .withDimension({ molBlock.posres_xA.size() })
-                            .build();
-            dataPosresX.writeData(molBlock.posres_xA);
+            GMX_THROW(InternalError("Molecule block type points to an invalid molecule type."));
         }
-
-        if (molBlock.posres_xB.size() > 0)
-        {
-            H5mdFixedDataSet<RVec> dataPosresX =
-                    H5mdDataSetBuilder<RVec>(molContainer, c_positionRestraintsBName)
-                            .withDimension({ molBlock.posres_xB.size() })
-                            .build();
-            dataPosresX.writeData(molBlock.posres_xB);
-        }
+        namesPerBlock[index]   = *(molTypes[molBlock.type].name);
+        numMolsPerBlock[index] = molBlock.nmol;
     }
+
+    setAttributeVector(baseContainer, c_moleculeNamesAttributeKey, namesPerBlock);
+    setAttributeVector<int32_t>(baseContainer, c_numMolBlocksAttributeKey, numMolsPerBlock);
 }
 
 } // namespace gmx
