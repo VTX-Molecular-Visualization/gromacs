@@ -35,6 +35,7 @@
 
 #include "gromacs/utility/keyvaluetreetransform.h"
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -50,6 +51,10 @@
 #include "testutils/refdata.h"
 #include "testutils/testasserts.h"
 
+namespace gmx
+{
+namespace test
+{
 namespace
 {
 
@@ -164,10 +169,11 @@ TEST_F(TreeValueTransformTest, ObjectFromString)
 
     gmx::KeyValueTreeTransformer transform;
     transform.rules()->addRule().from<std::string>("/a").toObject("/foo").transformWith(
-            [](gmx::KeyValueTreeObjectBuilder* builder, const std::string& value) {
+            [](gmx::KeyValueTreeObjectBuilder* objectBuilder, const std::string& value)
+            {
                 std::vector<std::string> values = gmx::splitString(value);
-                builder->addValue<int>("a", gmx::fromString<int>(values[0]));
-                builder->addValue<int>("b", gmx::fromString<int>(values[1]));
+                objectBuilder->addValue<int>("a", gmx::fromString<int>(values[0]));
+                objectBuilder->addValue<int>("b", gmx::fromString<int>(values[1]));
             });
 
     testTransform(input, transform);
@@ -184,10 +190,11 @@ TEST_F(TreeValueTransformTest, ObjectFromMultipleStrings)
     transform.rules()->addRule().from<std::string>("/a").to<int>("/foo/a").transformWith(
             &gmx::fromStdString<int>);
     transform.rules()->addRule().from<std::string>("/b").toObject("/foo").transformWith(
-            [](gmx::KeyValueTreeObjectBuilder* builder, const std::string& value) {
+            [](gmx::KeyValueTreeObjectBuilder* objectBuilder, const std::string& value)
+            {
                 std::vector<std::string> values = gmx::splitString(value);
-                builder->addValue<int>("b", gmx::fromString<int>(values[0]));
-                builder->addValue<int>("c", gmx::fromString<int>(values[1]));
+                objectBuilder->addValue<int>("b", gmx::fromString<int>(values[0]));
+                objectBuilder->addValue<int>("c", gmx::fromString<int>(values[1]));
             });
 
     testTransform(input, transform);
@@ -259,3 +266,5 @@ TEST(TreeValueTransformErrorTest, ConversionError)
 }
 
 } // namespace
+} // namespace test
+} // namespace gmx

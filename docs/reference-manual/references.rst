@@ -2,7 +2,6 @@ Bibliography
 ============
 
 
-
 .. raw:: html
 
    <div id="refs" class="references">
@@ -2704,3 +2703,50 @@ structures into cryoelectron microscopy maps using biased molecular dynamics sim
 
    </div>
 
+.. raw:: html
+
+   <div id="refGreengard1987">
+
+.. _refGreengard1987:
+
+:sup:`196` L. Greengard and V. Rokhlin, "A fast algorithm for particle simulations", *J. Comput. Phys.* **73**, 325–348 (1987).
+
+.. raw:: html
+
+   </div>
+
+.. raw:: html
+
+   <div id="refMaier2015">
+
+.. _refMaier2015:
+
+:sup:`197` Maier, J. A., Martinez, C., Kasavajhala, K., Wickstrom, L., Hauser, K. E., and Simmerling, C. , and Simmerling, C., "ff14SB: Improving the Accuracy of Protein Side Chain and Backbone Parameters from ff99SB", *J. Chem. Theory Comput.* **11**, 3696–3713 (2015).
+
+.. raw:: html
+
+   </div>
+
+.. raw:: html
+
+   <div id="refTian2020">
+
+.. _refTian2020:
+
+:sup:`198` Tian, C., Kasavajhala, K., Belfon, K. A. A., Raguette, L., Huang, H., Migues, A. N., Bickel, J., Wang, Y., Pincay, J., Wu, Q., and Simmerling, C., "ff19SB: Amino-Acid-Specific Protein Backbone Parameters Trained against Quantum Mechanics Energy Surfaces in Solution", *J. Chem. Theory Comput.* **16**, 528–552 (2020).
+
+.. raw:: html
+
+   </div>
+
+.. raw:: html
+
+   <div id="refMiletic2026">
+
+.. _refMiletic2026:
+
+:sup:`199` Miletić, V., Wieczór, M., Simmerling, C., Rampp, M., De Groot, B. L., Kutzner, C. & Gapsys, V. Force Fields and Simulation Engines: Lessons Learned from Porting Amber ff14SB and ff19SB to GROMACS. Preprint at `doi:10.26434/chemrxiv.15006112/v1 <https://doi.org/10.26434/chemrxiv.15006112/v1>`_ (2026).
+
+.. raw:: html
+
+   </div>

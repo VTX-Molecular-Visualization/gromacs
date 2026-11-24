@@ -49,30 +49,29 @@
 #define GMX_NBNXM_PAIRLISTSET_H
 
 #include <memory>
+#include <vector>
 
-#include "gromacs/math/vectypes.h"
 #include "gromacs/mdtypes/locality.h"
+#include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/real.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "pairlist.h"
 
-struct nbnxn_atomdata_t;
-struct PairlistParams;
-struct PairsearchWork;
-struct SearchCycleCounting;
 struct t_nrnb;
 
 namespace gmx
 {
+class AtomPairlist;
+class GridSet;
 template<typename>
 class ListOfLists;
-}
-
-namespace Nbnxm
-{
-class GridSet;
-}
+struct nbnxn_atomdata_t;
+struct PairlistParams;
+struct PairsearchWork;
+struct PlainPairlist;
+struct SearchCycleCounting;
 
 /*! \internal
  * \brief An object that holds the local or non-local pairlists
@@ -81,32 +80,33 @@ class PairlistSet
 {
 public:
     //! Constructor: initializes the pairlist set as empty
-    PairlistSet(const PairlistParams& listParams);
+    PairlistSet(const PairlistParams& listParams, PinningPolicy pinPolicy);
 
     ~PairlistSet();
 
     //! Constructs the pairlists in the set using the coordinates in \p nbat
-    void constructPairlists(gmx::InteractionLocality      locality,
-                            const Nbnxm::GridSet&         gridSet,
-                            gmx::ArrayRef<PairsearchWork> searchWork,
-                            nbnxn_atomdata_t*             nbat,
-                            const gmx::ListOfLists<int>&  exclusions,
-                            int                           minimumIlistCountForGpuBalancing,
-                            t_nrnb*                       nrnb,
-                            SearchCycleCounting*          searchCycleCounting);
+    void constructPairlists(InteractionLocality      locality,
+                            const GridSet&           gridSet,
+                            ArrayRef<PairsearchWork> searchWork,
+                            nbnxn_atomdata_t*        nbat,
+                            const ListOfLists<int>&  exclusions,
+                            bool                     includeAllPairs,
+                            int                      minimumIlistCountForGpuBalancing,
+                            t_nrnb*                  nrnb,
+                            SearchCycleCounting*     searchCycleCounting);
 
     //! Dispatch the kernel for dynamic pairlist pruning
-    void dispatchPruneKernel(const nbnxn_atomdata_t* nbat, gmx::ArrayRef<const gmx::RVec> shift_vec);
+    void dispatchPruneKernel(const nbnxn_atomdata_t* nbat, ArrayRef<const RVec> shift_vec);
 
     //! Returns the lists of CPU pairlists
-    gmx::ArrayRef<const NbnxnPairlistCpu> cpuLists() const { return cpuLists_; }
+    ArrayRef<const NbnxnPairlistCpu> cpuLists() const { return cpuLists_; }
 
     //! Returns a pointer to the GPU pairlist, nullptr when not present
     const NbnxnPairlistGpu* gpuList() const
     {
         if (!gpuLists_.empty())
         {
-            return &gpuLists_[0];
+            return gpuLists_.data();
         }
         else
         {
@@ -114,11 +114,26 @@ public:
         }
     }
 
+    //! Returns a reference to the GPU fep pairlist
+    const AtomPairlist& fepGpuList() const { return **fepLists_.data(); }
+
+    //! Returns the pair list parameters
+    const PairlistParams& params() const { return params_; }
+
     //! Returns the lists of free-energy pairlists, empty when nonbonded interactions are not perturbed
-    gmx::ArrayRef<const std::unique_ptr<t_nblist>> fepLists() const { return fepLists_; }
+    ArrayRef<const std::unique_ptr<AtomPairlist>> fepLists() const { return fepLists_; }
 
     //! Returns the number of perturbed excluded pairs that are within distance rlist
     int numPerturbedExclusionsWithinRlist() const { return numPerturbedExclusionsWithinRlist_; }
+
+    /*! \brief Appends the contents of our pairlists, except for exclusions, to \p plainPairlist
+     *
+     * The atom indices in the plain list are normal, not NBNxM order, atom indices.
+     */
+    void appendPlainPairlist(PlainPairlist*          plainPairlist,
+                             real                    range,
+                             const nbnxn_atomdata_t& nbat,
+                             ArrayRef<const int>     atomIndices);
 
 private:
     //! List of pairlists in CPU layout
@@ -134,7 +149,7 @@ private:
     //! Tells whether the lists is of CPU type, otherwise GPU type
     gmx_bool isCpuType_;
     //! Lists for perturbed interactions in simple atom-atom layout
-    std::vector<std::unique_ptr<t_nblist>> fepLists_;
+    std::vector<std::unique_ptr<AtomPairlist>> fepLists_;
     //! The number of excluded perturbed interaction within rlist
     int numPerturbedExclusionsWithinRlist_ = 0;
 
@@ -147,5 +162,7 @@ public:
     //! Total number of atom pairs for Q kernel
     int natpair_q_;
 };
+
+} // namespace gmx
 
 #endif

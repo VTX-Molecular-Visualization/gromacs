@@ -38,6 +38,9 @@
 #include <cstdio>
 #include <cstring>
 
+#include <filesystem>
+#include <string>
+
 #include "gromacs/fileio/espio.h"
 #include "gromacs/fileio/filetypes.h"
 #include "gromacs/fileio/g96io.h"
@@ -46,17 +49,20 @@
 #include "gromacs/fileio/pdbio.h"
 #include "gromacs/fileio/tpxio.h"
 #include "gromacs/fileio/trxio.h"
-#include "gromacs/math/vec.h"
+#include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/topology/atoms.h"
 #include "gromacs/topology/block.h"
 #include "gromacs/topology/mtop_util.h"
 #include "gromacs/topology/symtab.h"
 #include "gromacs/topology/topology.h"
 #include "gromacs/trajectory/trajectoryframe.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/smalloc.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
 
 void write_sto_conf_indexed(const std::filesystem::path& outfile,
                             const char*                  title,
@@ -113,7 +119,7 @@ void write_sto_conf_indexed(const std::filesystem::path& outfile,
             gmx_fio_fclose(out);
             break;
         case efTPR:
-            gmx_fatal(FARGS, "Sorry, can not write a topology to %s", outfile.u8string().c_str());
+            gmx_fatal(FARGS, "Sorry, can not write a topology to %s", outfile.string().c_str());
         default: gmx_incons("Not supported in write_sto_conf_indexed");
     }
 }
@@ -165,7 +171,7 @@ void write_sto_conf(const std::filesystem::path& outfile,
             gmx_fio_fclose(out);
             break;
         case efTPR:
-            gmx_fatal(FARGS, "Sorry, can not write a topology to %s", outfile.u8string().c_str());
+            gmx_fatal(FARGS, "Sorry, can not write a topology to %s", outfile.string().c_str());
         default: gmx_incons("Not supported in write_sto_conf");
     }
 }
@@ -262,44 +268,41 @@ private:
 
 void ChainIdFiller::fill(t_atoms* atoms, const int startAtomIndex, const int endAtomIndex)
 {
-    // TODO remove these some time, extra braces added for review convenience
+    // We always assign a new chain number, but only assign a chain id
+    // characters for larger molecules.
+    char chainIdToAssign;
+    if (endAtomIndex - startAtomIndex >= s_chainMinAtoms && !outOfIds_)
     {
-        // We always assign a new chain number, but only assign a chain id
-        // characters for larger molecules.
-        char chainIdToAssign;
-        if (endAtomIndex - startAtomIndex >= s_chainMinAtoms && !outOfIds_)
+        /* Set the chain id for the output */
+        chainIdToAssign = nextChainId_;
+        /* Here we allow for the max possible 2*26+10=62 chain ids */
+        if (nextChainId_ == 'Z')
         {
-            /* Set the chain id for the output */
-            chainIdToAssign = nextChainId_;
-            /* Here we allow for the max possible 2*26+10=62 chain ids */
-            if (nextChainId_ == 'Z')
-            {
-                nextChainId_ = 'a';
-            }
-            else if (nextChainId_ == 'z')
-            {
-                nextChainId_ = '0';
-            }
-            else if (nextChainId_ == '9')
-            {
-                outOfIds_ = true;
-            }
-            else
-            {
-                nextChainId_++;
-            }
+            nextChainId_ = 'a';
+        }
+        else if (nextChainId_ == 'z')
+        {
+            nextChainId_ = '0';
+        }
+        else if (nextChainId_ == '9')
+        {
+            outOfIds_ = true;
         }
         else
         {
-            chainIdToAssign = ' ';
+            nextChainId_++;
         }
-        for (int a = startAtomIndex; a < endAtomIndex; a++)
-        {
-            atoms->resinfo[atoms->atom[a].resind].chainnum = nextChainNumber_;
-            atoms->resinfo[atoms->atom[a].resind].chainid  = chainIdToAssign;
-        }
-        nextChainNumber_++;
     }
+    else
+    {
+        chainIdToAssign = ' ';
+    }
+    for (int a = startAtomIndex; a < endAtomIndex; a++)
+    {
+        atoms->resinfo[atoms->atom[a].resind].chainnum = nextChainNumber_;
+        atoms->resinfo[atoms->atom[a].resind].chainid  = chainIdToAssign;
+    }
+    nextChainNumber_++;
 }
 
 void ChainIdFiller::clearIfNeeded(t_atoms* atoms) const
@@ -352,7 +355,7 @@ static void read_stx_conf(const std::filesystem::path& infile,
 
     if (atoms->nr == 0)
     {
-        fprintf(stderr, "Warning: Number of atoms in %s is 0\n", infile.u8string().c_str());
+        fprintf(stderr, "Warning: Number of atoms in %s is 0\n", infile.string().c_str());
     }
     else if (atoms->atom == nullptr)
     {

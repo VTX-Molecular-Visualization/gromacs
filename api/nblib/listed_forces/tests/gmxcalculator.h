@@ -35,7 +35,7 @@
  * \brief
  * This implements a fixture for calling calc_listed in gromacs
  * with nblib interaction data. The functionality implemented
- * in this file duplicates the corresponding NBLIB version and
+ * in this file duplicates the corresponding NB-LIB version and
  * exists for reference and testing purposes.
  *
  * \author Victor Holanda <victor.holanda@cscs.ch>
@@ -47,9 +47,11 @@
 #ifndef NBLIB_LISTEDFORCES_GMXCALCULATOR_H
 #define NBLIB_LISTEDFORCES_GMXCALCULATOR_H
 
+#include <memory>
+#include <vector>
+
 #include "gromacs/gmxlib/nrnb.h"
 #include "gromacs/listed_forces/listed_forces.h"
-#include "gromacs/mdtypes/commrec.h"
 #include "gromacs/mdtypes/enerdata.h"
 #include "gromacs/mdtypes/fcdata.h"
 #include "gromacs/mdtypes/forceoutput.h"
@@ -57,12 +59,20 @@
 #include "gromacs/mdtypes/mdatom.h"
 #include "gromacs/mdtypes/simulation_workload.h"
 #include "gromacs/pbcutil/pbc.h"
-#include "gromacs/timing/wallcycle.h"
 #include "gromacs/topology/forcefieldparameters.h"
 #include "gromacs/topology/idef.h"
+#include "gromacs/utility/real.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "nblib/box.h"
 #include "nblib/listed_forces/calculator.h"
+#include "nblib/listed_forces/definitions.h"
+
+namespace gmx
+{
+template<typename>
+class ArrayRef;
+} // namespace gmx
 
 namespace nblib
 {
@@ -112,13 +122,11 @@ private:
     t_fcdata     fcdata_;
     t_mdatoms    mdatoms_;
 
-    t_pbc                          pbc;
-    std::unique_ptr<gmx_wallcycle> wcycle;
-    gmx_enerdata_t                 enerd;
-    gmx::StepWorkload              stepWork;
+    t_pbc             pbc;
+    gmx_enerdata_t    enerd;
+    gmx::StepWorkload stepWork;
 
     t_nrnb            nrnb;
-    t_commrec         cr;
     std::vector<real> lambdaBuffer;
 
     std::unique_ptr<ListedForces> gmxListedForces_;

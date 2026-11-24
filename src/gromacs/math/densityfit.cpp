@@ -42,13 +42,26 @@
 
 #include "gromacs/math/densityfit.h"
 
-#include <algorithm>
-#include <numeric>
+#include <cmath>
 
+#include <algorithm>
+#include <functional>
+#include <iterator>
+#include <memory>
+#include <numeric>
+#include <vector>
+
+#include "gromacs/math/functions.h"
 #include "gromacs/math/multidimarray.h"
-#include "gromacs/math/vec.h"
+#include "gromacs/mdspan/extensions.h"
+#include "gromacs/mdspan/extents.h"
+#include "gromacs/mdspan/layouts.h"
 #include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/exceptions.h"
+#include "gromacs/utility/gmxassert.h"
+#include "gromacs/utility/real.h"
+#include "gromacs/utility/vec.h"
 
 namespace gmx
 {
@@ -103,9 +116,10 @@ DensitySimilarityInnerProduct::DensitySimilarityInnerProduct(density referenceDe
     const auto numVoxels = gradient_.asConstView().mapping().required_span_size();
     /* the gradient for the inner product measure of fit is constant and does not
      * depend on the compared density, so it is pre-computed here */
-    std::transform(begin(referenceDensity_), end(referenceDensity_), begin(gradient_), [numVoxels](float x) {
-        return x / numVoxels;
-    });
+    std::transform(begin(referenceDensity_),
+                   end(referenceDensity_),
+                   begin(gradient_),
+                   [numVoxels](float x) { return x / numVoxels; });
 }
 
 real DensitySimilarityInnerProduct::similarity(density comparedDensity)
@@ -295,7 +309,7 @@ private:
                    "Squared sum of comparison values needs to be larger than zero.");
         GMX_ASSERT(referenceSquaredSum > 0,
                    "Squared sum of reference values needs to be larger than zero.");
-        return 1.0 / (sqrt(comparisonSquaredSum) * sqrt(referenceSquaredSum));
+        return 1.0 / (std::sqrt(comparisonSquaredSum) * std::sqrt(referenceSquaredSum));
     }
     const real prefactor_;
     const real comparisonPrefactor_;
@@ -350,10 +364,10 @@ real DensitySimilarityCrossCorrelation::similarity(density comparedDensity)
     // To avoid numerical instability due to large squared density value sums
     // division is re-written to avoid multiplying two large numbers
     // as product of two separate divisions of smaller numbers
-    const real covarianceSqrt = sqrt(fabs(helperValues.covariance));
+    const real covarianceSqrt = std::sqrt(std::fabs(helperValues.covariance));
     const int  sign           = helperValues.covariance > 0 ? 1 : -1;
-    return sign * (covarianceSqrt / sqrt(helperValues.referenceSquaredSum))
-           * (covarianceSqrt / sqrt(helperValues.comparisonSquaredSum));
+    return sign * (covarianceSqrt / std::sqrt(helperValues.referenceSquaredSum))
+           * (covarianceSqrt / std::sqrt(helperValues.comparisonSquaredSum));
 }
 
 DensitySimilarityMeasure::density DensitySimilarityCrossCorrelation::gradient(density comparedDensity)
@@ -434,9 +448,10 @@ DensitySimilarityMeasure& DensitySimilarityMeasure::operator=(DensitySimilarityM
 void normalizeSumPositiveValuesToUnity(ArrayRef<float> data)
 {
     const double sumDataLargerZero =
-            std::accumulate(std::begin(data), std::end(data), 0., [](double sum, float value) {
-                return value > 0 ? sum + value : sum;
-            });
+            std::accumulate(std::begin(data),
+                            std::end(data),
+                            0.,
+                            [](double sum, float value) { return value > 0 ? sum + value : sum; });
 
     // leave the data untouched if there are no values larger than zero
     if (sumDataLargerZero == 0.)
@@ -444,9 +459,10 @@ void normalizeSumPositiveValuesToUnity(ArrayRef<float> data)
         return;
     }
 
-    std::transform(std::begin(data), std::end(data), std::begin(data), [sumDataLargerZero](float& datum) {
-        return datum / sumDataLargerZero;
-    });
+    std::transform(std::begin(data),
+                   std::end(data),
+                   std::begin(data),
+                   [sumDataLargerZero](float& datum) { return datum / sumDataLargerZero; });
 }
 
 } // namespace gmx

@@ -40,27 +40,39 @@
 #include <cstring>
 
 #include <algorithm>
+#include <filesystem>
 #include <numeric>
 #include <string>
+#include <type_traits>
+#include <vector>
 
+#include "gromacs/commandline/filenm.h"
 #include "gromacs/commandline/pargs.h"
 #include "gromacs/commandline/viewit.h"
+#include "gromacs/fileio/filetypes.h"
 #include "gromacs/fileio/matio.h"
 #include "gromacs/fileio/readinp.h"
+#include "gromacs/fileio/rgb.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/fileio/warninp.h"
 #include "gromacs/fileio/writeps.h"
 #include "gromacs/gmxana/gmx_ana.h"
+#include "gromacs/math/functions.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/arraysize.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/filestream.h"
 #include "gromacs/utility/futil.h"
 #include "gromacs/utility/gmxassert.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/vectypes.h"
+
+struct gmx_output_env_t;
 
 #define FUDGE 1.2
 #define DDD 2
@@ -139,9 +151,9 @@ static void get_params(const char* mpin, const char* mpout, t_psrec* psr)
 
     if (mpin != nullptr)
     {
-        std::string        libmpin = gmx::findLibraryFile(mpin).u8string();
-        gmx::TextInputFile stream(libmpin);
-        inp = read_inpfile(&stream, libmpin.c_str(), &wi);
+        const std::filesystem::path libmpin = gmx::findLibraryFile(mpin);
+        gmx::TextInputFile          stream(libmpin);
+        inp = read_inpfile(&stream, libmpin, &wi);
     }
     else
     {
@@ -463,7 +475,7 @@ static void draw_boxes(t_psdata* ps, real x0, real y0, real w, gmx::ArrayRef<t_m
         if (!psr->bYonce || m == halfway)
         {
             std::string mylab;
-            if (strlen(psr->Y.label) > 0)
+            if (std::strlen(psr->Y.label) > 0)
             {
                 mylab = psr->Y.label;
             }
@@ -485,7 +497,7 @@ static void draw_boxes(t_psdata* ps, real x0, real y0, real w, gmx::ArrayRef<t_m
     }
     /* Label on X-axis */
     std::string mylab;
-    if (strlen(psr->X.label) > 0)
+    if (std::strlen(psr->X.label) > 0)
     {
         mylab = psr->X.label;
     }
@@ -1081,8 +1093,8 @@ static void prune_mat(gmx::ArrayRef<t_matrix> mat, gmx::ArrayRef<t_matrix> mat2,
                 "converting %dx%d matrix to %dx%d\n",
                 mat[i].nx,
                 mat[i].ny,
-                (mat[i].nx + skip - 1) / skip,
-                (mat[i].ny + skip - 1) / skip);
+                gmx::divideRoundUp(mat[i].nx, skip),
+                gmx::divideRoundUp(mat[i].ny, skip));
         /* walk through matrix */
         int xs = 0;
         for (int x = 0; (x < mat[i].nx); x++)
@@ -1119,12 +1131,12 @@ static void prune_mat(gmx::ArrayRef<t_matrix> mat, gmx::ArrayRef<t_matrix> mat2,
             }
         }
         /* adjust parameters */
-        mat[i].nx = (mat[i].nx + skip - 1) / skip;
-        mat[i].ny = (mat[i].ny + skip - 1) / skip;
+        mat[i].nx = gmx::divideRoundUp(mat[i].nx, skip);
+        mat[i].ny = gmx::divideRoundUp(mat[i].ny, skip);
         if (!mat2.empty())
         {
-            mat2[i].nx = (mat2[i].nx + skip - 1) / skip;
-            mat2[i].ny = (mat2[i].ny + skip - 1) / skip;
+            mat2[i].nx = gmx::divideRoundUp(mat2[i].nx, skip);
+            mat2[i].ny = gmx::divideRoundUp(mat2[i].ny, skip);
         }
     }
 }
@@ -1453,7 +1465,8 @@ int gmx_xpm2ps(int argc, char* argv[])
     };
 
     gmx_output_env_t* oenv;
-    const char *      fn, *epsfile = nullptr, *xpmfile = nullptr;
+    const char*       fn;
+    const char*       fn2;
     int               i, etitle, elegend, ediag, erainbow, ecombine;
     gmx_bool          bTitle, bTitleOnce, bDiag, bFirstDiag, bGrad;
     static gmx_bool   bFrame = TRUE, bZeroLine = FALSE, bYonce = FALSE;
@@ -1500,28 +1513,28 @@ int gmx_xpm2ps(int argc, char* argv[])
         { "-diag", FALSE, etENUM, { diag }, "Diagonal" },
         { "-size", FALSE, etREAL, { &size }, "Horizontal size of the matrix in ps units" },
         { "-bx",
-          FALSE,
-          etREAL,
-          { &boxx },
-          "Element x-size, overrides [TT]-size[tt] (also y-size when [TT]-by[tt] is not set)" },
+              FALSE,
+              etREAL,
+              { &boxx },
+              "Element x-size, overrides [TT]-size[tt] (also y-size when [TT]-by[tt] is not set)" },
         { "-by", FALSE, etREAL, { &boxy }, "Element y-size" },
         { "-rainbow", FALSE, etENUM, { rainbow }, "Rainbow colors, convert white to" },
         { "-gradient",
-          FALSE,
-          etRVEC,
-          { grad },
-          "Re-scale colormap to a smooth gradient from white {1,1,1} to {r,g,b}" },
+              FALSE,
+              etRVEC,
+              { grad },
+              "Re-scale colormap to a smooth gradient from white {1,1,1} to {r,g,b}" },
         { "-skip", FALSE, etINT, { &skip }, "only write out every nr-th row and column" },
         { "-zeroline",
-          FALSE,
-          etBOOL,
-          { &bZeroLine },
-          "insert line in [REF].xpm[ref] matrix where axis label is zero" },
+              FALSE,
+              etBOOL,
+              { &bZeroLine },
+              "insert line in [REF].xpm[ref] matrix where axis label is zero" },
         { "-legoffset",
-          FALSE,
-          etINT,
-          { &mapoffset },
-          "Skip first N colors from [REF].xpm[ref] file for the legend" },
+              FALSE,
+              etINT,
+              { &mapoffset },
+              "Skip first N colors from [REF].xpm[ref] file for the legend" },
         { "-combine", FALSE, etENUM, { combine }, "Combine two matrices" },
         { "-cmin", FALSE, etREAL, { &cmin }, "Minimum for combination output" },
         { "-cmax", FALSE, etREAL, { &cmax }, "Maximum for combination output" }
@@ -1557,29 +1570,6 @@ int gmx_xpm2ps(int argc, char* argv[])
         elegend = elNone;
     }
 
-    epsfile = ftp2fn_null(efEPS, NFILE, fnm);
-    xpmfile = opt2fn_null("-xpm", NFILE, fnm);
-    if (epsfile == nullptr && xpmfile == nullptr)
-    {
-        if (ecombine != ecHalves)
-        {
-            xpmfile = opt2fn("-xpm", NFILE, fnm);
-        }
-        else
-        {
-            epsfile = ftp2fn(efEPS, NFILE, fnm);
-        }
-    }
-    if (ecombine != ecHalves && epsfile)
-    {
-        fprintf(stderr,
-                "WARNING: can only write result of arithmetic combination "
-                "of two matrices to .xpm file\n"
-                "         file %s will not be written\n",
-                epsfile);
-        epsfile = nullptr;
-    }
-
     bDiag      = ediag != edNone;
     bFirstDiag = ediag != edSecond;
 
@@ -1592,16 +1582,16 @@ int gmx_xpm2ps(int argc, char* argv[])
             mat.size(),
             (mat.size() > 1) ? "ces" : "x",
             fn);
-    fn = opt2fn_null("-f2", NFILE, fnm);
-    if (fn)
+    fn2 = opt2fn_null("-f2", NFILE, fnm);
+    if (fn2)
     {
-        mat2 = read_xpm_matrix(fn);
+        mat2 = read_xpm_matrix(fn2);
         fprintf(stderr,
                 "There %s %zu matri%s in %s\n",
                 (mat2.size() > 1) ? "are" : "is",
                 mat2.size(),
                 (mat2.size() > 1) ? "ces" : "x",
-                fn);
+                fn2);
         if (mat.size() != mat2.size())
         {
             fprintf(stderr, "Different number of matrices, using the smallest number.\n");
@@ -1663,8 +1653,18 @@ int gmx_xpm2ps(int argc, char* argv[])
 
     if (ecombine && ecombine != ecHalves)
     {
+        const char* epsfile;
+        epsfile = ftp2fn_null(efEPS, NFILE, fnm);
+        if (epsfile)
+        {
+            fprintf(stderr,
+                    "WARNING: can only write result of arithmetic combination "
+                    "of two matrices to .xpm file\n"
+                    "         file %s will not be written\n",
+                    epsfile);
+        }
         write_combined_matrix(ecombine,
-                              xpmfile,
+                              opt2fn("-xpm", NFILE, fnm),
                               mat,
                               mat2,
                               opt2parg_bSet("-cmin", NPA, pa) ? &cmin : nullptr,
@@ -1685,8 +1685,8 @@ int gmx_xpm2ps(int argc, char* argv[])
                size,
                boxx,
                boxy,
-               epsfile,
-               xpmfile,
+               ftp2fn(efEPS, NFILE, fnm),
+               opt2fn_null("-xpm", NFILE, fnm),
                opt2fn_null("-di", NFILE, fnm),
                opt2fn_null("-do", NFILE, fnm),
                skip,

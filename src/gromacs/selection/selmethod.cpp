@@ -44,7 +44,12 @@
 
 #include <cctype>
 #include <cstdarg>
+#include <cstdio>
 
+#include <string>
+
+#include "gromacs/selection/selparam.h"
+#include "gromacs/selection/selvalue.h"
 #include "gromacs/utility/arraysize.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/exceptions.h"
@@ -77,7 +82,7 @@ static void report_error(FILE* fp, const char* name, gmx_fmtstr const char* fmt,
 
 static void report_error(FILE* fp, const char* name, gmx_fmtstr const char* fmt, ...)
 {
-    va_list ap;
+    std::va_list ap;
     va_start(ap, fmt);
     if (fp)
     {
@@ -95,7 +100,7 @@ static void report_param_error(FILE* fp, const char* mname, const char* pname, g
         gmx_format(printf, 4, 5);
 static void report_param_error(FILE* fp, const char* mname, const char* pname, gmx_fmtstr const char* fmt, ...)
 {
-    va_list ap;
+    std::va_list ap;
     va_start(ap, fmt);
     if (fp)
     {
@@ -301,7 +306,7 @@ static bool check_params(FILE*                                  fp,
         {
             continue;
         }
-        if (!isalpha(params[i].name[0]))
+        if (!std::isalpha(params[i].name[0]))
         {
             report_param_error(fp, name, params[i].name, "error: name does not begin with a letter");
             bOk = false;
@@ -309,7 +314,7 @@ static bool check_params(FILE*                                  fp,
         }
         for (j = 1; params[i].name[j] != 0; ++j)
         {
-            if (params[i].name[j] != '_' && !isalnum(params[i].name[j]))
+            if (params[i].name[j] != '_' && !std::isalnum(params[i].name[j]))
             {
                 report_param_error(fp,
                                    name,
@@ -333,7 +338,7 @@ static bool check_params(FILE*                                  fp,
             bOk = false;
         }
     } /* End of parameter loop */
-      /* Check parameters of existing methods */
+    /* Check parameters of existing methods */
     gmx::SelectionParserSymbolIterator symbol =
             symtab.beginIterator(gmx::SelectionParserSymbol::MethodSymbol);
     while (symbol != symtab.endIterator())

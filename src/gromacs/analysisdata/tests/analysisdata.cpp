@@ -48,9 +48,11 @@
 
 #include "gromacs/analysisdata/analysisdata.h"
 
-#include <gmock/gmock.h>
+#include <string>
+
 #include <gtest/gtest.h>
 
+#include "gromacs/analysisdata/datamodule.h"
 #include "gromacs/analysisdata/paralleloptions.h"
 #include "gromacs/analysisdata/tests/datatest.h"
 #include "gromacs/analysisdata/tests/mock_datamodule.h"
@@ -62,6 +64,10 @@ using gmx::test::AnalysisDataTestInput;
 using gmx::test::MockAnalysisDataModule;
 using gmx::test::MockAnalysisDataModulePointer;
 
+namespace gmx
+{
+namespace test
+{
 namespace
 {
 
@@ -430,3 +436,5 @@ TEST(DISABLED_AnalysisDataCommonTest, GenericTests)
 #endif
 
 } // namespace
+} // namespace test
+} // namespace gmx

@@ -41,6 +41,14 @@
 
 #include "gromacs/tools/report_methods.h"
 
+#include <filesystem>
+#include <functional>
+#include <memory>
+#include <string>
+
+#include <gtest/gtest.h>
+
+#include "gromacs/commandline/cmdlineoptionsmodule.h"
 #include "gromacs/fileio/tpxio.h"
 #include "gromacs/gmxpreprocess/grompp.h"
 #include "gromacs/mdtypes/inputrec.h"
@@ -94,7 +102,7 @@ static void readTprInput(const TprAndFileManager* tprHandle, gmx_mtop_t* mtop, t
     // read tpr into variables needed for output
     {
         t_state state;
-        read_tpx_state(tprHandle->tprName().c_str(), ir, &state, mtop);
+        read_tpx_state(tprHandle->tprName(), ir, &state, mtop);
     }
 }
 

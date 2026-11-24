@@ -62,10 +62,13 @@
 #ifndef NBNXM_CUDA_KERNEL_SCI_SORT_CUH
 #define NBNXM_CUDA_KERNEL_SCI_SORT_CUH
 
-__launch_bounds__(c_sciSortingThreadsPerBlock) static __global__
-        void nbnxnKernelBucketSciSort(Nbnxm::gpu_plist plist)
+namespace gmx
 {
-    int size = plist.nsci;
+
+__launch_bounds__(c_sciSortingThreadsPerBlock) static __global__
+        void nbnxnKernelBucketSciSort(GpuPairlist plist)
+{
+    int size = plist.numSci;
 
     const int tid         = threadIdx.x;
     const int blockOffset = blockIdx.x * c_sciSortingThreadsPerBlock;
@@ -85,5 +88,7 @@ __launch_bounds__(c_sciSortingThreadsPerBlock) static __global__
         plist.sorting.sciSorted[sciOffset] = sci;
     }
 }
+
+} // namespace gmx
 
 #endif /* NBNXM_CUDA_KERNEL_SCI_SORT_CUH */

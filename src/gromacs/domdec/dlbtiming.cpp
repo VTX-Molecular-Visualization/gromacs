@@ -38,8 +38,13 @@
 
 #include <cstring>
 
+#include <array>
+
 #include "gromacs/domdec/domdec.h"
+#include "gromacs/domdec/domdec_struct.h"
 #include "gromacs/gmxlib/nrnb.h"
+#include "gromacs/timing/cyclecounter.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/gmxassert.h"
 
 #include "domdec_internal.h"
@@ -114,6 +119,13 @@ void ddReopenBalanceRegionCpu(const gmx_domdec_t* dd)
     }
 }
 
+DDBalanceRegionHandler::DDBalanceRegionHandler(gmx_domdec_t* dd) :
+    useBalancingRegion_(dd != nullptr ? (havePPDomainDecomposition(dd) && dd->comm->ddSettings.recordLoad)
+                                      : false),
+    dd_(dd)
+{
+}
+
 void DDBalanceRegionHandler::closeRegionCpuImpl() const
 {
     BalanceRegion::Impl* reg = getBalanceRegion(dd_);
@@ -180,7 +192,7 @@ static double force_flop_count(const t_nrnb* nrnb)
          * for the normal loops and again half it for water loops.
          */
         const char* name = nrnb_str(i);
-        if (strstr(name, "W3") != nullptr || strstr(name, "W4") != nullptr)
+        if (std::strstr(name, "W3") != nullptr || std::strstr(name, "W4") != nullptr)
         {
             sum += nrnb->n[i] * 0.25 * cost_nrnb(i);
         }
@@ -192,14 +204,26 @@ static double force_flop_count(const t_nrnb* nrnb)
     for (int i = eNR_NBKERNEL_FREE_ENERGY; i <= eNR_NB14; i++)
     {
         const char* name = nrnb_str(i);
-        if (strstr(name, "W3") != nullptr || strstr(name, "W4") != nullptr)
+        if (std::strstr(name, "W3") != nullptr || std::strstr(name, "W4") != nullptr)
         {
             sum += nrnb->n[i] * cost_nrnb(i);
         }
     }
-    for (int i = eNR_BONDS; i <= eNR_WALLS; i++)
+    for (int i = eNR_NBNXN_LJ_RF; i <= eNR_NBNXN_ADD_LJ_EWALD_E; i++)
     {
-        sum += nrnb->n[i] * cost_nrnb(i);
+        /* The flop rate of the non-bonded kernels is much higher that those of all other kernels.
+         * To get closer to the real timings, we scale it down. Scaling factor is not exact,
+         * but seems to work well. */
+        const float nbnxmFlopScale = 0.5f;
+        sum += nrnb->n[i] * cost_nrnb(i) * nbnxmFlopScale;
+    }
+    for (int i = eNR_NB14; i <= eNR_WALLS; i++)
+    {
+        // PME FFT and solve load is not affected by DLB
+        if (i != eNR_FFT && i != eNR_SOLVEPME)
+        {
+            sum += nrnb->n[i] * cost_nrnb(i);
+        }
     }
 
     return sum;

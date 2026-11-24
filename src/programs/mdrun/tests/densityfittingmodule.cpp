@@ -41,15 +41,19 @@
  */
 #include "gmxpre.h"
 
+#include <filesystem>
 #include <string>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 #include "gromacs/topology/ifunc.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/stringutil.h"
 
+#include "testutils/cmdlinetest.h"
 #include "testutils/refdata.h"
+#include "testutils/testasserts.h"
 #include "testutils/testfilemanager.h"
 
 #include "energycomparison.h"
@@ -74,7 +78,7 @@ public:
     DensityFittingTest()
     {
         runner_.useTopGroAndNdxFromDatabase("argon12");
-        runner_.edrFileName_ = fileManager_.getTemporaryFilePath(".edr").u8string();
+        runner_.edrFileName_ = fileManager_.getTemporaryFilePath(".edr").string();
     }
 
     //! Check the output of mdrun
@@ -84,8 +88,8 @@ public:
                 relativeToleranceAsFloatingPoint(energyTermMagnitude, 1e-4);
 
         EnergyTermsToCompare energyTermsToCompare{
-            { { interaction_function[F_DENSITYFITTING].longname, energyTermTolerance },
-              { interaction_function[F_EPOT].longname, energyTermTolerance } }
+            { { interaction_function[InteractionFunction::DensityFitting].longname, energyTermTolerance },
+              { interaction_function[InteractionFunction::PotentialEnergy].longname, energyTermTolerance } }
         };
 
         TestReferenceData refData;
@@ -101,7 +105,7 @@ public:
             "density-guided-simulation-active = yes\n"
             "density-guided-simulation-group  = FirstThreeOfTwelve\n"
             "density-guided-simulation-reference-density-filename = %s\n",
-            TestFileManager::getInputFilePath("ellipsoid-density.mrc").u8string().c_str());
+            TestFileManager::getInputFilePath("ellipsoid-density.mrc").string().c_str());
 
     //! Mdp values for md integrator with default density fitting parameters.
     const std::string mdpMdDensfitYesUnsetValues = formatString(
@@ -111,7 +115,7 @@ public:
             "density-guided-simulation-active = yes\n"
             "density-guided-simulation-group  = FirstThreeOfTwelve\n"
             "density-guided-simulation-reference-density-filename = %s\n",
-            TestFileManager::getInputFilePath("ellipsoid-density.mrc").u8string().c_str());
+            TestFileManager::getInputFilePath("ellipsoid-density.mrc").string().c_str());
 
     //! Mdp values for steepest-decent energy minimization with density fitting values set to non-defaults.
     const std::string mdpDensiftAllDefaultsChanged_ = formatString(
@@ -137,9 +141,9 @@ public:
     const std::string mdpTranslationSetWrongValues_ =
             formatString("density-guided-simulation-shift-vector = 0.1 -0.2\n");
     //! A 45 degree rotation around the y axis expressed as matrix transformation
-    const std::string mdpTransformationMatrix1degAroundY_ = formatString(
-            "density-guided-simulation-transformation-matrix = 0.9998477 0.0000000 0.0174524 "
-            "0.0000000 1.0000000 0.0000000 -0.0174524 0.0000000 0.9998477 \n");
+    const std::string mdpTransformationMatrix45degAroundY_ = formatString(
+            "density-guided-simulation-transformation-matrix = 0.7071068 0.0000000 0.7071068 "
+            "0.0000000 1.0000000 0.0000000 -0.7071068 0.0000000 0.7071068 \n");
     //! The identity matrix as transformation matrix
     const std::string mdpTransformationMatrixIdentity_ = formatString(
             "density-guided-simulation-transformation-matrix = 1 0 0 "
@@ -205,7 +209,7 @@ TEST_F(DensityFittingTest, EnergyMinimizationEnergyTranslationParametersOff)
 TEST_F(DensityFittingTest, EnergyMinimizationEnergyCorrectInnerProductTranslationAndTransformationMatrix)
 {
     runner_.useStringAsMdpFile(mdpEminDensfitYesUnsetValues + mdpTranslationSet_
-                               + mdpTransformationMatrix1degAroundY_);
+                               + mdpTransformationMatrix45degAroundY_);
 
     runner_.nsteps_ = 4;
     ASSERT_EQ(0, runner_.callGrompp());

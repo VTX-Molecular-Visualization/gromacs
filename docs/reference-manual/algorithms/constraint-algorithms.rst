@@ -10,7 +10,7 @@ traditional SHAKE method.
 SHAKE
 ~~~~~
 
-The SHAKE \ :ref:`46 <refRyckaert77>` algorithm changes a
+The SHAKE :ref:`46 <refRyckaert77>` algorithm changes a
 set of unconstrained coordinates :math:`\mathbf{r}^{'}` to
 a set of coordinates :math:`\mathbf{r}''` that fulfill a
 list of distance constraints, using a set :math:`\mathbf{r}` reference, as
@@ -50,7 +50,7 @@ The displacement due to the constraint forces in the leap-frog or
 Verlet algorithm is equal to :math:`(\mathbf{G}_i/m_i)({{\Delta t}})^2`. Solving the
 Lagrange multipliers (and hence the displacements) requires the solution
 of a set of coupled equations of the second degree. These are solved
-iteratively by SHAKE. :ref:`settle` 
+iteratively by SHAKE. :ref:`settle`
 
 .. _settle:
 
@@ -59,7 +59,7 @@ SETTLE
 
 For the special case of rigid
 water molecules, that often make up more than 80% of the simulation
-system we have implemented the SETTLE algorithm \ :ref:`47 <refMiyamoto92>`
+system we have implemented the SETTLE algorithm :ref:`47 <refMiyamoto92>`
 (sec. :ref:`constraintalg`). The implementation of SETTLE in |Gromacs|
 is a slight modification of the original algorithm, in that it completely
 avoids the calculation of the center of mass of the water molecule.
@@ -76,7 +76,7 @@ For velocity Verlet, an additional round of constraining must be done,
 to constrain the velocities of the second velocity half step, removing
 any component of the velocity parallel to the bond vector. This step is
 called RATTLE, and is covered in more detail in the original Andersen
-paper \ :ref:`48 <refAndersen1983a>`.
+paper :ref:`48 <refAndersen1983a>`.
 
 LINCS
 ~~~~~
@@ -87,7 +87,7 @@ The LINCS algorithm
 ^^^^^^^^^^^^^^^^^^^
 
 LINCS is an algorithm that resets bonds to their correct lengths after
-an unconstrained update \ :ref:`49 <refHess97>`. The method is non-iterative,
+an unconstrained update :ref:`49 <refHess97>`. The method is non-iterative,
 as it always uses two steps. Although LINCS is based on matrices, no
 matrix-matrix multiplications are needed. The method is more stable and
 faster than SHAKE, but it can only be used with bond constraints and
@@ -147,10 +147,10 @@ equation shows how the new constrained coordinates
 coordinates :math:`\mathbf{r}_{n+1}^{unc}` by
 
 .. math::  \begin{array}{c}
-           \mathbf{r}_{n+1}=(\mathbf{I}-\mathbf{T}_n \mathbf{B}_n) \mathbf{r}_{n+1}^{unc} + {\mathbf{T}}_n \mathbf{d}=  
+           \mathbf{r}_{n+1}=(\mathbf{I}-\mathbf{T}_n \mathbf{B}_n) \mathbf{r}_{n+1}^{unc} + {\mathbf{T}}_n \mathbf{d}=
            \\[2mm]
-           \mathbf{r}_{n+1}^{unc} - 
-           {{\mathbf{M}}^{-1}}\mathbf{B}_n ({\mathbf{B}}_n {{\mathbf{M}}^{-1}}{\mathbf{B}}_n^T)^{-1} ({\mathbf{B}}_n \mathbf{r}_{n+1}^{unc} - \mathbf{d}) 
+           \mathbf{r}_{n+1}^{unc} -
+           {{\mathbf{M}}^{-1}}\mathbf{B}_n ({\mathbf{B}}_n {{\mathbf{M}}^{-1}}{\mathbf{B}}_n^T)^{-1} ({\mathbf{B}}_n \mathbf{r}_{n+1}^{unc} - \mathbf{d})
            \end{array}
            :label: eqnm0
 
@@ -210,7 +210,7 @@ The matrix :math:`\mathbf{A}_n` is symmetric and sparse
 and has zeros on the diagonal. Thus a simple trick can be used to
 calculate the inverse:
 
-.. math:: (\mathbf{I}-\mathbf{A}_n)^{-1}= 
+.. math:: (\mathbf{I}-\mathbf{A}_n)^{-1}=
           \mathbf{I} + \mathbf{A}_n + \mathbf{A}_n^2 + \mathbf{A}_n^3 + \ldots
           :label: eqnm3
 
@@ -247,7 +247,7 @@ triangles, all other elements are zero. In this manner, the accuracy of
 angle constraints comes close to that of the other constraints, while
 the series of matrix vector multiplications required for determining the
 expansion only needs to be extended for a few constraint couplings. This
-procedure is described in the P-LINCS paper\ :ref:`50 <refHess2008a>`.
+procedure is described in the P-LINCS paper :ref:`50 <refHess2008a>`.
 
 The LINCS Parameters
 ^^^^^^^^^^^^^^^^^^^^

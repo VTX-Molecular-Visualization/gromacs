@@ -33,7 +33,7 @@
  */
 /*! \libinternal \file
  * \brief
- * Declares gmx::TextWriter.
+ * Declares gmx::TextWriter and helper class.
  *
  * \author Teemu Murtola <teemu.murtola@gmail.com>
  * \inlibraryapi
@@ -44,6 +44,7 @@
 
 #include <cstdio>
 
+#include <filesystem>
 #include <memory>
 #include <string>
 
@@ -53,6 +54,37 @@ namespace gmx
 {
 
 class TextLineWrapperSettings;
+class TextWriter;
+
+/*! \brief Helper class to increase the indentation of a TextWriter
+ * for the lifetime of this object.
+ *
+ * Now it's easy to write code like
+ *
+ *   TextWriter writer(...);
+ *   writeTitle(&writer, "some title");
+ *   {
+ *     ScopedIndenter indenter = writer.addScopedIndentation(2);
+ *     writer->writeString("I'm indented by 2 spaces");
+ *     writer->writeString("Me too");
+ *   }
+ *   writer->writeString("I'm not indented any more");
+ *
+ */
+class ScopedIndenter
+{
+public:
+    /*! \brief Requires the caller to ensure that \c writer outlives this object
+     *
+     * The default for extra indentation matches that of the legacy txtdump implementation.
+     */
+    ScopedIndenter(TextWriter* writer, int extraIndentation = 3);
+    ~ScopedIndenter();
+
+private:
+    TextLineWrapperSettings& settings_;
+    const int                oldIndentation_;
+};
 
 /*! \libinternal \brief
  * Writes text into a TextOutputStream.
@@ -79,7 +111,7 @@ public:
      *
      * If \p filename exists, it is overwritten.
      */
-    static void writeFileFromString(const std::string& filename, const std::string& text);
+    static void writeFileFromString(const std::filesystem::path& filename, const std::string& text);
 
     /*! \brief
      * Creates a writer that writes to specified file.
@@ -91,7 +123,7 @@ public:
      * This constructor is provided for convenience for writing directly to
      * a file, without the need to construct multiple objects.
      */
-    explicit TextWriter(const std::string& filename);
+    explicit TextWriter(const std::filesystem::path& filename);
     /*! \brief
      * Creates a writer that writes to specified file.
      *
@@ -141,6 +173,11 @@ public:
      * lines with writeString().
      */
     TextLineWrapperSettings& wrapperSettings();
+
+    /*! \brief Changes wrapping settings to increase indentation and
+     * returns a helper object that will restore the indentation when
+     * the helper object goes out of scope. */
+    ScopedIndenter addScopedIndentation(const int extraIndentation);
 
     /*! \brief
      * Writes a string to the stream.

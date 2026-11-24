@@ -36,10 +36,12 @@
 #define GMX_GMXPREPROCESS_GEN_VSITE_H
 
 #include <filesystem>
+#include <optional>
 #include <vector>
 
-#include "gromacs/math/vectypes.h"
+#include "gromacs/topology/ifunc.h"
 #include "gromacs/utility/real.h"
+#include "gromacs/utility/vectypes.h"
 
 class PreprocessingAtomTypes;
 struct t_atoms;
@@ -55,18 +57,39 @@ class ArrayRef;
 
 /* stuff for pdb2gmx */
 
-void do_vsites(gmx::ArrayRef<const PreprocessResidue> rtpFFDB,
-               PreprocessingAtomTypes*                atype,
-               t_atoms*                               at,
-               t_symtab*                              symtab,
-               std::vector<gmx::RVec>*                x,
-               gmx::ArrayRef<InteractionsOfType>      plist,
-               int*                                   dummy_type[],
-               int*                                   cgnr[],
-               real                                   mHmult,
-               bool                                   bVSiteAromatics,
-               const std::filesystem::path&           ffdir);
+//! Struct for handling vsite information for vsite generation inside grompp
+struct VsiteTypeAndSign
+{
+    //! The interaction type
+    std::optional<InteractionFunction> ftype;
+    //! Tells whether we should swap the sign of vsites that can have different orientations
+    bool swapSign = false;
+};
 
-void do_h_mass(InteractionsOfType* psb, int vsite_type[], t_atoms* at, real mHmult, bool bDeuterate);
+//! Turn all hydrogens that can be turned into virtual sites into virtual sites
+void do_vsites(gmx::ArrayRef<const PreprocessResidue>                          rtpFFDB,
+               PreprocessingAtomTypes*                                         atype,
+               t_atoms*                                                        at,
+               t_symtab*                                                       symtab,
+               std::vector<gmx::RVec>*                                         x,
+               gmx::EnumerationArray<InteractionFunction, InteractionsOfType>& plist,
+               std::vector<VsiteTypeAndSign>*                                  vsiteTypeAndSign,
+               real                                                            mHmult,
+               bool                                                            bVSiteAromatics,
+               const std::filesystem::path&                                    ffdir);
+
+/*! \brief Optionally, change masses of hydrogens
+ *
+ * \param[in] psb        List of bond interations
+ * \param[in] vsiteType  Array with vsites with their type and sign, only type is used
+ * \param[in,out] at     Atom information, masses may be modified
+ * \param[in] mHmult     Factor to multiply the masses of hydrogens with
+ * \param[in] deuterate  When false, subtract the increase in hydrogen mass from the bonded heavt atom
+ */
+void do_h_mass(const InteractionsOfType&             psb,
+               gmx::ArrayRef<const VsiteTypeAndSign> vsiteType,
+               t_atoms*                              at,
+               real                                  mHmult,
+               bool                                  deuterate);
 
 #endif

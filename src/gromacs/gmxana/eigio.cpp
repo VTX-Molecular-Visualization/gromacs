@@ -35,10 +35,15 @@
 
 #include "eigio.h"
 
+#include <cstdio>
+
+#include <filesystem>
+
 #include "gromacs/fileio/trrio.h"
-#include "gromacs/math/vec.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/futil.h"
 #include "gromacs/utility/smalloc.h"
+#include "gromacs/utility/vec.h"
 
 void read_eigenvectors(const char* file,
                        int*        natoms,

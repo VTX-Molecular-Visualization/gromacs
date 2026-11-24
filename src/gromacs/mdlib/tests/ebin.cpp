@@ -37,8 +37,13 @@
 
 #include <cstdio>
 
+#include <filesystem>
+#include <string>
+
 #include <gtest/gtest.h>
 
+#include "gromacs/utility/basedefinitions.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/textreader.h"
 #include "gromacs/utility/unique_cptr.h"
 
@@ -56,7 +61,7 @@ namespace
 //! Wraps fclose to discard the return value to use it as a deleter with gmx::unique_cptr.
 void fcloseWrapper(FILE* fp)
 {
-    fclose(fp);
+    std::fclose(fp);
 }
 
 class PrEbinTest : public ::testing::Test
@@ -76,7 +81,7 @@ public:
     TestReferenceChecker checker_;
 
     PrEbinTest() :
-        logFilename_(fileManager_.getTemporaryFilePath(".log").u8string()),
+        logFilename_(fileManager_.getTemporaryFilePath(".log").string()),
         log_(std::fopen(logFilename_.c_str(), "w")),
         logFileGuard_(log_),
         checker_(refData_.rootChecker())

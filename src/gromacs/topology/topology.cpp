@@ -36,21 +36,35 @@
 #include "gromacs/topology/topology.h"
 
 #include <cstdio>
+#include <cstdlib>
 
 #include <algorithm>
+#include <array>
+#include <limits>
+#include <memory>
+#include <string>
+#include <vector>
 
-#include "gromacs/math/vecdump.h"
 #include "gromacs/topology/atoms.h"
+#include "gromacs/topology/block.h"
+#include "gromacs/topology/forcefieldparameters.h"
 #include "gromacs/topology/idef.h"
 #include "gromacs/topology/ifunc.h"
 #include "gromacs/topology/symtab.h"
+#include "gromacs/topology/topology_enums.h"
 #include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/compare.h"
 #include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/gmxassert.h"
+#include "gromacs/utility/listoflists.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/strconvert.h"
+#include "gromacs/utility/stringutil.h"
 #include "gromacs/utility/txtdump.h"
+#include "gromacs/utility/vecdump.h"
+#include "gromacs/utility/vectypes.h"
 
 const char* shortName(SimulationAtomGroupType type)
 {
@@ -133,7 +147,7 @@ void gmx_mtop_t::finalize()
         maxResiduesPerMoleculeToTriggerRenumber_ = 1;
     }
 
-    const char* env = getenv("GMX_MAXRESRENUM");
+    const char* env = std::getenv("GMX_MAXRESRENUM");
     if (env != nullptr)
     {
         sscanf(env, "%d", &maxResiduesPerMoleculeToTriggerRenumber_);
@@ -329,7 +343,7 @@ static void pr_moltype(FILE*                 fp,
     fprintf(fp, "name=\"%s\"\n", *(molt->name));
     pr_atoms(fp, indent, "atoms", &(molt->atoms), bShowNumbers);
     pr_listoflists(fp, indent, "excls", &molt->excls, bShowNumbers);
-    for (int j = 0; (j < F_NRE); j++)
+    for (const auto j : gmx::EnumerationWrapper<InteractionFunction>{})
     {
         pr_ilist(fp,
                  indent,
@@ -381,7 +395,7 @@ void pr_mtop(FILE* fp, int indent, const char* title, const gmx_mtop_t* mtop, gm
         pr_str(fp, indent, "bIntermolecularInteractions", gmx::boolToString(mtop->bIntermolecularInteractions));
         if (mtop->bIntermolecularInteractions)
         {
-            for (int j = 0; j < F_NRE; j++)
+            for (const auto j : gmx::EnumerationWrapper<InteractionFunction>{})
             {
                 pr_ilist(fp,
                          indent,
@@ -416,13 +430,13 @@ void pr_top(FILE* fp, int indent, const char* title, const t_topology* top, gmx_
     }
 }
 
-static void cmp_iparm(FILE*            fp,
-                      const char*      s,
-                      t_functype       ft,
-                      const t_iparams& ip1,
-                      const t_iparams& ip2,
-                      real             relativeTolerance,
-                      real             absoluteTolerance)
+static void cmp_iparm(FILE*               fp,
+                      const char*         s,
+                      InteractionFunction ft,
+                      const t_iparams&    ip1,
+                      const t_iparams&    ip2,
+                      real                relativeTolerance,
+                      real                absoluteTolerance)
 {
     bool bDiff = false;
     for (int i = 0; i < MAXFORCEPARAM && !bDiff; i++)
@@ -438,13 +452,18 @@ static void cmp_iparm(FILE*            fp,
     }
 }
 
-static void cmp_iparm_AB(FILE* fp, const char* s, t_functype ft, const t_iparams& ip1, real relativeTolerance, real absoluteTolerance)
+static void cmp_iparm_AB(FILE*               fp,
+                         const char*         s,
+                         InteractionFunction ft,
+                         const t_iparams&    ip1,
+                         real                relativeTolerance,
+                         real                absoluteTolerance)
 {
     /* Normally the first parameter is perturbable */
     int p0    = 0;
     int nrfpA = interaction_function[ft].nrfpA;
     int nrfpB = interaction_function[ft].nrfpB;
-    if (ft == F_PDIHS)
+    if (ft == InteractionFunction::ProperDihedrals)
     {
         nrfpB = 2;
     }
@@ -523,7 +542,7 @@ static void compareFfparams(FILE*                 fp,
     for (int i = 0; i < std::min(ff1.numTypes(), ff2.numTypes()); i++)
     {
         std::string buf = gmx::formatString("ffparams->functype[%d]", i);
-        cmp_int(fp, buf.c_str(), i, ff1.functype[i], ff2.functype[i]);
+        cmp_int(fp, buf.c_str(), i, static_cast<int>(ff1.functype[i]), static_cast<int>(ff2.functype[i]));
         buf = gmx::formatString("ffparams->iparams[%d]", i);
         cmp_iparm(fp, buf.c_str(), ff1.functype[i], ff1.iparams[i], ff2.iparams[i], relativeTolerance, absoluteTolerance);
     }
@@ -547,13 +566,13 @@ static void compareInteractionLists(FILE* fp, const InteractionLists* il1, const
     }
     if (il1 && il2)
     {
-        for (int i = 0; i < F_NRE; i++)
+        for (const auto i : gmx::EnumerationWrapper<InteractionFunction>{})
         {
-            cmp_int(fp, "InteractionList size", i, il1->at(i).size(), il2->at(i).size());
-            int nr = std::min(il1->at(i).size(), il2->at(i).size());
+            cmp_int(fp, "InteractionList size", static_cast<int>(i), (*il1)[i].size(), (*il2)[i].size());
+            int nr = std::min((*il1)[i].size(), (*il2)[i].size());
             for (int j = 0; j < nr; j++)
             {
-                cmp_int(fp, "InteractionList entry", j, il1->at(i).iatoms.at(j), il2->at(i).iatoms.at(j));
+                cmp_int(fp, "InteractionList entry", j, (*il1)[i].iatoms.at(j), (*il2)[i].iatoms.at(j));
             }
         }
     }
@@ -715,7 +734,7 @@ void copy_moltype(const gmx_moltype_t* src, gmx_moltype_t* dst)
     dst->atoms         = *atomsCopy;
     sfree(atomsCopy);
 
-    for (int i = 0; i < F_NRE; ++i)
+    for (const auto i : gmx::EnumerationWrapper<InteractionFunction>{})
     {
         dst->ilist[i] = src->ilist[i];
     }

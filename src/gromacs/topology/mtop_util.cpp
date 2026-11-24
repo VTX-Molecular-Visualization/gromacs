@@ -37,25 +37,39 @@
 
 #include <climits>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
-#include "gromacs/math/vectypes.h"
+#include <algorithm>
+#include <array>
+#include <filesystem>
+#include <memory>
+#include <string>
+#include <vector>
+
 #include "gromacs/mdtypes/atominfo.h"
 #include "gromacs/topology/atoms.h"
 #include "gromacs/topology/block.h"
 #include "gromacs/topology/exclusionblocks.h"
+#include "gromacs/topology/forcefieldparameters.h"
 #include "gromacs/topology/idef.h"
 #include "gromacs/topology/ifunc.h"
 #include "gromacs/topology/mtop_atomloops.h"
+#include "gromacs/topology/symtab.h"
 #include "gromacs/topology/topology.h"
+#include "gromacs/topology/topology_enums.h"
 #include "gromacs/topology/topsort.h"
 #include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/listoflists.h"
+#include "gromacs/utility/range.h"
 #include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
+#include "gromacs/utility/vectypes.h"
 
 void gmx_mtop_count_atomtypes(const gmx_mtop_t& mtop, int state, int typecount[])
 {
@@ -94,7 +108,7 @@ int gmx_mtop_nres(const gmx_mtop_t& mtop)
     return nres;
 }
 
-int gmx_mtop_ftype_count(const gmx_mtop_t& mtop, int ftype)
+int gmx_mtop_ftype_count(const gmx_mtop_t& mtop, InteractionFunction ftype)
 {
     int n = 0;
 
@@ -111,7 +125,7 @@ int gmx_mtop_interaction_count(const gmx_mtop_t& mtop, const int unsigned if_fla
 
     for (const IListProxy il : IListRange(mtop))
     {
-        for (int ftype = 0; ftype < F_NRE; ftype++)
+        for (const auto ftype : gmx::EnumerationWrapper<InteractionFunction>{})
         {
             if ((interaction_function[ftype].flags & if_flags) == if_flags)
             {
@@ -120,6 +134,40 @@ int gmx_mtop_interaction_count(const gmx_mtop_t& mtop, const int unsigned if_fla
         }
     }
     return n;
+}
+
+int countFlexibleConstraints(const gmx::EnumerationArray<InteractionFunction, InteractionList>& ilist,
+                             gmx::ArrayRef<const t_iparams> iparams)
+{
+    int numFlexCon = 0;
+    for (InteractionFunction ftype :
+         { InteractionFunction::Constraints, InteractionFunction::ConstraintsNoCoupling })
+    {
+        const int numIatomsPerConstraint = 3;
+        for (int i = 0; i < ilist[ftype].size(); i += numIatomsPerConstraint)
+        {
+            const int type = ilist[ftype].iatoms[i];
+            if (iparams[type].constr.dA == 0 && iparams[type].constr.dB == 0)
+            {
+                numFlexCon++;
+            }
+        }
+    }
+
+    return numFlexCon;
+}
+
+int gmx_mtop_flexible_constraint_count(const gmx_mtop_t& mtop)
+{
+    const auto& iparams = mtop.ffparams.iparams;
+
+    int numFlexCon = 0;
+    for (const gmx_molblock_t& molblock : mtop.molblock)
+    {
+        numFlexCon += molblock.nmol * countFlexibleConstraints(mtop.moltype[molblock.type].ilist, iparams);
+    }
+
+    return numFlexCon;
 }
 
 gmx::EnumerationArray<ParticleType, int> gmx_mtop_particletype_count(const gmx_mtop_t& mtop)
@@ -188,36 +236,36 @@ static void atomcat(t_atoms* dest, const t_atoms* src, int copies, int maxres_re
     /* residue information */
     for (l = dest->nres, j = 0; (j < copies); j++, l += src->nres)
     {
-        memcpy(reinterpret_cast<char*>(&(dest->resinfo[l])),
-               reinterpret_cast<char*>(&(src->resinfo[0])),
-               static_cast<size_t>(src->nres * sizeof(src->resinfo[0])));
+        std::memcpy(reinterpret_cast<char*>(&(dest->resinfo[l])),
+                    reinterpret_cast<char*>(&(src->resinfo[0])),
+                    static_cast<size_t>(src->nres * sizeof(src->resinfo[0])));
     }
 
     for (l = destnr, j = 0; (j < copies); j++, l += srcnr)
     {
-        memcpy(reinterpret_cast<char*>(&(dest->atom[l])),
-               reinterpret_cast<char*>(&(src->atom[0])),
-               static_cast<size_t>(srcnr * sizeof(src->atom[0])));
-        memcpy(reinterpret_cast<char*>(&(dest->atomname[l])),
-               reinterpret_cast<char*>(&(src->atomname[0])),
-               static_cast<size_t>(srcnr * sizeof(src->atomname[0])));
+        std::memcpy(reinterpret_cast<char*>(&(dest->atom[l])),
+                    reinterpret_cast<char*>(&(src->atom[0])),
+                    static_cast<size_t>(srcnr * sizeof(src->atom[0])));
+        std::memcpy(reinterpret_cast<char*>(&(dest->atomname[l])),
+                    reinterpret_cast<char*>(&(src->atomname[0])),
+                    static_cast<size_t>(srcnr * sizeof(src->atomname[0])));
         if (dest->haveType)
         {
-            memcpy(reinterpret_cast<char*>(&(dest->atomtype[l])),
-                   reinterpret_cast<char*>(&(src->atomtype[0])),
-                   static_cast<size_t>(srcnr * sizeof(src->atomtype[0])));
+            std::memcpy(reinterpret_cast<char*>(&(dest->atomtype[l])),
+                        reinterpret_cast<char*>(&(src->atomtype[0])),
+                        static_cast<size_t>(srcnr * sizeof(src->atomtype[0])));
             if (dest->haveBState)
             {
-                memcpy(reinterpret_cast<char*>(&(dest->atomtypeB[l])),
-                       reinterpret_cast<char*>(&(src->atomtypeB[0])),
-                       static_cast<size_t>(srcnr * sizeof(src->atomtypeB[0])));
+                std::memcpy(reinterpret_cast<char*>(&(dest->atomtypeB[l])),
+                            reinterpret_cast<char*>(&(src->atomtypeB[0])),
+                            static_cast<size_t>(srcnr * sizeof(src->atomtypeB[0])));
             }
         }
         if (dest->havePdbInfo)
         {
-            memcpy(reinterpret_cast<char*>(&(dest->pdbinfo[l])),
-                   reinterpret_cast<char*>(&(src->pdbinfo[0])),
-                   static_cast<size_t>(srcnr * sizeof(src->pdbinfo[0])));
+            std::memcpy(reinterpret_cast<char*>(&(dest->pdbinfo[l])),
+                        reinterpret_cast<char*>(&(src->pdbinfo[0])),
+                        static_cast<size_t>(srcnr * sizeof(src->pdbinfo[0])));
         }
     }
 
@@ -270,7 +318,12 @@ t_atoms gmx_mtop_global_atoms(const gmx_mtop_t& mtop)
  * The cat routines below are old code from src/kernel/topcat.c
  */
 
-static void ilistcat(int ftype, InteractionList* dest, const InteractionList& src, int copies, int dnum, int snum)
+static void ilistcat(InteractionFunction    ftype,
+                     InteractionList*       dest,
+                     const InteractionList& src,
+                     int                    copies,
+                     int                    dnum,
+                     int                    snum)
 {
     const int nral = NRAL(ftype);
 
@@ -291,7 +344,8 @@ static void ilistcat(int ftype, InteractionList* dest, const InteractionList& sr
     }
 }
 
-static void ilistcat(int ftype, t_ilist* dest, const InteractionList& src, int copies, int dnum, int snum)
+static void
+ilistcat(InteractionFunction ftype, t_ilist* dest, const InteractionList& src, int copies, int dnum, int snum)
 {
     const int nral = NRAL(ftype);
 
@@ -335,7 +389,7 @@ static void resizeIParams(t_iparams** iparams, const int newSize)
 template<typename IdefType>
 static void set_posres_params(IdefType* idef, const gmx_molblock_t* molb, int i0, int a_offset)
 {
-    auto* il = &idef->il[F_POSRES];
+    auto* il = &idef->il[InteractionFunction::PositionRestraints];
     int   i1 = il->size() / 2;
     resizeIParams(&idef->iparams_posres, i1);
     for (int i = i0; i < i1; i++)
@@ -371,7 +425,7 @@ static void set_posres_params(IdefType* idef, const gmx_molblock_t* molb, int i0
 template<typename IdefType>
 static void set_fbposres_params(IdefType* idef, const gmx_molblock_t* molb, int i0, int a_offset)
 {
-    auto* il = &idef->il[F_FBPOSRES];
+    auto* il = &idef->il[InteractionFunction::FlatBottomedPositionRestraints];
     int   i1 = il->size() / 2;
     resizeIParams(&idef->iparams_fbposres, i1);
     for (int i = i0; i < i1; i++)
@@ -458,33 +512,44 @@ static void copyIListsFromMtop(const gmx_mtop_t& mtop, IdefType* idef, bool merg
         int srcnr  = molt.atoms.nr;
         int destnr = natoms;
 
-        int nposre_old   = idef->il[F_POSRES].size();
-        int nfbposre_old = idef->il[F_FBPOSRES].size();
-        for (int ftype = 0; ftype < F_NRE; ftype++)
+        int nposre_old   = idef->il[InteractionFunction::PositionRestraints].size();
+        int nfbposre_old = idef->il[InteractionFunction::FlatBottomedPositionRestraints].size();
+        for (const auto ftype : gmx::EnumerationWrapper<InteractionFunction>{})
         {
-            if (mergeConstr && ftype == F_CONSTR && !molt.ilist[F_CONSTRNC].empty())
+            if (mergeConstr && ftype == InteractionFunction::Constraints
+                && !molt.ilist[InteractionFunction::ConstraintsNoCoupling].empty())
             {
                 /* Merge all constrains into one ilist.
                  * This simplifies the constraint code.
                  */
                 for (int mol = 0; mol < molb.nmol; mol++)
                 {
-                    ilistcat(ftype, &idef->il[F_CONSTR], molt.ilist[F_CONSTR], 1, destnr + mol * srcnr, srcnr);
-                    ilistcat(ftype, &idef->il[F_CONSTR], molt.ilist[F_CONSTRNC], 1, destnr + mol * srcnr, srcnr);
+                    ilistcat(ftype,
+                             &idef->il[InteractionFunction::Constraints],
+                             molt.ilist[InteractionFunction::Constraints],
+                             1,
+                             destnr + mol * srcnr,
+                             srcnr);
+                    ilistcat(ftype,
+                             &idef->il[InteractionFunction::Constraints],
+                             molt.ilist[InteractionFunction::ConstraintsNoCoupling],
+                             1,
+                             destnr + mol * srcnr,
+                             srcnr);
                 }
             }
-            else if (!(mergeConstr && ftype == F_CONSTRNC))
+            else if (!(mergeConstr && ftype == InteractionFunction::ConstraintsNoCoupling))
             {
                 ilistcat(ftype, &idef->il[ftype], molt.ilist[ftype], molb.nmol, destnr, srcnr);
             }
         }
-        if (idef->il[F_POSRES].size() > nposre_old)
+        if (idef->il[InteractionFunction::PositionRestraints].size() > nposre_old)
         {
             /* Executing this line line stops gmxdump -sys working
              * correctly. I'm not aware there's an elegant fix. */
             set_posres_params(idef, &molb, nposre_old / 2, natoms);
         }
-        if (idef->il[F_FBPOSRES].size() > nfbposre_old)
+        if (idef->il[InteractionFunction::FlatBottomedPositionRestraints].size() > nfbposre_old)
         {
             set_fbposres_params(idef, &molb, nfbposre_old / 2, natoms);
         }
@@ -494,7 +559,7 @@ static void copyIListsFromMtop(const gmx_mtop_t& mtop, IdefType* idef, bool merg
 
     if (mtop.bIntermolecularInteractions)
     {
-        for (int ftype = 0; ftype < F_NRE; ftype++)
+        for (const auto ftype : gmx::EnumerationWrapper<InteractionFunction>{})
         {
             ilistcat(ftype, &idef->il[ftype], (*mtop.intermolecular_ilist)[ftype], 1, 0, mtop.natoms);
         }
@@ -591,14 +656,14 @@ static void addMimicExclusions(gmx::ListOfLists<int>* excls, const gmx::ArrayRef
 
 static void sortFreeEnergyInteractionsAtEnd(const gmx_mtop_t& mtop, InteractionDefinitions* idef)
 {
-    std::vector<int64_t> atomInfo(mtop.natoms, 0);
+    std::vector<int32_t> atomInfo(mtop.natoms, 0);
 
 
     for (size_t mb = 0; mb < mtop.molblock.size(); mb++)
     {
         const gmx_molblock_t& molb = mtop.molblock[mb];
         const gmx_moltype_t&  molt = mtop.moltype[molb.type];
-        if (!molt.ilist[F_LJ14].iatoms.empty())
+        if (!molt.ilist[InteractionFunction::LennardJones14].iatoms.empty())
         {
             int offset = mtop.moleculeBlockIndices[mb].globalAtomStart;
             for (int mol = 0; mol < molb.nmol; mol++)
@@ -722,7 +787,7 @@ static t_block gmx_mtop_molecules_t_block(const gmx_mtop_t& mtop)
 
 static void gen_t_topology(const gmx_mtop_t& mtop, bool bMergeConstr, t_topology* top)
 {
-    for (int ftype = 0; ftype < F_NRE; ftype++)
+    for (const auto ftype : gmx::EnumerationWrapper<InteractionFunction>{})
     {
         top->idef.il[ftype].nr     = 0;
         top->idef.il[ftype].nalloc = 0;
@@ -830,7 +895,7 @@ bool haveFepPerturbedMassesInSettles(const gmx_mtop_t& mtop)
 {
     for (const gmx_moltype_t& molt : mtop.moltype)
     {
-        if (!molt.ilist[F_SETTLE].empty())
+        if (!molt.ilist[InteractionFunction::SETTLE].empty())
         {
             for (int a = 0; a < molt.atoms.nr; a++)
             {
@@ -852,7 +917,8 @@ bool havePerturbedConstraints(const gmx_mtop_t& mtop)
 
     for (gmx::Index i = 0; i < gmx::ssize(ffparams.functype); i++)
     {
-        if (ffparams.functype[i] == F_CONSTR || ffparams.functype[i] == F_CONSTRNC)
+        if (ffparams.functype[i] == InteractionFunction::Constraints
+            || ffparams.functype[i] == InteractionFunction::ConstraintsNoCoupling)
         {
             const auto& iparams = ffparams.iparams[i];
             if (iparams.constr.dA != iparams.constr.dB)

@@ -35,6 +35,7 @@
 
 #include "groio.h"
 
+#include <cinttypes>
 #include <cstdio>
 #include <cstring>
 
@@ -140,11 +141,11 @@ static gmx_bool get_w_conf(FILE*                        in,
     {
         if ((fgets2(line, STRLEN, in)) == nullptr)
         {
-            gmx_fatal(FARGS, "Unexpected end of file in file %s at line %d", infile.u8string().c_str(), i + 2);
+            gmx_fatal(FARGS, "Unexpected end of file in file %s at line %d", infile.string().c_str(), i + 2);
         }
-        if (strlen(line) < 39)
+        if (std::strlen(line) < 39)
         {
-            gmx_fatal(FARGS, "Invalid line in %s for atom %d:\n%s", infile.u8string().c_str(), i + 1, line);
+            gmx_fatal(FARGS, "Invalid line in %s for atom %d:\n%s", infile.string().c_str(), i + 1, line);
         }
 
         /* determine read precision from distance between periods
@@ -152,23 +153,23 @@ static gmx_bool get_w_conf(FILE*                        in,
         if (bFirst)
         {
             bFirst = FALSE;
-            p1     = strchr(line, '.');
+            p1     = std::strchr(line, '.');
             if (p1 == nullptr)
             {
-                gmx_fatal(FARGS, "A coordinate in file %s does not contain a '.'", infile.u8string().c_str());
+                gmx_fatal(FARGS, "A coordinate in file %s does not contain a '.'", infile.string().c_str());
             }
-            p2 = strchr(&p1[1], '.');
+            p2 = std::strchr(&p1[1], '.');
             if (p2 == nullptr)
             {
-                gmx_fatal(FARGS, "A coordinate in file %s does not contain a '.'", infile.u8string().c_str());
+                gmx_fatal(FARGS, "A coordinate in file %s does not contain a '.'", infile.string().c_str());
             }
             ddist = p2 - p1;
             *ndec = ddist - 5;
 
-            p3 = strchr(&p2[1], '.');
+            p3 = std::strchr(&p2[1], '.');
             if (p3 == nullptr)
             {
-                gmx_fatal(FARGS, "A coordinate in file %s does not contain a '.'", infile.u8string().c_str());
+                gmx_fatal(FARGS, "A coordinate in file %s does not contain a '.'", infile.string().c_str());
             }
 
             if (p3 - p2 != ddist)
@@ -176,24 +177,25 @@ static gmx_bool get_w_conf(FILE*                        in,
                 gmx_fatal(FARGS,
                           "The spacing of the decimal points in file %s is not consistent for x, y "
                           "and z",
-                          infile.u8string().c_str());
+                          infile.string().c_str());
             }
         }
 
         /* residue number*/
-        memcpy(name, line, 5);
+        std::memcpy(name, line, 5);
         name[5] = '\0';
-        sscanf(name, "%d", &resnr);
+        resnr   = strtol(name, nullptr, 10);
         sscanf(line + 5, "%5s", resname);
 
-        if (!oldResFirst || oldres != resnr || strncmp(resname, oldresname, sizeof(resname)) != 0)
+
+        if (!oldResFirst || oldres != resnr || std::strncmp(resname, oldresname, sizeof(resname)) != 0)
         {
             oldres      = resnr;
             oldResFirst = TRUE;
             newres++;
             if (newres >= natoms)
             {
-                gmx_fatal(FARGS, "More residues than atoms in %s (natoms = %d)", infile.u8string().c_str(), natoms);
+                gmx_fatal(FARGS, "More residues than atoms in %s (natoms = %d)", infile.string().c_str(), natoms);
             }
             atoms->atom[i].resind = newres;
             t_atoms_set_resinfo(atoms, i, symtab, resname, resnr, ' ', 0, ' ');
@@ -223,12 +225,16 @@ static gmx_bool get_w_conf(FILE*                        in,
                 ptr++;
             }
             buf[c] = '\0';
-            if (sscanf(buf, "%lf %lf", &x1, &x2) != 1)
+            char *x1end, *x2end;
+            x1 = strtod(buf, &x1end);
+            x2 = strtod(x1end, &x2end);
+            // We need exactly one value in buf; otherwise, the file is malformed
+            if (x1end == buf || x2end != x1end) // first conversion failed or the second one succeeded
             {
                 gmx_fatal(FARGS,
                           "Something is wrong in the coordinate formatting of file %s. Note that "
                           "gro is fixed format (see the manual)",
-                          infile.u8string().c_str());
+                          infile.string().c_str());
             }
             else
             {
@@ -248,7 +254,9 @@ static gmx_bool get_w_conf(FILE*                        in,
                     ptr++;
                 }
                 buf[c] = '\0';
-                if (sscanf(buf, "%lf", &x1) != 1)
+                char* x1end;
+                x1 = strtod(buf, &x1end);
+                if (x1end == buf) // conversion failed
                 {
                     v[i][m] = 0;
                 }
@@ -266,7 +274,7 @@ static gmx_bool get_w_conf(FILE*                        in,
     fgets2(line, STRLEN, in);
     if (sscanf(line, "%lf%lf%lf", &x1, &y1, &z1) != 3)
     {
-        gmx_warning("Bad box in file %s", infile.u8string().c_str());
+        gmx_warning("Bad box in file %s", infile.string().c_str());
 
         /* Generate a cubic box */
         for (m = 0; (m < DIM); m++)
@@ -337,7 +345,7 @@ void gmx_gro_read_conf(const std::filesystem::path& infile,
 static gmx_bool gmx_one_before_eof(FILE* fp)
 {
     char     data[4];
-    gmx_bool beof = fread(data, 1, 1, fp) != 1;
+    gmx_bool beof = std::fread(data, 1, 1, fp) != 1;
 
     if (!beof)
     {
@@ -383,7 +391,7 @@ gmx_bool gro_next_x_or_v(FILE* status, t_trxframe* fr)
     sfree(atoms.atomname);
     done_symtab(&symtab);
 
-    if ((p = strstr(title, "t=")) != nullptr)
+    if ((p = std::strstr(title, "t=")) != nullptr)
     {
         p += 2;
         if (sscanf(p, "%lf", &tt) == 1)
@@ -530,7 +538,7 @@ void write_hconf_indexed_p(FILE*          out,
 
     write_hconf_box(out, box);
 
-    fflush(out);
+    std::fflush(out);
 }
 
 void write_hconf_mtop(FILE* out, const char* title, const gmx_mtop_t& mtop, const rvec* x, const rvec* v, const matrix box)
@@ -561,7 +569,7 @@ void write_hconf_mtop(FILE* out, const char* title, const gmx_mtop_t& mtop, cons
 
     write_hconf_box(out, box);
 
-    fflush(out);
+    std::fflush(out);
 }
 
 void write_hconf_p(FILE* out, const char* title, const t_atoms* atoms, const rvec* x, const rvec* v, const matrix box)

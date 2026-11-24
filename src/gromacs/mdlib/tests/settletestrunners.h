@@ -45,16 +45,15 @@
 #ifndef GMX_MDLIB_TESTS_SETTLETESTRUNNERS_H
 #define GMX_MDLIB_TESTS_SETTLETESTRUNNERS_H
 
+#include <string>
+
 #include <gtest/gtest.h>
+
+#include "gromacs/pbcutil/pbc.h"
 
 #include "testutils/test_device.h"
 
 #include "settletestdata.h"
-
-/*
- * GPU version of SETTLE is only available with CUDA.
- */
-#define GPU_SETTLE_SUPPORTED (GMX_GPU_CUDA || GMX_GPU_SYCL)
 
 struct t_pbc;
 

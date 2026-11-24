@@ -38,6 +38,8 @@
 #include <cstring>
 
 #include <algorithm>
+#include <filesystem>
+#include <string>
 #include <vector>
 
 #include "gromacs/fileio/confio.h"
@@ -49,11 +51,20 @@
 #include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
 #include "gromacs/math/utilities.h"
-#include "gromacs/math/vec.h"
-#include "gromacs/math/vecdump.h"
+#include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/pbcutil/pbc.h"
+#include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/gmxassert.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
+#include "gromacs/utility/unique_cptr.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vecdump.h"
+#include "gromacs/utility/vectypes.h"
+
+struct gmx_output_env_t;
 
 void print_one(const gmx_output_env_t* oenv,
                const char*             base,
@@ -70,7 +81,7 @@ void print_one(const gmx_output_env_t* oenv,
 
     sprintf(buf, "%s%s.xvg", base, name);
     fprintf(stderr, "\rPrinting %s  ", buf);
-    fflush(stderr);
+    std::fflush(stderr);
     sprintf(t2, "%s %s", title, name);
     fp = xvgropen(buf, t2, "Time (ps)", ylabel, oenv);
     for (k = 0; (k < nf); k++)
@@ -150,7 +161,6 @@ void ana_dih_trans(const char*             fn_trans,
     int* multiplicity;
     int  k;
 
-    std::vector<t_dlist> dlist(nangles);
     snew(multiplicity, nangles);
     for (k = 0; (k < nangles); k++)
     {
@@ -158,7 +168,7 @@ void ana_dih_trans(const char*             fn_trans,
     }
 
     low_ana_dih_trans(
-            TRUE, fn_trans, TRUE, fn_histo, maxchi, dih, dlist, nframes, nangles, grpname, multiplicity, time, bRb, 0.5, oenv);
+            TRUE, fn_trans, TRUE, fn_histo, maxchi, dih, {}, nframes, nangles, grpname, multiplicity, time, bRb, 0.5, oenv);
     sfree(multiplicity);
 }
 
@@ -569,7 +579,7 @@ void get_chi_product_traj(real**                       dih,
 
             /* make a histogram of cumulative rotamer occupancy too */
             snew(chi_prhist, nbin);
-            make_histo(nullptr, nframes, chi_prtrj, nbin, chi_prhist, 0, nbin);
+            make_histo(nframes, chi_prtrj, nbin, chi_prhist, 0, nbin);
             if (bAll)
             {
                 sprintf(hisfile, "histo-chiprod%s.xvg", dihedral.name);
@@ -753,7 +763,7 @@ static void calc_dihs(struct t_pbc* pbc, int n4, const int index[], real ang[], 
     }
 }
 
-void make_histo(FILE* log, int ndata, real data[], int npoints, int histo[], real minx, real maxx)
+void make_histo(int ndata, real data[], int npoints, int histo[], real minx, real maxx)
 {
     double dx;
     int    i, ind;
@@ -766,7 +776,6 @@ void make_histo(FILE* log, int ndata, real data[], int npoints, int histo[], rea
             minx = std::min(minx, data[i]);
             maxx = std::max(maxx, data[i]);
         }
-        fprintf(log, "Min data: %10g  Max data: %10g\n", minx, maxx);
     }
     dx = npoints / (maxx - minx);
     if (debug)
@@ -779,10 +788,6 @@ void make_histo(FILE* log, int ndata, real data[], int npoints, int histo[], rea
         if ((ind >= 0) && (ind < npoints))
         {
             histo[ind]++;
-        }
-        else
-        {
-            fprintf(log, "index = %d, data[%d] = %g\n", ind, i, data[i]);
         }
     }
 }

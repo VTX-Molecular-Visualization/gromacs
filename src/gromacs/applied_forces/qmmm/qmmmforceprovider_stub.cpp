@@ -43,29 +43,41 @@
 
 #include "gmxpre.h"
 
+#include <string>
+
+#include "gromacs/mdrunutility/mdmodulesnotifiers.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/exceptions.h"
+#include "gromacs/utility/keyvaluetree.h"
+#include "gromacs/utility/keyvaluetreebuilder.h"
 
 #include "qmmmforceprovider.h"
 
+enum class PbcType : int;
+
 namespace gmx
 {
+class ForceProviderInput;
+class ForceProviderOutput;
+class LocalAtomSet;
+class MDLogger;
+struct QMMMParameters;
 
-
-#ifdef __clang__
-#    pragma clang diagnostic push
-#    pragma clang diagnostic ignored "-Wmissing-noreturn"
-#endif
+CLANG_DIAGNOSTIC_IGNORE("-Wmissing-noreturn")
 
 QMMMForceProvider::QMMMForceProvider(const QMMMParameters& parameters,
                                      const LocalAtomSet&   localQMAtomSet,
                                      const LocalAtomSet&   localMMAtomSet,
                                      PbcType               pbcType,
-                                     const MDLogger&       logger) :
+                                     const MDLogger&       logger,
+                                     const MpiComm& /*mpiComm*/,
+                                     const QMMMForceProviderState& state) :
     parameters_(parameters),
     qmAtoms_(localQMAtomSet),
     mmAtoms_(localMMAtomSet),
     pbcType_(pbcType),
     logger_(logger),
+    state_(state),
     box_{ { 0.0, 0.0, 0.0 }, { 0.0, 0.0, 0.0 }, { 0.0, 0.0, 0.0 } }
 {
     GMX_THROW(
@@ -92,7 +104,7 @@ void QMMMForceProvider::appendLog(const std::string& /*msg*/)
 }
 
 // NOLINTNEXTLINE(readability-convert-member-functions-to-static)
-void QMMMForceProvider::initCP2KForceEnvironment(const t_commrec& /*cr*/)
+void QMMMForceProvider::initCP2KForceEnvironment(const MpiComm& /*mpiComm*/)
 {
     GMX_THROW(
             InternalError("CP2K has not been linked into GROMACS, QMMM simulation is not "
@@ -106,8 +118,20 @@ void QMMMForceProvider::calculateForces(const ForceProviderInput& /*fInput*/, Fo
                           "possible.\nPlease, reconfigure GROMACS with -DGMX_CP2K=ON\n"));
 };
 
-#ifdef __clang__
-#    pragma clang diagnostic pop
-#endif
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static)
+void QMMMForceProvider::writeCheckpointData(MDModulesWriteCheckpointData /*checkpointWriting*/,
+                                            std::string_view /*moduleName*/)
+{
+    GMX_THROW(
+            InternalError("CP2K has not been linked into GROMACS, QMMM simulation is not "
+                          "possible.\nPlease, reconfigure GROMACS with -DGMX_CP2K=ON\n"));
+};
+
+CLANG_DIAGNOSTIC_RESET
+
+std::string qmmmDescription()
+{
+    return "disabled";
+}
 
 } // namespace gmx

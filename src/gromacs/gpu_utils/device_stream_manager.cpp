@@ -58,7 +58,8 @@ namespace gmx
 {
 
 /*! \libinternal
- * \brief Impl class to manages the lifetime of the GPU streams.
+ * \brief Impl class to manages the lifetime of the GPU context
+ * and streams.
  *
  * If supported by the GPU API, the available runtime and the
  * indicated device, some streams will be configured at high
@@ -89,6 +90,7 @@ DeviceStreamManager::Impl::Impl(const DeviceInformation& deviceInfo,
                                 const bool               useTiming) :
     context_(deviceInfo), havePpDomainDecomposition_(simulationWork.havePpDomainDecomposition)
 {
+    context_.activate();
     try
     {
         streams_[DeviceStreamType::NonBondedLocal] =
@@ -113,7 +115,7 @@ DeviceStreamManager::Impl::Impl(const DeviceInformation& deviceInfo,
         if (simulationWork.useGpuPme || simulationWork.useGpuUpdate || simulationWork.useGpuXBufferOpsWhenAllowed)
         {
             streams_[DeviceStreamType::UpdateAndConstraints] =
-                    std::make_unique<DeviceStream>(context_, DeviceStreamPriority::Normal, useTiming);
+                    std::make_unique<DeviceStream>(context_, DeviceStreamPriority::High, useTiming);
         }
         if (simulationWork.useGpuPmePpCommunication)
         {

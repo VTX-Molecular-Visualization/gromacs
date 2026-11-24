@@ -46,26 +46,15 @@
 #include <string>
 #include <vector>
 
-#include "gromacs/math/vectypes.h"
+#include "gromacs/topology/embedded_system_preprocessing.h"
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/classhelpers.h"
 #include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/real.h"
+#include "gromacs/utility/vectypes.h"
 
 namespace gmx
 {
-
-/*! \internal
- * \brief Helper structure with indexes of broken bonds between QM and MM
- * Used to determine and store pair of QM and MM atoms between which chemical bond is broken
- */
-struct LinkFrontier
-{
-    //! Global index of QM atom at Frontier
-    Index qm;
-    //! Global index of MM atom at Frontier
-    Index mm;
-};
 
 /*! \brief Enumerator for supported QM methods
  * Also could be INPUT which means external input file provided
@@ -73,16 +62,36 @@ struct LinkFrontier
  */
 enum class QMMMQMMethod
 {
-    PBE,   //!< DFT with PBE functional
-    BLYP,  //!< DFT with BLYP functional
-    INPUT, //!< User provides suitable input file for QM package
+    PBE,          //!< DFT with PBE functional
+    PBE_D3,       //!< DFT with PBE functional and D3 dispersion correction
+    BLYP,         //!< DFT with BLYP functional
+    BLYP_D3,      //!< DFT with BLYP functional and D3 dispersion correction
+    PBE0,         //!< DFT with PBE0 functional
+    PBE0_D3,      //!< DFT with PBE0 functional and D3 dispersion correction
+    B3LYP,        //!< DFT with B3LYP functional
+    B3LYP_D3,     //!< DFT with B3LYP functional and D3 dispersion correction
+    CAM_B3LYP,    //!< DFT with CAM-B3LYP functional
+    CAM_B3LYP_D3, //!< DFT with CAM-B3LYP functional and D3 dispersion correction
+    WB97X,        //!< DFT with WB97X functional
+    WB97X_D3,     //!< DFT with WB97X functional and D3 dispersion correction
+    INPUT,        //!< User provides suitable input file for QM package
     Count
 };
 
 //! The names of the supported QM methods
-static const EnumerationArray<QMMMQMMethod, const char*> c_qmmmQMMethodNames = {
-    { "PBE", "BLYP", "INPUT" }
-};
+static const EnumerationArray<QMMMQMMethod, const char*> c_qmmmQMMethodNames = { { "PBE",
+                                                                                   "PBE-D3",
+                                                                                   "BLYP",
+                                                                                   "BLYP-D3",
+                                                                                   "PBE0",
+                                                                                   "PBE0-D3",
+                                                                                   "B3LYP",
+                                                                                   "B3LYP-D3",
+                                                                                   "CAM-B3LYP",
+                                                                                   "CAM-B3LYP-D3",
+                                                                                   "WB97X",
+                                                                                   "WB97X-D3",
+                                                                                   "INPUT" } };
 
 //! symbols of the elements in periodic table
 const std::vector<std::string> periodic_system = {
@@ -110,8 +119,8 @@ struct QMMMParameters
     std::vector<Index> qmIndices_;
     //! Indices of the atoms that are part of the MM region (default no MM atoms)
     std::vector<Index> mmIndices_;
-    //! Vector with pairs of indicies defining broken bonds in QMMM (default determined from topology)
-    std::vector<LinkFrontier> link_;
+    //! Vector with pairs of indices defining broken bonds in QMMM (default determined from topology)
+    std::vector<LinkFrontierAtom> link_;
     //! Vector with atomic numbers of all atoms in the system (default determined from topology)
     std::vector<int> atomNumbers_;
     //! Total charge of QM system (default 0)
@@ -138,8 +147,6 @@ struct QMMMParameters
         qmBox_{ { 0.0, 0.0, 0.0 }, { 0.0, 0.0, 0.0 }, { 0.0, 0.0, 0.0 } }, qmTrans_{ 0.0, 0.0, 0.0 }
     {
     }
-
-    GMX_DISALLOW_COPY_AND_ASSIGN(QMMMParameters);
 };
 
 } // namespace gmx

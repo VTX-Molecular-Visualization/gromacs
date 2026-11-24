@@ -42,21 +42,39 @@
 
 #include "gromacs/trajectoryanalysis/modules/surfacearea.h"
 
+#include <cmath>
 #include <cstdlib>
+
+#include <string>
+#include <vector>
 
 #include <gtest/gtest.h>
 
 #include "gromacs/math/units.h"
-#include "gromacs/math/vec.h"
+#include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/random/threefry.h"
 #include "gromacs/random/uniformrealdistribution.h"
 #include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "testutils/refdata.h"
 #include "testutils/testasserts.h"
 
+// See #5440 and https://gcc.gnu.org/bugzilla/show_bug.cgi?id=115018
+#if defined(__GNUC__) && !defined(__clang__) && (__GNUC__ >= 13) && GMX_SIMD_ARM_SVE
+#    if GMX_SIMD_ARM_SVE_LENGTH_VALUE >= 256
+#        define GMX_TEST_DISABLE_TRANSLATE_POINTS_OPTIMIZATION 1
+#    endif
+#endif
+
+namespace gmx
+{
+namespace test
+{
 namespace
 {
 
@@ -112,6 +130,11 @@ public:
             addSphere(x[XX], x[YY], x[ZZ], radius);
         }
     }
+
+#ifdef GMX_TEST_DISABLE_TRANSLATE_POINTS_OPTIMIZATION
+#    pragma GCC push_options
+#    pragma GCC optimize("O0")
+#endif
     void translatePoints(real x, real y, real z)
     {
         for (size_t i = 0; i < x_.size(); ++i)
@@ -121,6 +144,9 @@ public:
             x_[i][ZZ] += z;
         }
     }
+#ifdef GMX_TEST_DISABLE_TRANSLATE_POINTS_OPTIMIZATION
+#    pragma GCC pop_options
+#endif
 
     void calculate(int ndots, int flags, bool bPBC)
     {
@@ -245,7 +271,7 @@ TEST_F(SurfaceAreaTest, ComputesTwoPointsOfUnequalRadius)
 {
     gmx::test::FloatingPointTolerance tolerance(gmx::test::relativeToleranceAsFloatingPoint(1.0, 0.005));
     // Spheres of radius 1 and 2 with intersection at 1.5
-    const real dist = 0.5 + sqrt(3.25);
+    const real dist = 0.5 + std::sqrt(3.25);
     addSphere(1.0, 1.0, 1.0, 1);
     addSphere(1.0 + dist, 1.0, 1.0, 2);
     ASSERT_NO_FATAL_FAILURE(calculate(1000, FLAG_ATOM_AREA, false));
@@ -340,10 +366,10 @@ TEST_F(SurfaceAreaTest, Computes100PointsWithTriclinicPBC)
     generateRandomPositions(100);
     box_[XX][XX] = 20.0;
     box_[YY][XX] = 10.0;
-    box_[YY][YY] = 10.0 * sqrt(3.0);
+    box_[YY][YY] = 10.0 * std::sqrt(3.0);
     box_[ZZ][XX] = 10.0;
-    box_[ZZ][YY] = 10.0 * sqrt(1.0 / 3.0);
-    box_[ZZ][ZZ] = 20.0 * sqrt(2.0 / 3.0);
+    box_[ZZ][YY] = 10.0 * std::sqrt(1.0 / 3.0);
+    box_[ZZ][ZZ] = 20.0 * std::sqrt(2.0 / 3.0);
 
     const int flags = FLAG_ATOM_AREA | FLAG_VOLUME | FLAG_DOTS;
     ASSERT_NO_FATAL_FAILURE(calculate(24, flags, true));
@@ -363,3 +389,5 @@ TEST_F(SurfaceAreaTest, Computes100PointsWithTriclinicPBC)
 }
 
 } // namespace
+} // namespace test
+} // namespace gmx

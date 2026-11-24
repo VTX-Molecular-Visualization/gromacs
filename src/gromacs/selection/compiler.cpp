@@ -274,16 +274,26 @@
 
 #include <cmath>
 #include <cstdarg>
+#include <cstdio>
 
 #include <algorithm>
+#include <memory>
+#include <string>
 
-#include "gromacs/math/vec.h"
 #include "gromacs/selection/indexutil.h"
+#include "gromacs/selection/position.h"
 #include "gromacs/selection/selection.h"
+#include "gromacs/selection/selectioncollection.h"
+#include "gromacs/selection/selectionenums.h"
+#include "gromacs/selection/selparam.h"
+#include "gromacs/selection/selvalue.h"
+#include "gromacs/topology/block.h"
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/gmxassert.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/vec.h"
 
 #include "evaluate.h"
 #include "keywords.h"
@@ -292,6 +302,8 @@
 #include "selectioncollection_impl.h"
 #include "selelem.h"
 #include "selmethod.h"
+
+struct gmx_mtop_t;
 
 using gmx::SelectionLocation;
 using gmx::SelectionTreeElement;
@@ -689,7 +701,7 @@ static SelectionTreeElementPointer remove_unused_subexpressions(SelectionTreeEle
         return SelectionTreeElementPointer();
     }
     root = reverse_selelem_chain(root);
-    while (root->child->type == SEL_SUBEXPR && root->child.unique())
+    while (root->child->type == SEL_SUBEXPR && root->child.use_count() == 1)
     {
         // Frees the root element.
         root = root->next;
@@ -699,7 +711,7 @@ static SelectionTreeElementPointer remove_unused_subexpressions(SelectionTreeEle
     while (item)
     {
         SelectionTreeElementPointer next = item->next;
-        if (item->child->type == SEL_SUBEXPR && item->child.unique())
+        if (item->child->type == SEL_SUBEXPR && item->child.use_count() == 1)
         {
             // Frees the current item when it goes out of scope.
             prev->next = next;
@@ -1701,7 +1713,6 @@ static void make_static(const SelectionTreeElementPointer& sel)
  * \param[in]     data Evaluation data.
  * \param[in,out] sel Selection to process.
  * \param[in]     g   The evaluation group.
- * \returns       0 on success, a non-zero error code on error.
  */
 static void process_const(gmx_sel_evaluate_t* data, const SelectionTreeElementPointer& sel, gmx_ana_index_t* g)
 {
@@ -1754,7 +1765,6 @@ static void store_param_val(const SelectionTreeElementPointer& sel)
  * \param[in,out] sel Selection element to process.
  * \param[in]     top Topology structure.
  * \param[in]     isize Size of the evaluation group for the element.
- * \returns       0 on success, a non-zero error code on return.
  *
  * Calls sel_initfunc() (and possibly sel_outinitfunc()) to initialize the
  * method.
@@ -1833,7 +1843,6 @@ static void init_method(const SelectionTreeElementPointer& sel, const gmx_mtop_t
  * \param[in,out] sel Boolean selection element whose children should be
  *   processed.
  * \param[in]     g   The evaluation group.
- * \returns       0 on success, a non-zero error code on error.
  *
  * reorder_item_static_children() should have been called.
  */
@@ -2017,7 +2026,6 @@ static void evaluate_boolean_minmax_grps(const SelectionTreeElementPointer& sel,
  * \param[in]     data Evaluation data.
  * \param[in,out] sel  Selection currently being evaluated.
  * \param[in]     g    Group for which \p sel should be evaluated.
- * \returns       0 on success, a non-zero error code on error.
  *
  * This function is used as the replacement for the
  * gmx::SelectionTreeElement::evaluate function pointer.
@@ -2138,7 +2146,7 @@ static void analyze_static(gmx_sel_evaluate_t* data, const SelectionTreeElementP
                     make_static(sel);
                 }
             }
-            else if (bDoMinMax)
+            else if (bDoMinMax && g)
             {
                 gmx_ana_index_copy(sel->cdata->gmax, g, true);
             }

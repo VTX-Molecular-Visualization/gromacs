@@ -41,6 +41,7 @@
  */
 #include "gmxpre.h"
 
+#include <filesystem>
 #include <string>
 
 #include <gtest/gtest.h>
@@ -49,6 +50,7 @@
 #include "gromacs/tools/check.h"
 
 #include "testutils/cmdlinetest.h"
+#include "testutils/testfilemanager.h"
 
 #include "moduletest.h"
 
@@ -79,7 +81,7 @@ TEST_P(MdrunCompressedXOutput, ExitsNormally)
     runner_.useTopGroAndNdxFromDatabase("spc2");
     ASSERT_EQ(0, runner_.callGrompp());
 
-    runner_.reducedPrecisionTrajectoryFileName_ = fileManager_.getTemporaryFilePath(".xtc").u8string();
+    runner_.reducedPrecisionTrajectoryFileName_ = fileManager_.getTemporaryFilePath(".xtc").string();
     ASSERT_EQ(0, runner_.callMdrun());
 
     ::gmx::test::CommandLine checkCaller;

@@ -42,6 +42,13 @@
 
 #include "sasa.h"
 
+#include <cstdio>
+#include <cstring>
+
+#include <algorithm>
+#include <filesystem>
+#include <memory>
+#include <string>
 #include <vector>
 
 #include "gromacs/analysisdata/analysisdata.h"
@@ -50,31 +57,44 @@
 #include "gromacs/fileio/confio.h"
 #include "gromacs/fileio/pdbio.h"
 #include "gromacs/math/units.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/options/basicoptions.h"
 #include "gromacs/options/filenameoption.h"
 #include "gromacs/options/ioptionscontainer.h"
+#include "gromacs/options/optionfiletype.h"
 #include "gromacs/pbcutil/pbc.h"
+#include "gromacs/selection/indexutil.h"
 #include "gromacs/selection/selection.h"
 #include "gromacs/selection/selectionoption.h"
 #include "gromacs/topology/atomprop.h"
+#include "gromacs/topology/atoms.h"
 #include "gromacs/topology/symtab.h"
 #include "gromacs/topology/topology.h"
+#include "gromacs/topology/topology_enums.h"
 #include "gromacs/trajectory/trajectoryframe.h"
 #include "gromacs/trajectoryanalysis/analysismodule.h"
 #include "gromacs/trajectoryanalysis/analysissettings.h"
 #include "gromacs/trajectoryanalysis/topologyinformation.h"
+#include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/futil.h"
+#include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/pleasecite.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/stringutil.h"
 #include "gromacs/utility/unique_cptr.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "surfacearea.h"
 
+enum class PbcType : int;
+
 namespace gmx
 {
+class AnalysisDataParallelOptions;
+class SelectionCollection;
 
 namespace analysismodules
 {
@@ -210,7 +230,7 @@ void connolly_plot(const char*  fn,
         int i0 = atoms->nr;
         int r0 = atoms->nres;
         srenew(atoms->atom, atoms->nr + ndots);
-        memset(&atoms->atom[i0], 0, sizeof(*atoms->atom) * ndots);
+        std::memset(&atoms->atom[i0], 0, sizeof(*atoms->atom) * ndots);
         srenew(atoms->atomname, atoms->nr + ndots);
         srenew(atoms->resinfo, r0 + 1);
         atoms->atom[i0].resind = r0;
@@ -243,7 +263,7 @@ void connolly_plot(const char*  fn,
         }
         atoms->nr   = i0 + ndots;
         atoms->nres = r0 + 1;
-        write_sto_conf(fn, title, atoms, xnew, nullptr, pbcType, const_cast<rvec*>(box));
+        write_sto_conf(fn, title, atoms, xnew, nullptr, pbcType, box);
         atoms->nres = r0;
         atoms->nr   = i0;
     }
@@ -269,7 +289,7 @@ void connolly_plot(const char*  fn,
             aaa.pdbinfo[ii0].occup  = 0.0;
         }
         aaa.nr = ndots;
-        write_sto_conf(fn, title, &aaa, xnew, nullptr, pbcType, const_cast<rvec*>(box));
+        write_sto_conf(fn, title, &aaa, xnew, nullptr, pbcType, box);
         do_conect(fn, ndots, xnew);
         done_atom(&aaa);
     }
@@ -293,7 +313,7 @@ public:
 
     TrajectoryAnalysisModuleDataPointer startFrames(const AnalysisDataParallelOptions& opt,
                                                     const SelectionCollection& selections) override;
-    void                                analyzeFrame(int frnr, const t_trxframe& fr, t_pbc* pbc, TrajectoryAnalysisModuleData* pdata) override;
+    void analyzeFrame(int frnr, const t_trxframe& fr, t_pbc* pbc, TrajectoryAnalysisModuleData* pdata) override;
 
     void finishAnalysis(int nframes) override;
     void writeOutput() override;
@@ -540,7 +560,7 @@ void Sasa::initAnalysis(const TrajectoryAnalysisSettings& settings, const Topolo
         }
         else
         {
-            if (strcmp(*(atoms_->atomtype[0]), "?") == 0)
+            if (std::strcmp(*(atoms_->atomtype[0]), "?") == 0)
             {
                 GMX_THROW(InconsistentInputError(
                         "Your input tpr file is too old (does not contain atom types). Cannot not "

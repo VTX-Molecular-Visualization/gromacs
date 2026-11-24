@@ -91,9 +91,9 @@ static __global__ void nvshmemSimplePut(DeviceBuffer<int> gm_outDestination, con
 
 void nvshmemRunSimplePut(const TestDevice* testDevice)
 {
-    testDevice->activate();
     const DeviceContext& deviceContext = testDevice->deviceContext();
     const DeviceStream&  deviceStream  = testDevice->deviceStream();
+    deviceContext.activate();
 
     MPI_Comm mpi_comm = MPI_COMM_WORLD;
 
@@ -107,7 +107,7 @@ void nvshmemRunSimplePut(const TestDevice* testDevice)
     allocateDeviceBufferNvShmem(&destination, 1, deviceContext);
 
     KernelLaunchConfig kernelLaunchConfig;
-    kernelLaunchConfig.gridSize[0]      = (numElements + c_threadsPerBlock - 1) / c_threadsPerBlock;
+    kernelLaunchConfig.gridSize[0]      = gmx::divideRoundUp(numElements, c_threadsPerBlock);
     kernelLaunchConfig.blockSize[0]     = c_threadsPerBlock;
     kernelLaunchConfig.blockSize[1]     = 1;
     kernelLaunchConfig.blockSize[2]     = 1;

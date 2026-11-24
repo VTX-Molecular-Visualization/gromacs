@@ -50,6 +50,7 @@
 #include "gromacs/gpu_utils/gpu_utils.h" //only for GpuApiCallBehavior
 #include "gromacs/gpu_utils/gputraits_ocl.h"
 #include "gromacs/gpu_utils/oclutils.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/stringutil.h"
 
@@ -85,8 +86,8 @@ void allocateDeviceBuffer(DeviceBuffer<ValueType>* buffer, size_t numValues, con
  *
  * \param[in] buffer  Pointer to the buffer to free.
  */
-template<typename DeviceBuffer>
-void freeDeviceBuffer(DeviceBuffer* buffer)
+template<typename ValueType>
+void freeDeviceBuffer(DeviceBuffer<ValueType>* buffer)
 {
     GMX_ASSERT(buffer, "needs a buffer pointer");
     if (*buffer)
@@ -301,10 +302,7 @@ void clearDeviceBufferAsync(DeviceBuffer<ValueType>* buffer,
     }
 }
 
-#if defined(__clang__)
-#    pragma clang diagnostic push
-#    pragma clang diagnostic ignored "-Wunused-template"
-#endif
+CLANG_DIAGNOSTIC_IGNORE("-Wunused-template")
 
 /*! \brief Check the validity of the device buffer.
  *
@@ -342,14 +340,15 @@ using DeviceTexture = void*;
  * \param[out]  deviceBuffer   Device buffer to store data in.
  * \param[in]   hostBuffer     Host buffer to get date from.
  * \param[in]   numValues      Number of elements in the buffer.
- * \param[in]   deviceContext  GPU device context.
+ * \param[in]   deviceContext  Device context for memory allocation.
  */
 template<typename ValueType>
 void initParamLookupTable(DeviceBuffer<ValueType>* deviceBuffer,
                           DeviceTexture* /* deviceTexture */,
                           const ValueType*     hostBuffer,
                           int                  numValues,
-                          const DeviceContext& deviceContext)
+                          const DeviceContext& deviceContext,
+                          const DeviceStream& /* deviceStream */)
 {
     GMX_ASSERT(hostBuffer, "Host buffer pointer can not be null");
     const size_t bytes = numValues * sizeof(ValueType);
@@ -378,9 +377,8 @@ void destroyParamLookupTable(DeviceBuffer<ValueType>* deviceBuffer, const Device
 {
     freeDeviceBuffer(deviceBuffer);
 }
-#if defined(__clang__)
-#    pragma clang diagnostic pop
-#endif
+
+CLANG_DIAGNOSTIC_RESET
 
 template<typename ValueType>
 ValueType* asMpiPointer(DeviceBuffer<ValueType>& /*buffer*/)
@@ -389,4 +387,9 @@ ValueType* asMpiPointer(DeviceBuffer<ValueType>& /*buffer*/)
     return nullptr;
 }
 
+template<typename ValueType>
+void setMpiPointer(DeviceBuffer<ValueType>& /* buffer */, ValueType* /* ptr */)
+{
+    assert(false);
+}
 #endif

@@ -43,9 +43,13 @@
  */
 #include "nblib/integrator.h"
 
+#include <cstddef>
+
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/vectypes.h"
 
+#include "nblib/particletype.h"
 #include "nblib/topology.h"
 
 namespace nblib

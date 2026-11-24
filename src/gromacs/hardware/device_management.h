@@ -50,12 +50,15 @@
 #ifndef GMX_HARDWARE_DEVICE_MANAGEMENT_H
 #define GMX_HARDWARE_DEVICE_MANAGEMENT_H
 
+#include <cstddef>
+
+#include <array>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "gromacs/utility/basedefinitions.h"
-#include "gromacs/utility/iserializer.h"
 
 struct DeviceInformation;
 enum class DeviceVendor : int;
@@ -65,6 +68,7 @@ namespace gmx
 enum class GpuAwareMpiStatus : int;
 template<typename>
 class ArrayRef;
+class ISerializer;
 class MDLogger;
 } // namespace gmx
 
@@ -231,23 +235,19 @@ gmx::GpuAwareMpiStatus getMinimalSupportedGpuAwareMpiStatus(
  */
 void setActiveDevice(const DeviceInformation& deviceInfo);
 
-/*! \brief Releases the GPU device used by the active context at the time of calling (CUDA only).
+/*! \brief Releases the GPU device used by the active context at the time of calling.
  *
- * If \c deviceInfo is nullptr, then it is understood that no device
- * was selected so no context is active to be freed. Otherwise, the
- * context is explicitly destroyed and therefore all data uploaded to
+ * With CUDA, the device is reset and therefore all data uploaded to
  * the GPU is lost. This must only be called when none of this data is
  * required anymore, because subsequent attempts to free memory
  * associated with the context will otherwise fail.
- *
  * Calls \c gmx_warning upon errors.
  *
- * \todo This should go through all the devices, not only the one currently active.
- *       Reseting only one device will not work, e.g. in CUDA tests.
+ * With other GPU SDKs, does nothing.
  *
- * \param[in] deviceInfo Information on the device to be released.
+ * Should only be called after \c setActiveDevice was called.
  */
-void releaseDevice(DeviceInformation* deviceInfo);
+void releaseDevice();
 
 /*! \brief Formats and returns a device information string for a given GPU.
  *
@@ -276,7 +276,7 @@ std::string getDeviceCompatibilityDescription(gmx::ArrayRef<const std::unique_pt
  * \param[in] serializer      Serializing object.
  */
 void serializeDeviceInformations(const std::vector<std::unique_ptr<DeviceInformation>>& deviceInfoList,
-                                 gmx::ISerializer*                                      serializer);
+                                 gmx::ISerializer* serializer);
 
 /*! \brief Deserialization of information on devices after MPI broadcasting.
  *
@@ -285,5 +285,28 @@ void serializeDeviceInformations(const std::vector<std::unique_ptr<DeviceInforma
  * \return deviceInfoList   Deserialized vector with device informations.
  */
 std::vector<std::unique_ptr<DeviceInformation>> deserializeDeviceInformations(gmx::ISerializer* serializer);
+
+/*! \brief Return an ID (non-negative integer) for the described GPU that may be unique.
+ *
+ * If a UUID is available, returns its hash.
+ * Otherwise, returns \c DeviceInformation::id field.
+ *
+ * Note that the value used on different ranks may or
+ * may not be a reliable indicator of whether the ranks share devices,
+ * depending how that id was constructed, perhaps depending on what
+ * devices were visible to different ranks.
+ */
+int uniqueDeviceId(const DeviceInformation& deviceInfo);
+
+//! Return the optional UUID detected for the indicated device
+std::optional<std::array<std::byte, 16>> uuidForDevice(const DeviceInformation& deviceInfo);
+
+/*! Run a possible check that GPU-aware MPI will work on \c deviceInfo
+ *
+ * \throw InvalidInputError if the user's choices would lead to a crash */
+void doubleCheckGpuAwareMpiWillWork(const DeviceInformation& deviceInfo);
+
+//! Get maximum grid size if backend supports it.
+int maximumGridSize(const DeviceInformation& deviceInfo);
 
 #endif // GMX_HARDWARE_DEVICE_MANAGEMENT_H

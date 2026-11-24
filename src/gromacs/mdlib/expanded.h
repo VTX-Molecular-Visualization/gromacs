@@ -34,10 +34,11 @@
 #ifndef GMX_MDLIB_EXPANDED_H
 #define GMX_MDLIB_EXPANDED_H
 
+#include <cstdint>
 #include <cstdio>
 
-#include "gromacs/math/vectypes.h"
 #include "gromacs/mdlib/coupling.h"
+#include "gromacs/utility/vectypes.h"
 
 struct df_history_t;
 class gmx_ekindata_t;

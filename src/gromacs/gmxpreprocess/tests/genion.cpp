@@ -43,7 +43,13 @@
 
 #include "gromacs/gmxpreprocess/genion.h"
 
+#include <filesystem>
+#include <string>
+
+#include <gtest/gtest.h>
+
 #include "gromacs/gmxpreprocess/grompp.h"
+#include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/futil.h"
 #include "gromacs/utility/textreader.h"
 #include "gromacs/utility/textwriter.h"
@@ -70,13 +76,13 @@ public:
     {
         CommandLine caller = commandLine();
 
-        const std::string mdpInputFileName(fileManager().getTemporaryFilePath("input.mdp").u8string());
+        const std::string mdpInputFileName(fileManager().getTemporaryFilePath("input.mdp").string());
         TextWriter::writeFileFromString(
                 mdpInputFileName,
                 "verlet-buffer-tolerance =-1\nrcoulomb=0.5\nrvdw = 0.5\nrlist = 0.5\n");
         caller.addOption("-f", mdpInputFileName);
-        caller.addOption("-c", TestFileManager::getInputFilePath("spc216_with_methane.gro").u8string());
-        caller.addOption("-p", TestFileManager::getInputFilePath("spc216_with_methane.top").u8string());
+        caller.addOption("-c", TestFileManager::getInputFilePath("spc216_with_methane.gro").string());
+        caller.addOption("-p", TestFileManager::getInputFilePath("spc216_with_methane.top").string());
         caller.addOption("-o", tprFileName_);
 
         gmx_grompp(caller.argc(), caller.argv());
@@ -99,7 +105,7 @@ public:
 
 private:
     const std::string tprFileName_ =
-            fileManager().getTemporaryFilePath("spc216_with_methane.tpr").u8string();
+            fileManager().getTemporaryFilePath("spc216_with_methane.tpr").string();
 };
 
 TEST_F(GenionTest, HighConcentrationIonPlacement)

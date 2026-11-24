@@ -46,6 +46,7 @@
 #include "gromacs/gpu_utils/gputraits_sycl.h"
 #include "gromacs/gpu_utils/sycl_kernel_utils.h"
 #include "gromacs/gpu_utils/syclutils.h"
+#include "gromacs/utility/basedefinitions.h"
 
 #include "pme_gpu_calculate_splines_sycl.h"
 #include "pme_gpu_types_host.h"
@@ -81,7 +82,7 @@ inline void spread_charges(const float                  atomCharge,
 {
     // Number of atoms processed by a single warp in spread and gather
     const int threadsPerAtomValue = (threadsPerAtom == ThreadsPerAtom::Order) ? order : order * order;
-    const int atomsPerWarp        = subGroupSize / threadsPerAtomValue;
+    const int atomsPerWarp = subGroupSize / threadsPerAtomValue;
 
     const int nx  = realGridSize[XX];
     const int ny  = realGridSize[YY];
@@ -112,7 +113,7 @@ inline void spread_charges(const float                  atomCharge,
 
         const int splineIndexBase = getSplineParamIndexBase<order, atomsPerWarp>(warpIndex, atomWarpIndex);
         const int splineIndexZ = getSplineParamIndex<order, atomsPerWarp>(splineIndexBase, ZZ, ithz);
-        const float thetaZ     = sm_theta[splineIndexZ];
+        const float thetaZ = sm_theta[splineIndexZ];
 
         /* loop not used if order*order threads per atom */
         const int ithyMin = (threadsPerAtom == ThreadsPerAtom::Order) ? 0 : itemIdx.get_local_id(YY);
@@ -157,25 +158,28 @@ inline void spread_charges(const float                  atomCharge,
  * A spline computation and charge spreading kernel function.
  *
  * Two tuning parameters can be used for additional performance. For small systems and for debugging
- * writeGlobal should be used removing the need to recalculate the theta values in the gather kernel.
- * Similarly for large systems, with useOrderThreads, using order threads per atom gives higher
- * performance than order*order threads.
+ * writeGlobal should be used removing the need to recalculate the theta values in the gather
+ * kernel. Similarly for large systems, with useOrderThreads, using order threads per atom gives
+ * higher performance than order*order threads.
  *
  * \tparam order          PME interpolation order.
  * \tparam computeSplines A boolean which tells if the spline parameter and gridline indices'
  *                        computation should be performed.
  * \tparam spreadCharges  A boolean which tells if the charge spreading should be performed.
- * \tparam wrapX          A boolean which tells if the grid overlap in dimension X should be wrapped.
- * \tparam wrapY          A boolean which tells if the grid overlap in dimension Y should be wrapped.
+ * \tparam wrapX          A boolean which tells if the grid overlap in dimension X
+ *                        should be wrapped.
+ * \tparam wrapY          A boolean which tells if the grid overlap in dimension Y
+ *                        should be wrapped.
  * \tparam numGrids       The number of grids to use in the kernel. Can be 1 or 2.
- * \tparam writeGlobal    A boolean which tells if the theta values and gridlines should be written
- *                        to global memory.
+ * \tparam writeGlobal    A boolean which tells if the theta values and gridlines
+ *                        should be written to global memory.
  * \tparam threadsPerAtom How many threads work on each atom.
  * \tparam subGroupSize   Size of the sub-group.
+ * \tparam CommandGroupHandler  Type of real or dummy command group handler
  */
-template<int order, bool computeSplines, bool spreadCharges, bool wrapX, bool wrapY, int numGrids, bool writeGlobal, ThreadsPerAtom threadsPerAtom, int subGroupSize>
-auto pmeSplineAndSpreadKernel(sycl::handler& cgh,
-                              const int      nAtoms,
+template<int order, bool computeSplines, bool spreadCharges, bool wrapX, bool wrapY, int numGrids, bool writeGlobal, ThreadsPerAtom threadsPerAtom, int subGroupSize, typename CommandGroupHandler>
+auto pmeSplineAndSpreadKernel(CommandGroupHandler cgh,
+                              const int           nAtoms,
                               float* __restrict__ gm_realGrid_0,
                               float* __restrict__ gm_realGrid_1,
                               float* __restrict__ gm_theta,
@@ -203,28 +207,45 @@ auto pmeSplineAndSpreadKernel(sycl::handler& cgh,
     constexpr int atomsPerWarp = subGroupSize / threadsPerAtomValue;
 
     // Gridline indices, ivec
-    sycl::local_accessor<int, 1> sm_gridlineIndices(sycl::range<1>(atomsPerBlock * DIM), cgh);
+    using GridLineIndices = StaticLocalStorage<int, atomsPerBlock * DIM>;
     // Charges
-    sycl::local_accessor<float, 1> sm_coefficients(sycl::range<1>(atomsPerBlock), cgh);
+    using Coefficients = StaticLocalStorage<float, atomsPerBlock>;
     // Spline values
-    sycl::local_accessor<float, 1> sm_theta(sycl::range<1>(atomsPerBlock * DIM * order), cgh);
-    auto                           sm_fractCoords = [&]() {
-        if constexpr (computeSplines)
-        {
-            return sycl::local_accessor<float, 1>(sycl::range<1>(atomsPerBlock * DIM), cgh);
-        }
-        else
-        {
-            return nullptr;
-        }
-    }();
+    using Theta = StaticLocalStorage<float, atomsPerBlock * DIM * order>;
+    // Reduction of partial force contributions
+#if defined(__INTEL_LLVM_COMPILER) && __INTEL_LLVM_COMPILER >= 20260000
+    // Work around the compiler bug discussed in CMPLRLLVM-74953 and
+    // issue #5688. This allocates some extra shared local memory that
+    // is unused when splines are in fact not calculated, but that
+    // only happens in unit tests.
+    using FractCoords = StaticLocalStorage<float, atomsPerBlock * DIM, true>;
+#else
+    using FractCoords = StaticLocalStorage<float, atomsPerBlock * DIM, computeSplines>;
+#endif
+    // These declarations must be made on the host
+    auto sm_gridlineIndicesHostStorage = GridLineIndices::makeHostStorage(cgh);
+    auto sm_thetaHostStorage           = Theta::makeHostStorage(cgh);
+    auto sm_coefficientsHostStorage    = Coefficients::makeHostStorage(cgh);
+    auto sm_fractCoordsHostStorage     = FractCoords::makeHostStorage(cgh);
 
-    return [=](sycl::nd_item<3> itemIdx) [[intel::reqd_sub_group_size(subGroupSize)]]
+    return [=](sycl::nd_item<3> itemIdx) [[sycl::reqd_sub_group_size(subGroupSize)]]
     {
         if constexpr (skipKernelCompilation<subGroupSize>())
         {
             return;
         }
+
+        // These declarations work on the device.
+        typename GridLineIndices::DeviceStorage sm_gridlineIndicesDeviceStorage;
+        typename Coefficients::DeviceStorage    sm_coefficientsDeviceStorage;
+        typename Theta::DeviceStorage           sm_thetaDeviceStorage;
+        // Extract the valid pointer to local storage
+        sycl::local_ptr<int> sm_gridlineIndices = GridLineIndices::get_pointer(
+                sm_gridlineIndicesHostStorage, sm_gridlineIndicesDeviceStorage);
+        sycl::local_ptr<float> sm_coefficients =
+                Coefficients::get_pointer(sm_coefficientsHostStorage, sm_coefficientsDeviceStorage);
+        sycl::local_ptr<float> sm_theta = Theta::get_pointer(sm_thetaHostStorage, sm_thetaDeviceStorage);
+
         const int blockIndex      = itemIdx.get_group_linear_id();
         const int atomIndexOffset = blockIndex * atomsPerBlock + pipeliningParams.pipelineAtomStart;
 
@@ -248,9 +269,8 @@ auto pmeSplineAndSpreadKernel(sycl::handler& cgh,
         }
 
         /* Charges, required for both spline and spread */
-        pmeGpuStageAtomData<float, atomsPerBlock, 1>(sm_coefficients.get_pointer(),
-                                                     gm_coefficients_0 + pipeliningParams.pipelineAtomStart,
-                                                     itemIdx);
+        pmeGpuStageAtomData<float, atomsPerBlock, 1>(
+                sm_coefficients, gm_coefficients_0 + pipeliningParams.pipelineAtomStart, itemIdx);
         itemIdx.barrier(fence_space::local_space);
         const float atomCharge = sm_coefficients[atomIndexLocal];
 
@@ -258,6 +278,8 @@ auto pmeSplineAndSpreadKernel(sycl::handler& cgh,
         {
             // SYCL-TODO: Use prefetching? Issue #4153.
             const Float3 atomX = gm_coordinates[atomIndexGlobal];
+            // This declaration works on the device.
+            typename FractCoords::DeviceStorage sm_fractCoordsDeviceStorage;
             calculateSplines<order, atomsPerBlock, atomsPerWarp, false, writeGlobal, numGrids, subGroupSize>(
                     atomIndexOffset,
                     atomX,
@@ -272,12 +294,12 @@ auto pmeSplineAndSpreadKernel(sycl::handler& cgh,
                     gm_gridlineIndices,
                     gm_fractShiftsTable,
                     gm_gridlineIndicesTable,
-                    sm_theta.get_pointer(),
+                    sm_theta,
                     nullptr,
-                    sm_gridlineIndices.get_pointer(),
-                    sm_fractCoords.get_pointer(),
+                    sm_gridlineIndices,
+                    FractCoords::get_pointer(sm_fractCoordsHostStorage, sm_fractCoordsDeviceStorage),
                     itemIdx);
-            subGroupBarrier(itemIdx);
+            sycl::group_barrier(itemIdx.get_sub_group());
         }
         else
         {
@@ -286,10 +308,9 @@ auto pmeSplineAndSpreadKernel(sycl::handler& cgh,
              * as in after running the spline kernel)
              */
             /* Spline data - only thetas (dthetas will only be needed in gather) */
-            pmeGpuStageAtomData<float, atomsPerBlock, DIM * order>(sm_theta.get_pointer(), gm_theta, itemIdx);
+            pmeGpuStageAtomData<float, atomsPerBlock, DIM * order>(sm_theta, gm_theta, itemIdx);
             /* Gridline indices */
-            pmeGpuStageAtomData<int, atomsPerBlock, DIM>(
-                    sm_gridlineIndices.get_pointer(), gm_gridlineIndices, itemIdx);
+            pmeGpuStageAtomData<int, atomsPerBlock, DIM>(sm_gridlineIndices, gm_gridlineIndices, itemIdx);
 
             itemIdx.barrier(fence_space::local_space);
         }
@@ -300,35 +321,27 @@ auto pmeSplineAndSpreadKernel(sycl::handler& cgh,
             if (!pipeliningParams.usePipeline || (atomIndexGlobal < pipeliningParams.pipelineAtomEnd))
             {
                 spread_charges<order, wrapX, wrapY, threadsPerAtom, subGroupSize>(
-                        atomCharge,
-                        realGridSize,
-                        realGridSizePadded,
-                        gm_realGrid_0,
-                        sm_gridlineIndices.get_pointer(),
-                        sm_theta.get_pointer(),
-                        itemIdx);
+                        atomCharge, realGridSize, realGridSizePadded, gm_realGrid_0, sm_gridlineIndices, sm_theta, itemIdx);
             }
         }
         if constexpr (numGrids == 2 && spreadCharges)
         {
             itemIdx.barrier(fence_space::local_space);
-            pmeGpuStageAtomData<float, atomsPerBlock, 1>(sm_coefficients.get_pointer(),
-                                                         gm_coefficients_1 + pipeliningParams.pipelineAtomStart,
-                                                         itemIdx);
+            pmeGpuStageAtomData<float, atomsPerBlock, 1>(
+                    sm_coefficients, gm_coefficients_1 + pipeliningParams.pipelineAtomStart, itemIdx);
             itemIdx.barrier(fence_space::local_space);
             const float atomCharge = sm_coefficients[atomIndexLocal];
             if (atomIndexGlobal < nAtoms)
             {
                 if (!pipeliningParams.usePipeline || (atomIndexGlobal < pipeliningParams.pipelineAtomEnd))
                 {
-                    spread_charges<order, wrapX, wrapY, threadsPerAtom, subGroupSize>(
-                            atomCharge,
-                            realGridSize,
-                            realGridSizePadded,
-                            gm_realGrid_1,
-                            sm_gridlineIndices.get_pointer(),
-                            sm_theta.get_pointer(),
-                            itemIdx);
+                    spread_charges<order, wrapX, wrapY, threadsPerAtom, subGroupSize>(atomCharge,
+                                                                                      realGridSize,
+                                                                                      realGridSizePadded,
+                                                                                      gm_realGrid_1,
+                                                                                      sm_gridlineIndices,
+                                                                                      sm_theta,
+                                                                                      itemIdx);
                 }
             }
         }
@@ -380,31 +393,30 @@ void PmeSplineAndSpreadKernel<order, computeSplines, spreadCharges, wrapX, wrapY
 
     sycl::queue q = deviceStream.stream();
 
-    q.submit(GMX_SYCL_DISCARD_EVENT[&](sycl::handler & cgh) {
-        auto kernel =
-                pmeSplineAndSpreadKernel<order, computeSplines, spreadCharges, wrapX, wrapY, numGrids, writeGlobal, threadsPerAtom, subGroupSize>(
-                        cgh,
-                        atomParams_->nAtoms,
-                        gridParams_->d_realGrid[0].get_pointer(),
-                        gridParams_->d_realGrid[1].get_pointer(),
-                        atomParams_->d_theta.get_pointer(),
-                        atomParams_->d_dtheta.get_pointer(),
-                        atomParams_->d_gridlineIndices.get_pointer(),
-                        gridParams_->d_fractShiftsTable.get_pointer(),
-                        gridParams_->d_gridlineIndicesTable.get_pointer(),
-                        atomParams_->d_coefficients[0].get_pointer(),
-                        atomParams_->d_coefficients[1].get_pointer(),
-                        atomParams_->d_coordinates.get_pointer(),
-                        gridParams_->tablesOffsets,
-                        gridParams_->realGridSize,
-                        gridParams_->realGridSizeFP,
-                        gridParams_->realGridSizePadded,
-                        dynamicParams_->recipBox[0],
-                        dynamicParams_->recipBox[1],
-                        dynamicParams_->recipBox[2],
-                        pipeliningParams_);
-        cgh.parallel_for<kernelNameType>(range, kernel);
-    });
+    auto kernelFunctionBuilder =
+            pmeSplineAndSpreadKernel<order, computeSplines, spreadCharges, wrapX, wrapY, numGrids, writeGlobal, threadsPerAtom, subGroupSize, gmx::CommandGroupHandler>;
+    gmx::syclSubmitWithoutEvent<kernelNameType>(q,
+                                                kernelFunctionBuilder,
+                                                range,
+                                                atomParams_->nAtoms,
+                                                gridParams_->d_realGrid[0].get_pointer(),
+                                                gridParams_->d_realGrid[1].get_pointer(),
+                                                atomParams_->d_theta.get_pointer(),
+                                                atomParams_->d_dtheta.get_pointer(),
+                                                atomParams_->d_gridlineIndices.get_pointer(),
+                                                gridParams_->d_fractShiftsTable.get_pointer(),
+                                                gridParams_->d_gridlineIndicesTable.get_pointer(),
+                                                atomParams_->d_coefficients[0].get_pointer(),
+                                                atomParams_->d_coefficients[1].get_pointer(),
+                                                atomParams_->d_coordinates.get_pointer(),
+                                                gridParams_->tablesOffsets,
+                                                gridParams_->realGridSize,
+                                                gridParams_->realGridSizeFP,
+                                                gridParams_->realGridSizePadded,
+                                                dynamicParams_->recipBox[0],
+                                                dynamicParams_->recipBox[1],
+                                                dynamicParams_->recipBox[2],
+                                                pipeliningParams_);
 
     // Delete set args, so we don't forget to set them before the next launch.
     reset();
@@ -425,10 +437,7 @@ void PmeSplineAndSpreadKernel<order, computeSplines, spreadCharges, wrapX, wrapY
  * translation unit [-Wweak-template-vtables]" warning.
  * It is only explicitly instantiated in this translation unit, so we should be safe.
  */
-#ifdef __clang__
-#    pragma clang diagnostic push
-#    pragma clang diagnostic ignored "-Wweak-template-vtables"
-#endif
+CLANG_DIAGNOSTIC_IGNORE("-Wweak-template-vtables")
 
 #define INSTANTIATE_3(order, computeSplines, spreadCharges, numGrids, writeGlobal, threadsPerAtom, subGroupSize) \
     template class PmeSplineAndSpreadKernel<order, computeSplines, spreadCharges, true, true, numGrids, writeGlobal, threadsPerAtom, subGroupSize>;
@@ -445,12 +454,10 @@ void PmeSplineAndSpreadKernel<order, computeSplines, spreadCharges, wrapX, wrapY
     INSTANTIATE_2(order, 2, ThreadsPerAtom::Order, subGroupSize);        \
     INSTANTIATE_2(order, 2, ThreadsPerAtom::OrderSquared, subGroupSize);
 
-#if GMX_SYCL_DPCPP
+#if GMX_SYCL_DPCPP || GMX_ACPP_HAVE_GENERIC_TARGET
 INSTANTIATE(4, 16); // TODO: Choose best value, Issue #4153.
 #endif
 INSTANTIATE(4, 32);
 INSTANTIATE(4, 64);
 
-#ifdef __clang__
-#    pragma clang diagnostic pop
-#endif
+CLANG_DIAGNOSTIC_RESET

@@ -37,27 +37,27 @@ if (NOT GMX_BUILD_UNITTESTS)
 endif()
 
 if (GMX_GPU_CUDA)
-    # Work around FindCUDA that prevents using target_link_libraries()
-    # with keywords otherwise...
-    set(CUDA_LIBRARIES PRIVATE ${CUDA_LIBRARIES})
-    if (NOT GMX_CLANG_CUDA)
-        gmx_cuda_add_library(testutils)
-    else()
-        set_source_files_properties(test_device.cpp PROPERTIES CUDA_SOURCE_PROPERTY_FORMAT OBJ)
-        gmx_compile_cuda_file_with_clang(test_device.cpp)
-        add_library(testutils STATIC ${TESTUTILS_SOURCES})
-        target_link_libraries(testutils PRIVATE ${GMX_CUDA_CLANG_LINK_LIBS})
-    endif()
+    add_library(testutils)
+
     #we cannot link with both cufftmp and cufft
     if(GMX_USE_cuFFTMp)
         target_link_libraries(testutils PRIVATE ${cuFFTMp_LIBRARY})
     else()
-        target_link_libraries(testutils PRIVATE ${CUDA_CUFFT_LIBRARIES})
+        target_link_libraries(testutils PRIVATE CUDA::cufft)
     endif()
     if (GMX_NVSHMEM)
         target_link_libraries(testutils PUBLIC nvshmem_host_lib)
     endif()
+elseif (GMX_GPU_HIP)
+    set_source_files_properties(test_device.cpp PROPERTIES LANGUAGE HIP)
+    gmx_hip_add_library(testutils test_device.cpp)
 
+    target_link_libraries(testutils PRIVATE hip::host)
+    if (GMX_GPU_FFT_VKFFT)
+        target_link_libraries(testutils PRIVATE VkFFT)
+    elseif(GMX_GPU_FFT_ROCFFT)
+        target_link_libraries(testutils PRIVATE roc::rocfft)
+    endif()
 else()
     add_library(testutils STATIC ${UNITTEST_TARGET_OPTIONS})
 endif()
@@ -78,8 +78,10 @@ target_sources(testutils PRIVATE
                loggertest.cpp
                mpi_printer.cpp
                mpitest.cpp
+               posixmemstream.cpp
                refdata.cpp
                refdata_xml.cpp
+               setenv.cpp
                simulationdatabase.cpp
                stdiohelper.cpp
                stringtest.cpp
@@ -120,6 +122,11 @@ gmx_target_compile_options(testutils)
 target_compile_definitions(testutils PRIVATE HAVE_CONFIG_H)
 target_include_directories(testutils SYSTEM BEFORE PRIVATE ${PROJECT_SOURCE_DIR}/src/external/thread_mpi/include)
 target_compile_definitions(testutils PRIVATE TMPI_USE_VISIBILITY)
+# These two include directories are supplied by the gmock target below
+# but can be added after global include directories added e.g. for
+# FFTW, which leads to unexpected mismatches. See #5141 and #5531.
+target_include_directories(testutils SYSTEM BEFORE PRIVATE ${PROJECT_SOURCE_DIR}/src/external/googletest/googletest/include)
+target_include_directories(testutils SYSTEM BEFORE PRIVATE ${PROJECT_SOURCE_DIR}/src/external/googletest/googlemock/include)
 target_link_libraries(testutils PRIVATE libgromacs ${GMX_COMMON_LIBRARIES} gmock)
 target_link_libraries(testutils PUBLIC common)
 
@@ -127,7 +134,18 @@ target_link_libraries(testutils PUBLIC common)
 # Note that testutils conveys transitive dependencies on some modules.
 # TODO: Remove `legacy_modules` once specific modules are explicitly linked.
 target_link_libraries(testutils PUBLIC legacy_modules)
-target_link_libraries(testutils PUBLIC utility)
+target_link_libraries(testutils PUBLIC utility math)
 target_link_libraries(testutils PRIVATE topology)
+
+# Permit having tests of legacy functions using FILE*, which work best
+# when the system supports the POSIX open_memstream() function.
+include(CheckCXXSymbolExists)
+check_cxx_symbol_exists("open_memstream" "cstdio" HAVE_OPEN_MEMSTREAM)
+if (HAVE_OPEN_MEMSTREAM)
+    set(_have_open_memstream_value 1)
+else()
+    set(_have_open_memstream_value 0)
+endif()
+set_source_files_properties(posixmemstream.cpp PROPERTIES COMPILE_DEFINITIONS "-DHAVE_OPEN_MEMSTREAM=${_have_open_memstream_value}")
 
 add_subdirectory(tests)

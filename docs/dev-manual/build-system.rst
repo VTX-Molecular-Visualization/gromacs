@@ -55,7 +55,7 @@ testing. Their implementations can be found in ``cmake/gmxBuildTypeXXX.cmake``.
 **Reference**
   This build type compiles a version of |Gromacs| aimed solely at correctness. All
   parallelization and optimization possibilities are disabled. This build type is
-  compiled with GCC 9 to generate the regression test reference values, against
+  compiled with GCC 11 to generate the regression test reference values, against
   which all other |Gromacs| builds are tested.
 
 **RelWithAssert**
@@ -69,20 +69,24 @@ testing. Their implementations can be found in ``cmake/gmxBuildTypeXXX.cmake``.
   be useful for the tools.
 
 **TSAN**
-  Builds |Gromacs| for use with ThreadSanitizer in gcc and clang
-  (https://clang.llvm.org/docs/ThreadSanitizer.html) to detect
+  Builds |Gromacs| for use with
+  `ThreadSanitizer <https://clang.llvm.org/docs/ThreadSanitizer.html>`__
+  in GCC and Clang to detect
   data races. This disables the use of atomics in ThreadMPI,
   preferring the mutex-based implementation.
 
 **ASAN**
-  Builds |Gromacs| for use with AddressSanitizer in gcc and
-  clang (https://clang.llvm.org/docs/AddressSanitizer.html) to
+  Builds |Gromacs| for use with
+  `AddressSanitizer <https://clang.llvm.org/docs/AddressSanitizer.html>`__
+  in GCC and Clang to
   detect many kinds of memory mis-use. By default, AddressSanitizer
-  includes LeakSanitizer.
+  includes LeakSanitizer (LSAN) but in many cases GROMACS suppresses
+  leak detection either from particular functions known to leak, or in bulk.
 
 **MSAN**
-  Builds |Gromacs| for use with MemorySanitizer in clang
-  (https://clang.llvm.org/docs/MemorySanitizer.html) to detect
+  Builds |Gromacs| for use with
+  `MemorySanitizer <https://clang.llvm.org/docs/MemorySanitizer.html>`__
+  in Clang to detect
   reads of uninitialized memory. This functionality requires that
   dependencies of the |Gromacs| build have been built in a compatible
   way (roughly, static libraries with ``-g -fsanitize=memory
@@ -92,6 +96,13 @@ testing. Their implementations can be found in ``cmake/gmxBuildTypeXXX.cmake``.
   build type is set in the CMake cache variable
   ``GMX_MSAN_PATH``. Only internal XDR and internal fftpack are
   supported at this time.
+
+**UBSAN**
+  Builds |Gromacs| for use with
+  `UndefinedBehaviorSanitizer <https://clang.llvm.org/docs/UndefinedBehaviorSanitizer.html>`__
+  in GCC and Clang  to detect undefined behavior during execution. The
+  checks performed during execution have a small cost and do not impact
+  address space layout and application binary interface.
 
 For all of the sanitizer builds, to get readable stack traces, you may
 need to ensure that the ``ASAN_SYMBOLIZER_PATH`` environment variable
@@ -243,10 +254,6 @@ Variables affecting compilation/linking
    :doc:`Mixed or Double precision </reference-manual/definitions>`
    for further information.
 
-.. cmake:: GMX_EXTRAE
-
-   Add support for tracing using `Extrae <https://tools.bsc.es/extrae>`_.
-
 .. cmake:: GMX_EXTERNAL_BLAS
 
    If not set (the default), CMake will first try to use an external BLAS library,
@@ -322,7 +329,7 @@ Variables affecting compilation/linking
 
 .. cmake:: GMX_THREAD_MPI
 
-   Enable thread-MPI support for inter-node parallelism. Defaults to ``ON``.
+   Enable thread-MPI support for intra-node parallelism. Defaults to ``ON``.
 
 .. cmake:: GMX_USE_RDTSCP
 
@@ -386,19 +393,22 @@ Variables affecting the ``all`` target
 .. cmake:: GMX_DEVELOPER_BUILD
 
    If set ``ON``, the ``all`` target will include also the test binaries using
-   Google Test (if :cmake:`GMX_BUILD_UNITTESTS` is ``ON``).
-   Also, :cmake:`GMX_COMPILER_WARNINGS` is always enabled.
+   Google Test (if :cmake:`GMX_BUILD_UNITTESTS` is ``ON``), while ``webpage``
+   target will also include Reference manual in PDF format.
+   Also, :cmake:`GMX_COMPILER_WARNINGS` and
+   `CMAKE_EXPORT_COMPILE_COMMANDS <https://cmake.org/cmake/help/latest/variable/CMAKE_EXPORT_COMPILE_COMMANDS.html>`__
+   are always enabled.
    In the future, other developer convenience features (as well as features
    inconvenient for a general user) can be added to the set controlled by this
    variable.
 
 .. cmake:: GMX_CLANG_TIDY
 
-  `clang-tidy <https://releases.llvm.org/11.0.0/tools/clang/tools/extra/docs/clang-tidy/index.html>`_
+  `clang-tidy <https://releases.llvm.org/18.0.0/tools/clang/tools/extra/docs/clang-tidy/index.html>`_
   is used for static code analysis and (some) automated fixing of issues detected. clang-tidy is easy to install.
   It is contained in
-  the llvm binary `package <http://releases.llvm.org/download.html#11.0.0>`_. Only
-  version 11.0.* is supported. Others might miss tests or give false positives.
+  the llvm binary `package <http://releases.llvm.org/download.html#18.0.0>`_. Only
+  version 18.0.* is supported. Others might miss tests or give false positives.
   It is run automatically in GitLab CI for each commit. Many checks have fixes which can automatically be
   applied. To run it, the build has to be configured with
   ``cmake -DGMX_CLANG_TIDY=ON -DCMAKE_BUILD_TYPE=Debug``.

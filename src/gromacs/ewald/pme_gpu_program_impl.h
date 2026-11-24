@@ -43,6 +43,8 @@
 
 #include "config.h"
 
+#include <cstddef>
+
 #include <memory>
 
 #include "gromacs/gpu_utils/device_context.h"
@@ -67,22 +69,19 @@ struct DeviceInformation;
  * revisit the number of kernels we pre-compile, and/or the management
  * of their lifetime.
  *
- * This also doesn't manage cuFFT/clFFT kernels, which depend on the PME grid dimensions.
- *
- * TODO: pass cl_context to the constructor and not create it inside.
- * See also Issue #2522.
+ * This also doesn't manage cuFFT/rocFFT kernels, which depend on the PME grid dimensions.
  */
 struct PmeGpuProgramImpl
 {
-    /*! \brief
-     * This is a handle to the GPU context, which is just a dummy in CUDA,
-     * but is created/destroyed by this class in OpenCL.
+    /*! \brief A handle to the device context (managed externally).
+     *
+     * Only used in OpenCL for JIT compilation.
      */
     const DeviceContext& deviceContext_;
 
     //! Conveniently all the PME kernels use the same single argument type
-#if GMX_GPU_CUDA
-    using PmeKernelHandle = void (*)(const struct PmeGpuCudaKernelParams);
+#if (GMX_GPU_CUDA || GMX_GPU_HIP)
+    using PmeKernelHandle = void (*)(const struct PmeGpuKernelParams);
 #elif GMX_GPU_OPENCL
     using PmeKernelHandle = cl_kernel;
 #else
@@ -91,9 +90,9 @@ struct PmeGpuProgramImpl
 
     /*! \brief
      * Maximum synchronous GPU thread group execution width.
-     * "Warp" is a CUDA term which we end up reusing in OpenCL kernels as well.
+     * "Warp" is a CUDA term which we end up reusing in other kernels as well.
      * For CUDA, this is a static value that comes from gromacs/gpu_utils/cuda_arch_utils.cuh;
-     * for OpenCL, we have to query it dynamically.
+     * For HIP, we will obtain it from the warpSize field during device code compilation.
      */
     size_t warpSize_;
 

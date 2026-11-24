@@ -34,19 +34,31 @@ class VtxGromacsRecipe(ConanFile):
         cmake_layout(self)
 
     def build_requirements(self):
-        self.tool_requires("cmake/3.27.0")
+        None
 
     def build(self):
         cmake = CMake(self)
         cmake_args = [
-            "-DGMX_FFT_LIBRARY=fftpack"
-            , "-DBUILD_SHARED_LIBS=off"
-            , "-DGMX_PREFER_STATIC_LIBS=on"
-            , "-DGMX_BUILD_SHARED_EXE=OFF"
+            '-DCMAKE_BUILD_TYPE=Release' 
+            , '-DGMX_GPU=CUDA' 
+            , '-DMAKE_CUDA_ARCHITECTURES="61-real;70-real;75-real;80-real;86-real;89"' 
+            # deprecated ?
+            # , '-DGMX_CUDA_TARGET_SM="61;70;75;80;86;89"' 
+            # , '-DGMX_CUDA_TARGET_COMPUTE="89"' 
+            #! deprecated ?
+            , '-DGMX_GPU_FFT_LIBRARY=cuFFT' 
+            , '-DGMX_FFT_LIBRARY=fftpack'           # CPU fallback
+            , '-DBUILD_SHARED_LIBS=off' 
+            , '-DGMX_PREFER_STATIC_LIBS=on' 
+            , '-DGMX_BUILD_SHARED_EXE=OFF' 
+            , '-DGMX_THREAD_MPI=ON' 
         ]
         if platform =='Darwin':
             cmake_args.append("-DGMX_OPENMP=OFF")
-        cmake.configure(cli_args=cmake_args) # build with slow fft algorithm. Since we won't use mdrun, it doesn't really matter
+        else:
+            cmake_args.append("-DGMX_OPENMP=ON")
+        
+        cmake.configure(cli_args=cmake_args) # build trying to distribute GPU accelerated mdprep with CUDA
         cmake.build()
 
     def package(self):

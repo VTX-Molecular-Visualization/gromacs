@@ -35,18 +35,23 @@
 
 #include "g96io.h"
 
+#include <cinttypes>
 #include <cstdio>
 #include <cstring>
 
+#include <string>
+
 #include "gromacs/fileio/trxio.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/topology/atoms.h"
 #include "gromacs/topology/symtab.h"
 #include "gromacs/trajectory/trajectoryframe.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/smalloc.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
 
 #define CHAR_SHIFT 24
 
@@ -102,14 +107,14 @@ static int read_g96_pos(char line[], t_symtab* symtab, FILE* fp, const std::file
                     gmx_fatal(FARGS,
                               "Did not find 3 coordinates for atom %d in %s\n",
                               natoms + 1,
-                              infile.u8string().c_str());
+                              infile.string().c_str());
                 }
                 if ((nwanted != -1) && (natoms >= nwanted))
                 {
                     gmx_fatal(FARGS,
                               "Found more coordinates (%d) in %s than expected %d\n",
                               natoms,
-                              infile.u8string().c_str(),
+                              infile.string().c_str(),
                               nwanted);
                 }
                 if (atoms)
@@ -124,9 +129,9 @@ static int read_g96_pos(char line[], t_symtab* symtab, FILE* fp, const std::file
                         else
                         {
                             resnr = 1;
-                            strncpy(resnm, "???", sizeof(resnm) - 1);
+                            std::strncpy(resnm, "???", sizeof(resnm) - 1);
                         }
-                        strncpy(anm, "???", sizeof(anm) - 1);
+                        std::strncpy(anm, "???", sizeof(anm) - 1);
                     }
                     atoms->atomname[natoms] = put_symtab(symtab, anm);
                     if (resnr != oldres)
@@ -137,7 +142,7 @@ static int read_g96_pos(char line[], t_symtab* symtab, FILE* fp, const std::file
                         {
                             gmx_fatal(FARGS,
                                       "More residues than atoms in %s (natoms = %d)",
-                                      infile.u8string().c_str(),
+                                      infile.string().c_str(),
                                       atoms->nr);
                         }
                         atoms->atom[natoms].resind = newres;
@@ -166,7 +171,7 @@ static int read_g96_pos(char line[], t_symtab* symtab, FILE* fp, const std::file
             fprintf(stderr,
                     "Warning: found less coordinates (%d) in %s than expected %d\n",
                     natoms,
-                    infile.u8string().c_str(),
+                    infile.string().c_str(),
                     nwanted);
         }
     }
@@ -186,7 +191,7 @@ static int read_g96_vel(char line[], FILE* fp, const std::filesystem::path& infi
 
     if (fr->v && fr->bV)
     {
-        if (strcmp(line, "VELOCITYRED") == 0)
+        if (std::strcmp(line, "VELOCITYRED") == 0)
         {
             shift = 0;
         }
@@ -198,7 +203,7 @@ static int read_g96_vel(char line[], FILE* fp, const std::filesystem::path& infi
         bEnd   = FALSE;
         while (!bEnd && fgets2(line, STRLEN, fp))
         {
-            bEnd = (strncmp(line, "END", 3) == 0);
+            bEnd = (std::strncmp(line, "END", 3) == 0);
             if (!bEnd && (line[0] != '#'))
             {
                 if (sscanf(line + shift, "%15lf%15lf%15lf", &db1, &db2, &db3) != 3)
@@ -206,14 +211,14 @@ static int read_g96_vel(char line[], FILE* fp, const std::filesystem::path& infi
                     gmx_fatal(FARGS,
                               "Did not find 3 velocities for atom %d in %s",
                               natoms + 1,
-                              infile.u8string().c_str());
+                              infile.string().c_str());
                 }
                 if ((nwanted != -1) && (natoms >= nwanted))
                 {
                     gmx_fatal(FARGS,
                               "Found more velocities (%d) in %s than expected %d\n",
                               natoms,
-                              infile.u8string().c_str(),
+                              infile.string().c_str(),
                               nwanted);
                 }
                 if (fr->v)
@@ -230,7 +235,7 @@ static int read_g96_vel(char line[], FILE* fp, const std::filesystem::path& infi
             fprintf(stderr,
                     "Warning: found less velocities (%d) in %s than expected %d\n",
                     natoms,
-                    infile.u8string().c_str(),
+                    infile.string().c_str(),
                     nwanted);
         }
     }
@@ -244,7 +249,7 @@ int read_g96_conf(FILE* fp, const std::filesystem::path& infile, char** name, t_
     int      natoms, nbp;
     double   db1, db2, db3, db4, db5, db6, db7, db8, db9;
 
-    bAtStart = (ftell(fp) == 0);
+    bAtStart = (std::ftell(fp) == 0);
 
     clear_trxframe(fr, FALSE);
 
@@ -279,7 +284,7 @@ int read_g96_conf(FILE* fp, const std::filesystem::path& infile, char** name, t_
     {
         bTime  = (std::strcmp(line, "TIMESTEP") == 0);
         bAtoms = (std::strcmp(line, "POSITION") == 0);
-        bPos   = (bAtoms || (strcmp(line, "POSITIONRED") == 0));
+        bPos   = (bAtoms || (std::strcmp(line, "POSITIONRED") == 0));
         bVel   = (std::strncmp(line, "VELOCITY", 8) == 0);
         bBox   = (std::strcmp(line, "BOX") == 0);
         if (bTime)
@@ -325,7 +330,7 @@ int read_g96_conf(FILE* fp, const std::filesystem::path& infile, char** name, t_
             bEnd = FALSE;
             while (!bEnd && fgets2(line, STRLEN, fp))
             {
-                bEnd = (strncmp(line, "END", 3) == 0);
+                bEnd = (std::strncmp(line, "END", 3) == 0);
                 if (!bEnd && (line[0] != '#'))
                 {
                     nbp = sscanf(line,
@@ -341,7 +346,7 @@ int read_g96_conf(FILE* fp, const std::filesystem::path& infile, char** name, t_
                                  &db9);
                     if (nbp < 3)
                     {
-                        gmx_fatal(FARGS, "Found a BOX line, but no box in %s", infile.u8string().c_str());
+                        gmx_fatal(FARGS, "Found a BOX line, but no box in %s", infile.string().c_str());
                     }
                     fr->box[XX][XX] = db1;
                     fr->box[YY][YY] = db2;

@@ -34,7 +34,8 @@
 #ifndef GMX_UTILITY_MPI_INFO_H
 #define GMX_UTILITY_MPI_INFO_H
 
-#include <string_view>
+#include <string>
+#include <unordered_map>
 
 namespace gmx
 {
@@ -48,10 +49,11 @@ enum class GpuAwareMpiStatus : int
     NotSupported = 0, //!< GPU-aware support NOT available or not known.
     Forced,           //!< GPU-aware support forced using env variable
     Supported,        //!< GPU-aware support available.
+    Count,            //!< Conventional final enum value
 };
 
-//! Return the string obtained from the MPI library via MPI_Get_library_version
-std::string_view mpiLibraryVersionString();
+//! Helper function to pretty-print GPU-aware status values
+const char* enumValueToString(GpuAwareMpiStatus status);
 
 //! Return whether GROMACS is linked against an MPI library describing itself as Intel MPI
 bool usingIntelMpi();
@@ -85,6 +87,8 @@ GpuAwareMpiStatus checkMpiHipAwareSupport();
  * \returns     LevelZero-aware status in MPI implementation */
 GpuAwareMpiStatus checkMpiZEAwareSupport();
 
+//! Returns information for describing the MPI support
+std::unordered_map<std::string, std::string> mpiDescriptions();
 
 } // namespace gmx
 

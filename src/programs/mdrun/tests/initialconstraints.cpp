@@ -46,10 +46,19 @@
  */
 #include "gmxpre.h"
 
+#include <filesystem>
+#include <memory>
 #include <string>
+#include <vector>
+
+#include <gtest/gtest.h>
 
 #include "gromacs/trajectory/energyframe.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/stringutil.h"
+
+#include "testutils/testasserts.h"
+#include "testutils/testfilemanager.h"
 
 #include "energyreader.h"
 #include "moduletest.h"
@@ -101,7 +110,7 @@ TEST_P(InitialConstraintsTest, Works)
     runner_.useTopGroAndNdxFromDatabase(inputFile);
     EXPECT_EQ(0, runner_.callGrompp());
 
-    runner_.edrFileName_ = fileManager_.getTemporaryFilePath(inputFile + ".edr").u8string();
+    runner_.edrFileName_ = fileManager_.getTemporaryFilePath(inputFile + ".edr").string();
     ASSERT_EQ(0, runner_.callMdrun());
 
     auto energyReader =

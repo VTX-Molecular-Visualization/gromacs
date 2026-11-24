@@ -36,19 +36,28 @@
 #include "perf_est.h"
 
 #include <cmath>
+#include <cstdio>
+
+#include <vector>
 
 #include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
 #include "gromacs/math/utilities.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/mdtypes/commrec.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/nbnxm/nbnxm_geometry.h"
 #include "gromacs/simd/simd.h"
+#include "gromacs/topology/atoms.h"
+#include "gromacs/topology/forcefieldparameters.h"
+#include "gromacs/topology/idef.h"
 #include "gromacs/topology/ifunc.h"
 #include "gromacs/topology/topology.h"
+#include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/listoflists.h"
+#include "gromacs/utility/real.h"
+#include "gromacs/utility/vec.h"
 
 /* Computational cost of bonded, non-bonded and PME calculations.
  * This will be machine dependent.
@@ -140,7 +149,7 @@ static double simd_cycle_factor(gmx_bool bUseSIMD)
         gmx_incons("gmx_cycle_factor() compiled without SIMD called with bUseSIMD=TRUE");
     }
     /* No SIMD, no speedup */
-    speedup                        = 1.0;
+    speedup = 1.0;
 #endif
 
     /* Return speed compared to the reference (Haswell).
@@ -155,12 +164,11 @@ void count_bonded_distances(const gmx_mtop_t& mtop, const t_inputrec& ir, double
 {
     gmx_bool bExcl;
     double   nonsimd_step_frac;
-    int      ftype;
     double   ndtot_c, ndtot_simd;
 #if GMX_SIMD_HAVE_REAL
     gmx_bool bSimdBondeds = TRUE;
 #else
-    gmx_bool   bSimdBondeds        = FALSE;
+    gmx_bool bSimdBondeds = FALSE;
 #endif
 
     bExcl = (ir.cutoff_scheme == CutoffScheme::Group && inputrecExclForces(&ir)
@@ -198,7 +206,7 @@ void count_bonded_distances(const gmx_mtop_t& mtop, const t_inputrec& ir, double
     for (const gmx_molblock_t& molb : mtop.molblock)
     {
         const gmx_moltype_t* molt = &mtop.moltype[molb.type];
-        for (ftype = 0; ftype < F_NRE; ftype++)
+        for (const auto ftype : gmx::EnumerationWrapper<InteractionFunction>{})
         {
             int nbonds;
 
@@ -213,14 +221,14 @@ void count_bonded_distances(const gmx_mtop_t& mtop, const t_inputrec& ir, double
                  */
                 switch (ftype)
                 {
-                    case F_POSRES:
-                    case F_FBPOSRES: nd_c = 1; break;
-                    case F_CONNBONDS: break;
+                    case InteractionFunction::PositionRestraints:
+                    case InteractionFunction::FlatBottomedPositionRestraints: nd_c = 1; break;
+                    case InteractionFunction::ConnectBonds: break;
                     /* These bonded potentially use SIMD */
-                    case F_ANGLES:
-                    case F_PDIHS:
-                    case F_RBDIHS:
-                    case F_LJ14:
+                    case InteractionFunction::Angles:
+                    case InteractionFunction::ProperDihedrals:
+                    case InteractionFunction::RyckaertBellemansDihedrals:
+                    case InteractionFunction::LennardJones14:
                         nd_c    = nonsimd_step_frac * (NRAL(ftype) - 1);
                         nd_simd = (1 - nonsimd_step_frac) * (NRAL(ftype) - 1);
                         break;
@@ -266,7 +274,6 @@ static void pp_verlet_load(const gmx_mtop_t& mtop,
     real     r_eff;
     double   c_qlj, c_q, c_lj;
     double   nppa;
-    int      j_cluster_size;
     /* Conversion factor for reference vs SIMD kernel performance.
      * The factor is about right for SSE2/4, but should be 2 higher for AVX256.
      */
@@ -318,17 +325,8 @@ static void pp_verlet_load(const gmx_mtop_t& mtop,
     *nq_tot  = nqlj + nq;
     *nlj_tot = nqlj + nlj;
 
-    /* Effective cut-off for cluster pair list of 4x4 or 4x8 atoms.
-     * This choice should match the one of pick_nbnxn_kernel_cpu().
-     * TODO: Make this function use pick_nbnxn_kernel_cpu().
-     */
-#if GMX_SIMD_HAVE_REAL \
-        && ((GMX_SIMD_REAL_WIDTH == 8 && defined GMX_SIMD_HAVE_FMA) || GMX_SIMD_REAL_WIDTH > 8)
-    j_cluster_size = 8;
-#else
-    j_cluster_size                 = 4;
-#endif
-    r_eff = ir.rlist + nbnxn_get_rlist_effective_inc(j_cluster_size, mtop.natoms / det(box));
+    /* Effective radius of a CPU pairlist including the pairs beyond rlist */
+    r_eff = ir.rlist + gmx::nbnxmPairlistVolumeRadiusIncrease(false, mtop.natoms / det(box));
 
     /* The average number of pairs per atom */
     nppa = 0.5 * 4 / 3 * M_PI * r_eff * r_eff * r_eff * mtop.natoms / det(box);

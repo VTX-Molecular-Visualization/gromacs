@@ -42,25 +42,31 @@
 
 #include "gromacs/applied_forces/densityfitting/densityfitting.h"
 
+#include <filesystem>
+#include <memory>
+#include <string>
+
 #include <gtest/gtest.h>
 
 #include "gromacs/gmxlib/network.h"
 #include "gromacs/math/paddedvector.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/mdrunutility/mdmodulesnotifiers.h"
 #include "gromacs/mdtypes/enerdata.h"
 #include "gromacs/mdtypes/forceoutput.h"
 #include "gromacs/mdtypes/iforceprovider.h"
 #include "gromacs/mdtypes/imdmodule.h"
 #include "gromacs/mdtypes/imdpoptionprovider.h"
+#include "gromacs/mdtypes/imdpoptionprovider_test_helper.h"
 #include "gromacs/mdtypes/mdatom.h"
 #include "gromacs/options/options.h"
 #include "gromacs/options/treesupport.h"
+#include "gromacs/utility/keyvaluetree.h"
 #include "gromacs/utility/keyvaluetreebuilder.h"
 #include "gromacs/utility/keyvaluetreetransform.h"
 #include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/stringcompare.h"
+#include "gromacs/utility/vec.h"
 
 #include "testutils/testasserts.h"
 #include "testutils/testfilemanager.h"
@@ -84,7 +90,7 @@ public:
     {
         mdpValueBuilder_.rootObject().addValue(
                 "density-guided-simulation-reference-density-filename",
-                std::string(test::TestFileManager::getInputFilePath("ellipsoid-density.mrc").u8string()));
+                std::string(test::TestFileManager::getInputFilePath("ellipsoid-density.mrc").string()));
     }
 
     //! build an mdp options tree that sets the options for the density fitting module
@@ -94,18 +100,7 @@ public:
 
         densityFittingModule_ = DensityFittingModuleInfo::create();
 
-        // set up options
-        Options densityFittingModuleOptions;
-        densityFittingModule_->mdpOptionProvider()->initMdpOptions(&densityFittingModuleOptions);
-
-        // Add rules to transform mdp inputs to densityFittingModule data
-        KeyValueTreeTransformer transform;
-        transform.rules()->addRule().keyMatchType("/", StringCompareType::CaseAndDashInsensitive);
-        densityFittingModule_->mdpOptionProvider()->initMdpTransform(transform.rules());
-
-        // Execute the transform on the mdpValues
-        auto transformedMdpValues = transform.transform(mdpOptionsTree, nullptr);
-        assignOptionsFromKeyValueTree(&densityFittingModuleOptions, transformedMdpValues.object(), nullptr);
+        test::fillOptionsFromMdpValues(mdpOptionsTree, densityFittingModule_->mdpOptionProvider());
     }
 
     void initializeForceProviders()

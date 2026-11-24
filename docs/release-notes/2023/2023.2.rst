@@ -67,7 +67,7 @@ Fix assertion failure with annealing and multiple T-coupling groups
 Properly update the backup checkpoint
 """""""""""""""""""""""""""""""""""""
 
-In 2023 and 2023.1, the ``state_prev.cpt`` file was never 
+In 2023 and 2023.1, the ``state_prev.cpt`` file was never
 overwritten, and thus always contained the very first checkpoint
 for the run.
 
@@ -130,7 +130,7 @@ gmxapi.commandline_operation environment variable filtering
 
 A new utility (:py:func:`gmxapi.runtime.filtered_mpi_environ()`) is available
 to remove MPI-related environment variables from :py:data:`os.environ`, such as
-to prepare the subprocess environment of `gmxapi.commandline_operation`.
+to prepare the subprocess environment of ``gmxapi.commandline_operation``.
 
 This is a follow-up to :issue:`4423`, for which the original fix appeared to be insufficient.
 
@@ -146,14 +146,14 @@ and can thus be hard to identify in API use cases.
 
 Additional checking has been added to :py:func:`gmxapi.simulation.workflow.from_tpr`
 to try to preempt user errors,
-and additional usage notes have been added to `gmxapi.mdrun`.
+and additional usage notes have been added to ``gmxapi.mdrun``.
 
 :issue:`4771`
 
 gmxapi.mdrun task uniqueness
 """"""""""""""""""""""""""""
 
-Fix a bug in which all `gmxapi.mdrun` simulation tasks had the same ID (and working directory).
+Fix a bug in which all ``gmxapi.mdrun`` simulation tasks had the same ID (and working directory).
 
 :issue:`4795`
 
@@ -207,9 +207,9 @@ have the same effect as -1 and cause a new seed to be generated from the OS.
 Correct formulas for Nosé-Hoover thermostat
 """""""""""""""""""""""""""""""""""""""""""
 
-Several formulas describing Nosé-Hoover temperature coupling contained 
-inconsistencies. The reference manual was updated to match the actual 
-implementation. 
+Several formulas describing Nosé-Hoover temperature coupling contained
+inconsistencies. The reference manual was updated to match the actual
+implementation.
 
 :issue:`4695`
 

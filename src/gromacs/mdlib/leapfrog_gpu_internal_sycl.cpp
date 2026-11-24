@@ -46,12 +46,12 @@
 
 #include "gromacs/gpu_utils/devicebuffer.h"
 #include "gromacs/gpu_utils/gmxsycl.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/mdlib/leapfrog_gpu.h"
 #include "gromacs/mdtypes/group.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/template_mp.h"
+#include "gromacs/utility/vec.h"
 
 #include "leapfrog_gpu_internal.h"
 
@@ -74,7 +74,7 @@ using mode = sycl::access_mode;
  * \tparam        numTempScaleValues                The number of different T-couple values.
  * \tparam        parrinelloRahmanVelocityScaling   The properties of the Parrinello-Rahman velocity scaling matrix.
  * \param[in,out] gm_x                              Coordinates to update upon integration.
- * \param[out]    gm_xp                             A copy of the coordinates before the integration (for constraints).
+ * \param[out]    gm_x0                             A copy of the coordinates before the integration (for constraints).
  * \param[in,out] gm_v                              Velocities to update.
  * \param[in]     gm_f                              Atomic forces.
  * \param[in]     gm_inverseMasses                  Reciprocal masses.
@@ -85,7 +85,7 @@ using mode = sycl::access_mode;
  */
 template<NumTempScaleValues numTempScaleValues, ParrinelloRahmanVelocityScaling parrinelloRahmanVelocityScaling>
 auto leapFrogKernel(Float3* __restrict__ gm_x,
-                    Float3* __restrict__ gm_xp,
+                    Float3* __restrict__ gm_x0,
                     Float3* __restrict__ gm_v,
                     const Float3* __restrict__ gm_f,
                     const float* __restrict__ gm_inverseMasses,
@@ -94,20 +94,18 @@ auto leapFrogKernel(Float3* __restrict__ gm_x,
                     const unsigned short* __restrict__ gm_tempScaleGroups /* used iff numTempScaleValues == Multiple */,
                     Float3 prVelocityScalingMatrixDiagonal)
 {
-    return [=](sycl::id<1> itemIdx) {
+    return [=](sycl::id<1> itemIdx)
+    {
         const Float3 x    = gm_x[itemIdx];
         const Float3 v    = gm_v[itemIdx];
         const Float3 f    = gm_f[itemIdx];
         const float  im   = gm_inverseMasses[itemIdx];
         const float  imdt = im * dt;
 
-        // Swapping places for xp and x so that the x will contain the updated coordinates and xp -
-        // the coordinates before update. This should be taken into account when (if) constraints
-        // are applied after the update: x and xp have to be passed to constraints in the 'wrong'
-        // order. See Issue #3727
-        gm_xp[itemIdx] = x;
+        gm_x0[itemIdx] = x;
 
-        const float lambda = [=]() {
+        const float lambda = [=]()
+        {
             if constexpr (numTempScaleValues == NumTempScaleValues::None)
             {
                 return 1.0F;
@@ -123,7 +121,8 @@ auto leapFrogKernel(Float3* __restrict__ gm_x,
             }
         }();
 
-        const Float3 prVelocityDelta = [=]() {
+        const Float3 prVelocityDelta = [=]()
+        {
             if constexpr (parrinelloRahmanVelocityScaling == ParrinelloRahmanVelocityScaling::Diagonal)
             {
                 return Float3{ prVelocityScalingMatrixDiagonal[0] * v[0],
@@ -157,39 +156,15 @@ static void launchLeapFrogKernel(const DeviceStream& deviceStream, int numAtoms,
     using kernelNameType = LeapFrogKernel<numTempScaleValues, parrinelloRahmanVelocityScaling>;
 
     const sycl::range<1> rangeAllAtoms(numAtoms);
-    sycl::queue          q = deviceStream.stream();
 
-    q.submit(GMX_SYCL_DISCARD_EVENT[&](sycl::handler & cgh) {
-        auto kernel = leapFrogKernel<numTempScaleValues, parrinelloRahmanVelocityScaling>(
-                std::forward<Args>(args)...);
-        cgh.parallel_for<kernelNameType>(rangeAllAtoms, kernel);
-    });
-}
-
-//! Convert \p doTemperatureScaling and \p numTempScaleValues to \ref NumTempScaleValues.
-static NumTempScaleValues getTempScalingType(bool doTemperatureScaling, int numTempScaleValues)
-{
-    if (!doTemperatureScaling)
-    {
-        return NumTempScaleValues::None;
-    }
-    else if (numTempScaleValues == 1)
-    {
-        return NumTempScaleValues::Single;
-    }
-    else if (numTempScaleValues > 1)
-    {
-        return NumTempScaleValues::Multiple;
-    }
-    else
-    {
-        gmx_incons("Temperature coupling was requested with no temperature coupling groups.");
-    }
+    auto kernelFunctionBuilder = leapFrogKernel<numTempScaleValues, parrinelloRahmanVelocityScaling>;
+    syclSubmitWithoutCghOrEvent<kernelNameType>(
+            deviceStream.stream(), kernelFunctionBuilder, rangeAllAtoms, std::forward<Args>(args)...);
 }
 
 /*! \brief Select templated kernel and launch it. */
 template<class... Args>
-static inline void launchLeapFrogKernel(NumTempScaleValues              tempScalingType,
+static inline void launchLeapFrogKernel(NumTempScaleValues tempScalingType,
                                         ParrinelloRahmanVelocityScaling parrinelloRahmanVelocityScaling,
                                         Args&&... args)
 {
@@ -207,7 +182,7 @@ static inline void launchLeapFrogKernel(NumTempScaleValues              tempScal
 
 void launchLeapFrogKernel(int                                   numAtoms,
                           DeviceBuffer<Float3>                  d_x,
-                          DeviceBuffer<Float3>                  d_xp,
+                          DeviceBuffer<Float3>                  d_x0,
                           DeviceBuffer<Float3>                  d_v,
                           const DeviceBuffer<Float3>            d_f,
                           const DeviceBuffer<float>             d_inverseMasses,
@@ -229,7 +204,7 @@ void launchLeapFrogKernel(int                                   numAtoms,
                          deviceStream,
                          numAtoms,
                          d_x.get_pointer(),
-                         d_xp.get_pointer(),
+                         d_x0.get_pointer(),
                          d_v.get_pointer(),
                          d_f.get_pointer(),
                          d_inverseMasses.get_pointer(),

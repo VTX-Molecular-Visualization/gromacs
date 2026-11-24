@@ -35,6 +35,9 @@
 
 #include "mdsetup.h"
 
+#include <memory>
+#include <vector>
+
 #include "gromacs/domdec/domdec.h"
 #include "gromacs/domdec/domdec_struct.h"
 #include "gromacs/domdec/localtopology.h"
@@ -49,8 +52,10 @@
 #include "gromacs/mdtypes/forcerec.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/interaction_const.h"
+#include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/mdtypes/mdatom.h"
 #include "gromacs/pbcutil/pbc.h"
+#include "gromacs/topology/idef.h"
 #include "gromacs/topology/mtop_util.h"
 #include "gromacs/topology/topology.h"
 #include "gromacs/utility/arrayref.h"
@@ -64,7 +69,7 @@ namespace gmx
  * The final solution should be an MD algorithm base class with methods
  * for initialization and atom-data setup.
  */
-void mdAlgorithmsSetupAtomData(const t_commrec*     cr,
+void mdAlgorithmsSetupAtomData(const gmx_domdec_t*  dd,
                                const t_inputrec&    inputrec,
                                const gmx_mtop_t&    top_global,
                                gmx_localtop_t*      top,
@@ -75,17 +80,15 @@ void mdAlgorithmsSetupAtomData(const t_commrec*     cr,
                                VirtualSitesHandler* vsite,
                                gmx_shellfc_t*       shellfc)
 {
-    bool usingDomDec = haveDDAtomOrdering(*cr);
-
     int numAtomIndex;
     int numHomeAtoms;
     int numTotalAtoms;
 
-    if (usingDomDec)
+    if (dd)
     {
-        numAtomIndex  = dd_natoms_mdatoms(*cr->dd);
-        numHomeAtoms  = dd_numHomeAtoms(*cr->dd);
-        numTotalAtoms = dd_natoms_mdatoms(*cr->dd);
+        numAtomIndex  = dd_natoms_mdatoms(*dd);
+        numHomeAtoms  = dd_numHomeAtoms(*dd);
+        numTotalAtoms = dd_natoms_mdatoms(*dd);
     }
     else
     {
@@ -99,27 +102,27 @@ void mdAlgorithmsSetupAtomData(const t_commrec*     cr,
         force->resize(numTotalAtoms);
     }
 
-    atoms2md(top_global,
-             inputrec,
-             numAtomIndex,
-             usingDomDec ? cr->dd->globalAtomIndices : std::vector<int>(),
-             numHomeAtoms,
-             mdAtoms);
+    ArrayRef<const int> globalAtomIndices;
+    if (dd)
+    {
+        globalAtomIndices = dd->globalAtomIndices;
+    }
+    atoms2md(top_global, inputrec, numAtomIndex, globalAtomIndices, numHomeAtoms, mdAtoms);
 
     t_mdatoms* mdatoms = mdAtoms->mdatoms();
-    if (!usingDomDec)
+    if (dd == nullptr)
     {
         gmx_mtop_generate_local_top(top_global, top, inputrec.efep != FreeEnergyPerturbationType::No);
     }
 
-    if (fr->wholeMoleculeTransform && usingDomDec)
+    if (fr->wholeMoleculeTransform && dd)
     {
-        fr->wholeMoleculeTransform->updateAtomOrder(cr->dd->globalAtomIndices, *cr->dd->ga2la);
+        fr->wholeMoleculeTransform->updateAtomOrder(dd->globalAtomIndices, *dd->ga2la);
     }
 
     if (vsite)
     {
-        vsite->setVirtualSites(top->idef.il, mdatoms->nr, mdatoms->homenr, mdatoms->ptype);
+        vsite->setVirtualSites(&top->idef.il, mdatoms->nr, mdatoms->homenr, mdatoms->ptype);
     }
 
     /* Note that with DD only flexible constraints, not shells, are supported
@@ -128,17 +131,18 @@ void mdAlgorithmsSetupAtomData(const t_commrec*     cr,
      * TODO: This should only happen in ShellFCElement (it is called directly by the modular
      *       simulator ShellFCElement already, but still used here by legacy simulators)
      */
-    if (!usingDomDec && shellfc)
+    if (dd == nullptr && shellfc)
     {
-        make_local_shells(cr, *mdatoms, shellfc);
+        make_local_shells(dd, *mdatoms, shellfc);
     }
 
+    // TODO: warning/error if posresCom and posresComB do not have the same size
     for (auto& listedForces : fr->listedForces)
     {
-        listedForces.setup(top->idef, fr->natoms_force, fr->listedForcesGpu != nullptr);
+        listedForces.setup(top->idef, fr->natoms_force, fr->listedForcesGpu != nullptr, mdatoms->cVCM);
     }
 
-    if ((usingPme(fr->ic->eeltype) || usingLJPme(fr->ic->vdwtype)) && (cr->duty & DUTY_PME))
+    if ((usingPme(fr->ic->coulomb.type) || usingLJPme(fr->ic->vdw.type)) && thisRankHasPmeDuty(dd))
     {
         /* This handles the PP+PME rank case where fr->pmedata is valid.
          * For PME-only ranks, gmx_pmeonly() has its own call to gmx_pme_reinit_atoms().

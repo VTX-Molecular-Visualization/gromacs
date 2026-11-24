@@ -47,6 +47,7 @@
 #include "gromacs/gpu_utils/sycl_kernel_utils.h"
 #include "gromacs/gpu_utils/syclutils.h"
 #include "gromacs/math/functions.h"
+#include "gromacs/utility/basedefinitions.h"
 
 #include "pme_gpu_calculate_splines_sycl.h"
 #include "pme_gpu_constants.h"
@@ -58,7 +59,7 @@
  * than dynamic index-based accesses to the grid size data to avoid
  * local memory operations and related large overhead.
  *
- * Drastically reduces register spills on AMD via hipSYCL, and improves performance 10x.
+ * Drastically reduces register spills on AMD via AdaptiveCpp, and improves performance 10x.
  *
  * \param[in]  realGridSizeFP     Local grid size constant
  * \param[in]  dimIndex           Dimension index (XX, YY, ZZ)
@@ -273,10 +274,11 @@ inline void calculateAndStoreGridForces(sycl::local_ptr<Float3>             sm_f
  * \tparam readGlobal     Tells if we should read spline values from global memory.
  * \tparam threadsPerAtom How many threads work on each atom.
  * \tparam subGroupSize   Size of the sub-group.
+ * \tparam CommandGroupHandler  Type of real or dummy command group handler
  */
-template<int order, bool wrapX, bool wrapY, int numGrids, bool readGlobal, ThreadsPerAtom threadsPerAtom, int subGroupSize>
-auto pmeGatherKernel(sycl::handler& cgh,
-                     const int      nAtoms,
+template<int order, bool wrapX, bool wrapY, int numGrids, bool readGlobal, ThreadsPerAtom threadsPerAtom, int subGroupSize, typename CommandGroupHandler>
+auto pmeGatherKernel(CommandGroupHandler cgh,
+                     const int           nAtoms,
                      const float* __restrict__ gm_gridA,
                      const float* __restrict__ gm_gridB,
                      const float* __restrict__ gm_coefficientsA,
@@ -300,8 +302,8 @@ auto pmeGatherKernel(sycl::handler& cgh,
     static_assert(numGrids == 1 || numGrids == 2);
 
     constexpr int threadsPerAtomValue = (threadsPerAtom == ThreadsPerAtom::Order) ? order : order * order;
-    constexpr int atomDataSize        = threadsPerAtomValue;
-    constexpr int atomsPerBlock       = (c_gatherMaxWarpsPerBlock * subGroupSize) / atomDataSize;
+    constexpr int atomDataSize  = threadsPerAtomValue;
+    constexpr int atomsPerBlock = (c_gatherMaxWarpsPerBlock * subGroupSize) / atomDataSize;
     // Number of atoms processed by a single warp in spread and gather
     static_assert(subGroupSize >= atomDataSize);
     constexpr int atomsPerWarp        = subGroupSize / atomDataSize;
@@ -310,35 +312,65 @@ auto pmeGatherKernel(sycl::handler& cgh,
     constexpr int gridlineIndicesSize = atomsPerBlock * DIM;
 
     // Gridline indices, ivec
-    sycl::local_accessor<int, 1> sm_gridlineIndices(sycl::range<1>(atomsPerBlock * DIM), cgh);
+    using GridLineIndices = StaticLocalStorage<int, atomsPerBlock * DIM>;
     // Spline values
-    sycl::local_accessor<float, 1> sm_theta(sycl::range<1>(atomsPerBlock * DIM * order), cgh);
+    using Theta = StaticLocalStorage<float, atomsPerBlock * DIM * order>;
     // Spline derivatives
-    sycl::local_accessor<float, 1> sm_dtheta(sycl::range<1>(atomsPerBlock * DIM * order), cgh);
+    using DTheta = StaticLocalStorage<float, atomsPerBlock * DIM * order>;
     // Coefficients prefetch cache
-    sycl::local_accessor<float, 1> sm_coefficients(sycl::range<1>(atomsPerBlock), cgh);
+    using Coefficients = StaticLocalStorage<float, atomsPerBlock>;
     // Coordinates prefetch cache
-    sycl::local_accessor<Float3, 1> sm_coordinates(sycl::range<1>(atomsPerBlock), cgh);
+    using Coordinates = StaticLocalStorage<Float3, atomsPerBlock>;
     // Reduction of partial force contributions
-    sycl::local_accessor<Float3, 1> sm_forces(sycl::range<1>(atomsPerBlock), cgh);
+    using Forces = StaticLocalStorage<Float3, atomsPerBlock>;
+#if defined(__INTEL_LLVM_COMPILER) && __INTEL_LLVM_COMPILER >= 20260000
+    // Work around the compiler bug discussed in CMPLRLLVM-74953 and
+    // issue #5688. This allocates some extra shared local memory that
+    // is unused when splines are in fact recalculated, but that
+    // should have little effect on performance.
+    using FractCoords = StaticLocalStorage<float, atomsPerBlock * DIM, true>;
+#else
+    using FractCoords = StaticLocalStorage<float, atomsPerBlock * DIM, readGlobal>;
+#endif
+    // These declarations must be made on the host
+    auto sm_gridlineIndicesHostStorage = GridLineIndices::makeHostStorage(cgh);
+    auto sm_thetaHostStorage           = Theta::makeHostStorage(cgh);
+    auto sm_dthetaHostStorage          = DTheta::makeHostStorage(cgh);
+    auto sm_coefficientsHostStorage    = Coefficients::makeHostStorage(cgh);
+    auto sm_coordinatesHostStorage     = Coordinates::makeHostStorage(cgh);
+    auto sm_forcesHostStorage          = Forces::makeHostStorage(cgh);
+    auto sm_fractCoordsHostStorage     = FractCoords::makeHostStorage(cgh);
 
-    auto sm_fractCoords = [&]() {
-        if constexpr (!readGlobal)
-        {
-            return sycl::local_accessor<float, 1>(sycl::range<1>(atomsPerBlock * DIM), cgh);
-        }
-        else
-        {
-            return nullptr;
-        }
-    }();
-
-    return [=](sycl::nd_item<3> itemIdx) [[intel::reqd_sub_group_size(subGroupSize)]]
+    return [=](sycl::nd_item<3> itemIdx) [[sycl::reqd_sub_group_size(subGroupSize)]]
     {
         if constexpr (skipKernelCompilation<subGroupSize>())
         {
             return;
         }
+
+        // These declarations work on the device.
+        typename GridLineIndices::DeviceStorage sm_gridlineIndicesDeviceStorage;
+        typename Theta::DeviceStorage           sm_thetaDeviceStorage;
+        typename DTheta::DeviceStorage          sm_dthetaDeviceStorage;
+        typename Coefficients::DeviceStorage    sm_coefficientsDeviceStorage;
+        typename Coordinates::DeviceStorage     sm_coordinatesDeviceStorage;
+        typename Forces::DeviceStorage          sm_forcesDeviceStorage;
+        typename FractCoords::DeviceStorage     sm_fractCoordsDeviceStorage;
+        // Extract the valid pointer to local storage
+        sycl::local_ptr<int> sm_gridlineIndices = GridLineIndices::get_pointer(
+                sm_gridlineIndicesHostStorage, sm_gridlineIndicesDeviceStorage);
+        sycl::local_ptr<float> sm_theta = Theta::get_pointer(sm_thetaHostStorage, sm_thetaDeviceStorage);
+        sycl::local_ptr<float> sm_dtheta =
+                DTheta::get_pointer(sm_dthetaHostStorage, sm_dthetaDeviceStorage);
+        sycl::local_ptr<float> sm_coefficients =
+                Coefficients::get_pointer(sm_coefficientsHostStorage, sm_coefficientsDeviceStorage);
+        sycl::local_ptr<Float3> sm_coordinates =
+                Coordinates::get_pointer(sm_coordinatesHostStorage, sm_coordinatesDeviceStorage);
+        sycl::local_ptr<Float3> sm_forces =
+                Forces::get_pointer(sm_forcesHostStorage, sm_forcesDeviceStorage);
+        sycl::local_ptr<float> sm_fractCoords =
+                FractCoords::get_pointer(sm_fractCoordsHostStorage, sm_fractCoordsDeviceStorage);
+
         SYCL_ASSERT(blockSize == itemIdx.get_local_range().size());
         /* These are the atom indices - for the shared and global memory */
         const int atomIndexLocal = itemIdx.get_local_id(XX);
@@ -410,11 +442,9 @@ auto pmeGatherKernel(sycl::handler& cgh,
         {
             /* Recalculate  Splines  */
             /* Staging coefficients/charges */
-            pmeGpuStageAtomData<float, atomsPerBlock, 1>(
-                    sm_coefficients.get_pointer(), gm_coefficientsA, itemIdx);
+            pmeGpuStageAtomData<float, atomsPerBlock, 1>(sm_coefficients, gm_coefficientsA, itemIdx);
             /* Staging coordinates */
-            pmeGpuStageAtomData<Float3, atomsPerBlock, 1>(
-                    sm_coordinates.get_pointer(), gm_coordinates, itemIdx);
+            pmeGpuStageAtomData<Float3, atomsPerBlock, 1>(sm_coordinates, gm_coordinates, itemIdx);
             itemIdx.barrier(fence_space::local_space);
             const Float3 atomX      = sm_coordinates[atomIndexLocal];
             const float  atomCharge = sm_coefficients[atomIndexLocal];
@@ -433,12 +463,12 @@ auto pmeGatherKernel(sycl::handler& cgh,
                     nullptr,
                     gm_fractShiftsTable,
                     gm_gridlineIndicesTable,
-                    sm_theta.get_pointer(),
-                    sm_dtheta.get_pointer(),
-                    sm_gridlineIndices.get_pointer(),
-                    sm_fractCoords.get_pointer(),
+                    sm_theta,
+                    sm_dtheta,
+                    sm_gridlineIndices,
+                    sm_fractCoords,
                     itemIdx);
-            subGroupBarrier(itemIdx);
+            sycl::group_barrier(itemIdx.get_sub_group());
         }
         float fx = 0.0F;
         float fy = 0.0F;
@@ -486,13 +516,13 @@ auto pmeGatherKernel(sycl::handler& cgh,
                                                                   atomIndexLocal,
                                                                   splineIndexBase,
                                                                   tdz,
-                                                                  sm_gridlineIndices.get_pointer(),
-                                                                  sm_theta.get_pointer(),
-                                                                  sm_dtheta.get_pointer(),
+                                                                  sm_gridlineIndices,
+                                                                  sm_theta,
+                                                                  sm_dtheta,
                                                                   gm_gridA);
         }
         reduceAtomForces<order, atomDataSize, blockSize, subGroupSize>(
-                itemIdx, sm_forces.get_pointer(), atomIndexLocal, splineIndex, lineIndex, realGridSizeFP, fx, fy, fz);
+                itemIdx, sm_forces, atomIndexLocal, splineIndex, lineIndex, realGridSizeFP, fx, fy, fz);
         itemIdx.barrier(fence_space::local_space);
 
         /* Calculating the final forces with no component branching, atomsPerBlock threads */
@@ -500,7 +530,7 @@ auto pmeGatherKernel(sycl::handler& cgh,
         const int forceIndexGlobal = atomIndexOffset + forceIndexLocal;
         if (forceIndexLocal < atomsPerBlock)
         {
-            calculateAndStoreGridForces(sm_forces.get_pointer(),
+            calculateAndStoreGridForces(sm_forces,
                                         forceIndexLocal,
                                         forceIndexGlobal,
                                         currentRecipBox0,
@@ -536,11 +566,11 @@ auto pmeGatherKernel(sycl::handler& cgh,
         {
             /* We must sync here since the same shared memory is used as above. */
             itemIdx.barrier(fence_space::local_space);
-            fx                     = 0.0F;
-            fy                     = 0.0F;
-            fz                     = 0.0F;
-            const bool chargeCheck = pmeGpuCheckAtomCharge(gm_coefficientsB[atomIndexGlobal]);
-            if (chargeCheck)
+            fx                      = 0.0F;
+            fy                      = 0.0F;
+            fz                      = 0.0F;
+            const bool chargeCheck2 = pmeGpuCheckAtomCharge(gm_coefficientsB[atomIndexGlobal]);
+            if (chargeCheck2)
             {
                 sumForceComponents<order, atomsPerWarp, wrapX, wrapY>(&fx,
                                                                       &fy,
@@ -556,20 +586,20 @@ auto pmeGatherKernel(sycl::handler& cgh,
                                                                       atomIndexLocal,
                                                                       splineIndexBase,
                                                                       tdz,
-                                                                      sm_gridlineIndices.get_pointer(),
-                                                                      sm_theta.get_pointer(),
-                                                                      sm_dtheta.get_pointer(),
+                                                                      sm_gridlineIndices,
+                                                                      sm_theta,
+                                                                      sm_dtheta,
                                                                       gm_gridB);
             }
             // Reduction of partial force contributions
             reduceAtomForces<order, atomDataSize, blockSize, subGroupSize>(
-                    itemIdx, sm_forces.get_pointer(), atomIndexLocal, splineIndex, lineIndex, realGridSizeFP, fx, fy, fz);
+                    itemIdx, sm_forces, atomIndexLocal, splineIndex, lineIndex, realGridSizeFP, fx, fy, fz);
             itemIdx.barrier(fence_space::local_space);
 
             /* Calculating the final forces with no component branching, atomsPerBlock threads */
             if (forceIndexLocal < atomsPerBlock)
             {
-                calculateAndStoreGridForces(sm_forces.get_pointer(),
+                calculateAndStoreGridForces(sm_forces,
                                             forceIndexLocal,
                                             forceIndexGlobal,
                                             currentRecipBox0,
@@ -643,31 +673,31 @@ void PmeGatherKernel<order, wrapX, wrapY, numGrids, readGlobal, threadsPerAtom, 
 
     sycl::queue q = deviceStream.stream();
 
-    q.submit(GMX_SYCL_DISCARD_EVENT[&](sycl::handler & cgh) {
-        auto kernel = pmeGatherKernel<order, wrapX, wrapY, numGrids, readGlobal, threadsPerAtom, subGroupSize>(
-                cgh,
-                atomParams_->nAtoms,
-                gridParams_->d_realGrid[0].get_pointer(),
-                gridParams_->d_realGrid[1].get_pointer(),
-                atomParams_->d_coefficients[0].get_pointer(),
-                atomParams_->d_coefficients[1].get_pointer(),
-                atomParams_->d_coordinates.get_pointer(),
-                atomParams_->d_forces.get_pointer(),
-                atomParams_->d_theta.get_pointer(),
-                atomParams_->d_dtheta.get_pointer(),
-                atomParams_->d_gridlineIndices.get_pointer(),
-                gridParams_->d_fractShiftsTable.get_pointer(),
-                gridParams_->d_gridlineIndicesTable.get_pointer(),
-                gridParams_->tablesOffsets,
-                gridParams_->realGridSize,
-                gridParams_->realGridSizeFP,
-                gridParams_->realGridSizePadded,
-                dynamicParams_->recipBox[0],
-                dynamicParams_->recipBox[1],
-                dynamicParams_->recipBox[2],
-                dynamicParams_->scale);
-        cgh.parallel_for<kernelNameType>(range, kernel);
-    });
+    auto kernelFunctionBuilder =
+            pmeGatherKernel<order, wrapX, wrapY, numGrids, readGlobal, threadsPerAtom, subGroupSize, gmx::CommandGroupHandler>;
+    gmx::syclSubmitWithoutEvent<kernelNameType>(q,
+                                                kernelFunctionBuilder,
+                                                range,
+                                                atomParams_->nAtoms,
+                                                gridParams_->d_realGrid[0].get_pointer(),
+                                                gridParams_->d_realGrid[1].get_pointer(),
+                                                atomParams_->d_coefficients[0].get_pointer(),
+                                                atomParams_->d_coefficients[1].get_pointer(),
+                                                atomParams_->d_coordinates.get_pointer(),
+                                                atomParams_->d_forces.get_pointer(),
+                                                atomParams_->d_theta.get_pointer(),
+                                                atomParams_->d_dtheta.get_pointer(),
+                                                atomParams_->d_gridlineIndices.get_pointer(),
+                                                gridParams_->d_fractShiftsTable.get_pointer(),
+                                                gridParams_->d_gridlineIndicesTable.get_pointer(),
+                                                gridParams_->tablesOffsets,
+                                                gridParams_->realGridSize,
+                                                gridParams_->realGridSizeFP,
+                                                gridParams_->realGridSizePadded,
+                                                dynamicParams_->recipBox[0],
+                                                dynamicParams_->recipBox[1],
+                                                dynamicParams_->recipBox[2],
+                                                dynamicParams_->scale);
 
     // Delete set args, so we don't forget to set them before the next launch.
     reset();
@@ -688,10 +718,7 @@ void PmeGatherKernel<order, wrapX, wrapY, numGrids, readGlobal, threadsPerAtom, 
  * translation unit [-Wweak-template-vtables]" warning.
  * It is only explicitly instantiated in this translation unit, so we should be safe.
  */
-#ifdef __clang__
-#    pragma clang diagnostic push
-#    pragma clang diagnostic ignored "-Wweak-template-vtables"
-#endif
+CLANG_DIAGNOSTIC_IGNORE("-Wweak-template-vtables")
 
 #define INSTANTIATE_3(order, numGrids, readGlobal, threadsPerAtom, subGroupSize) \
     template class PmeGatherKernel<order, true, true, numGrids, readGlobal, threadsPerAtom, subGroupSize>;
@@ -706,12 +733,10 @@ void PmeGatherKernel<order, wrapX, wrapY, numGrids, readGlobal, threadsPerAtom, 
     INSTANTIATE_2(order, 2, ThreadsPerAtom::Order, subGroupSize);        \
     INSTANTIATE_2(order, 2, ThreadsPerAtom::OrderSquared, subGroupSize);
 
-#if GMX_SYCL_DPCPP
+#if GMX_SYCL_DPCPP || GMX_ACPP_HAVE_GENERIC_TARGET
 INSTANTIATE(4, 16); // TODO: Choose best value, Issue #4153.
 #endif
 INSTANTIATE(4, 32);
 INSTANTIATE(4, 64);
 
-#ifdef __clang__
-#    pragma clang diagnostic pop
-#endif
+CLANG_DIAGNOSTIC_RESET

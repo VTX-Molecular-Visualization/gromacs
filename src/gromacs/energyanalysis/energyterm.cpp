@@ -43,21 +43,24 @@
 #include "energyterm.h"
 
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 #include <optional>
 
 #include "gromacs/commandline/viewit.h"
+#include "gromacs/energyanalysis/energyanalysisframe.h"
 #include "gromacs/fileio/enxio.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/fileio/xvgr.h"
-#include "gromacs/math/vec.h"
+#include "gromacs/math/functions.h"
 #include "gromacs/statistics/statistics.h"
 #include "gromacs/topology/ifunc.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/vec.h"
 
 namespace gmx
 {
@@ -72,7 +75,9 @@ EnergyTerm::EnergyTerm(unsigned int       indexWithinEnergyFile,
     storeData_(bStoreData)
 {
 
-    for (int j = 0; (j <= F_ETOT); j++)
+    for (int j = static_cast<int>(InteractionFunction::Bonds);
+         (j <= static_cast<int>(InteractionFunction::TotalEnergy));
+         j++)
     {
         termIsEnergy_ = termIsEnergy_ || equalIgnoreDash(interaction_function[j].longname, energyTerm);
     }
@@ -126,7 +131,7 @@ void EnergyTerm::addFrame(double  time,
     if (numberOfEnergyTerms_ > 0)
     {
         average_           = totalSumOfEnergy_ / numberOfEnergyTerms_;
-        standardDeviation_ = sqrt(totalVarianceOfEnergy_ / numberOfEnergyTerms_);
+        standardDeviation_ = std::sqrt(totalVarianceOfEnergy_ / numberOfEnergyTerms_);
     }
 }
 
@@ -206,7 +211,7 @@ std::optional<real> EnergyTerm::errorEstimate(unsigned int numBlocks) const
             bSum2 += sum * sum;
         }
     }
-    return (numBlocks > 0) ? std::optional(sqrt(bSum2 / numBlocks - square(bSum / numBlocks)))
+    return (numBlocks > 0) ? std::optional(std::sqrt(bSum2 / numBlocks - square(bSum / numBlocks)))
                            : std::nullopt;
 }
 

@@ -45,10 +45,11 @@
 
 #include "config.h"
 
-#include "gromacs/math/vectypes.h"
 #include "gromacs/simd/simd.h"
 #include "gromacs/utility/real.h"
+#include "gromacs/utility/vectypes.h"
 
+#include "pairlist.h"
 #include "pairlistparams.h"
 
 //! The types of nbNxM SIMD kernel layout
@@ -66,7 +67,27 @@ enum class KernelLayoutClusterRatio
     JSizeIsHalfISize    //!< j-cluster size = i-cluster size / 2
 };
 
+//! The NBNxM i-cluster size in atoms for the given NBNxM kernel layout
+static constexpr int sc_iClusterSize(const KernelLayout kernelLayout)
+{
+    switch (kernelLayout)
+    {
+        case KernelLayout::r4xM: return 4;
+        case KernelLayout::r2xMM: return 4;
+    }
+}
+
 #if GMX_SIMD
+
+//! The NBNxM j-cluster size in atoms for the given NBNxM kernel layout
+static constexpr int sc_jClusterSize(const KernelLayout kernelLayout)
+{
+    switch (kernelLayout)
+    {
+        case KernelLayout::r4xM: return GMX_SIMD_REAL_WIDTH;
+        case KernelLayout::r2xMM: return GMX_SIMD_REAL_WIDTH / 2;
+    }
+}
 
 /*! \brief Returns the ratio of j-cluster size versus i-cluster size
  *
@@ -78,20 +99,21 @@ enum class KernelLayoutClusterRatio
 template<KernelLayout kernelLayout>
 static constexpr KernelLayoutClusterRatio kernelLayoutClusterRatio()
 {
-    static_assert(kernelLayout == KernelLayout::r4xM || kernelLayout == KernelLayout::r2xMM);
-    constexpr int iClusterSize = 4;
-    constexpr int jClusterSize =
-            (kernelLayout == KernelLayout::r4xM ? GMX_SIMD_REAL_WIDTH : GMX_SIMD_REAL_WIDTH / 2);
+    constexpr int c_iClusterSize = sc_iClusterSize(kernelLayout);
+    constexpr int c_jClusterSize = sc_jClusterSize(kernelLayout);
 
-    if constexpr (jClusterSize == iClusterSize)
+    static_assert(c_jClusterSize == c_iClusterSize || c_jClusterSize == 2 * c_iClusterSize
+                  || 2 * c_jClusterSize == c_iClusterSize);
+
+    if constexpr (c_jClusterSize == c_iClusterSize)
     {
         return KernelLayoutClusterRatio::JSizeEqualsISize;
     }
-    else if constexpr (jClusterSize == 2 * iClusterSize)
+    else if constexpr (c_jClusterSize == 2 * c_iClusterSize)
     {
         return KernelLayoutClusterRatio::JSizeIsDoubleISize;
     }
-    else if constexpr (2 * jClusterSize == iClusterSize)
+    else if constexpr (2 * c_jClusterSize == c_iClusterSize)
     {
         return KernelLayoutClusterRatio::JSizeIsHalfISize;
     }
@@ -138,7 +160,7 @@ static constexpr bool c_useTableFormatFDV0 = false;
  * \param[in] f  The function
  */
 template<int N, class F>
-std::array<gmx::SimdReal, N> genArr(F f)
+static gmx_inline std::array<gmx::SimdReal, N> genArr(F f)
 {
     static_assert(N <= 2 || N == 4);
 
@@ -170,7 +192,7 @@ std::array<gmx::SimdReal, N> genArr(F f)
  * \param[in] f  The function
  */
 template<int N, class F>
-std::array<gmx::SimdBool, N> genBoolArr(F f)
+static gmx_inline std::array<gmx::SimdBool, N> genBoolArr(F f)
 {
     static_assert(N <= 2 || N == 4);
 
@@ -189,6 +211,26 @@ std::array<gmx::SimdBool, N> genBoolArr(F f)
     else
     {
         return std::array<gmx::SimdBool, 4>{ f(0), f(1), f(2), f(3) };
+    }
+}
+
+/*! \brief Returns the sum over an array of SimdReal elements
+ *
+ * \tparam N  The size of the array
+ * \param  a  The elements to sum over
+ */
+template<size_t N>
+static gmx_inline gmx::SimdReal sumArray(const std::array<gmx::SimdReal, N>& a)
+{
+    static_assert(N == 2 || N == 4);
+
+    if constexpr (N == 2)
+    {
+        return a[0] + a[1];
+    }
+    else
+    {
+        return a[0] + a[1] + a[2] + a[3];
     }
 }
 

@@ -50,6 +50,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -90,7 +91,7 @@ public:
             {
                 const int         code    = errno;
                 const std::string message = formatString("Failed to list files in directory '%s'",
-                                                         dirname.u8string().c_str());
+                                                         dirname.string().c_str());
                 GMX_THROW_WITH_ERRNO(FileIOError(message), "opendir", code);
             }
             return nullptr;
@@ -137,11 +138,10 @@ DirectoryEnumerator::enumerateFilesWithExtension(const std::filesystem::path& di
     {
         if (debug)
         {
-            std::fprintf(
-                    debug, "dir '%s' file '%s'\n", dirname.u8string().c_str(), nextName->u8string().c_str());
+            std::fprintf(debug, "dir '%s' file '%s'\n", dirname.string().c_str(), nextName->string().c_str());
         }
         // TODO: What about case sensitivity?
-        if (endsWith(nextName.value().u8string(), extension))
+        if (endsWith(nextName.value().string(), extension))
         {
             result.emplace_back(nextName.value());
         }

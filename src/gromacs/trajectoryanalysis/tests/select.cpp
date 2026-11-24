@@ -50,13 +50,21 @@
 
 #include "gromacs/trajectoryanalysis/modules/select.h"
 
+#include <string>
+
 #include <gtest/gtest.h>
+
+#include "gromacs/utility/arrayref.h"
 
 #include "testutils/cmdlinetest.h"
 #include "testutils/textblockmatchers.h"
 
 #include "moduletest.h"
 
+namespace gmx
+{
+namespace test
+{
 namespace
 {
 
@@ -150,4 +158,14 @@ TEST_F(SelectModuleTest, WritesResidueIndices)
     runTest(CommandLine(cmdline));
 }
 
+TEST_F(SelectModuleTest, HandlesPrimeInAtomName)
+{
+    const char* const cmdline[] = { "select", "-select", "name \"O4'\"" };
+    setTopology("adenine.pdb");
+    includeDataset("index");
+    runTest(CommandLine(cmdline));
+}
+
 } // namespace
+} // namespace test
+} // namespace gmx

@@ -115,22 +115,29 @@
 #include <cmath>
 
 #include <algorithm>
+#include <memory>
 
 #include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
 #include "gromacs/math/utilities.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/selection/indexutil.h"
 #include "gromacs/selection/position.h"
 #include "gromacs/selection/selection.h"
+#include "gromacs/selection/selparam.h"
+#include "gromacs/selection/selvalue.h"
 #include "gromacs/utility/arraysize.h"
 #include "gromacs/utility/exceptions.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "selelem.h"
 #include "selmethod.h"
 #include "selmethod_impl.h"
+
+struct gmx_mtop_t;
 
 using std::max;
 using std::min;
@@ -249,7 +256,6 @@ static void* init_data_insolidangle(int npar, gmx_ana_selparam_t* param);
  * \param   npar Not used.
  * \param   param Not used.
  * \param   data Pointer to \ref t_methoddata_insolidangle to initialize.
- * \returns 0 on success, -1 on failure.
  *
  * Converts t_methoddata_insolidangle::angcut to radians and allocates
  * and allocates memory for the bins used during the evaluation.
@@ -661,8 +667,8 @@ static int find_surface_bin(t_methoddata_insolidangle* surf, rvec x)
     real theta, phi;
     int  tbin, pbin;
 
-    theta = acos(x[ZZ]);
-    phi   = atan2(x[YY], x[XX]);
+    theta = std::acos(x[ZZ]);
+    phi   = std::atan2(x[YY], x[XX]);
     tbin  = static_cast<int>(std::floor(theta / surf->tbinsize));
     if (tbin >= surf->ntbins)
     {
@@ -855,8 +861,8 @@ static void store_surface_point(t_methoddata_insolidangle* surf, rvec x)
     real theta1, theta2, pdelta1, pdelta2;
     int  tbin;
 
-    theta = acos(x[ZZ]);
-    phi   = atan2(x[YY], x[XX]);
+    theta = std::acos(x[ZZ]);
+    phi   = std::atan2(x[YY], x[XX]);
     /* Find the maximum extent in the phi direction */
     if (theta <= surf->angcut)
     {
@@ -870,8 +876,8 @@ static void store_surface_point(t_methoddata_insolidangle* surf, rvec x)
     }
     else
     {
-        pdeltamax = std::asin(sin(surf->angcut) / sin(theta));
-        tmax      = std::acos(cos(theta) / cos(surf->angcut));
+        pdeltamax = std::asin(std::sin(surf->angcut) / std::sin(theta));
+        tmax      = std::acos(std::cos(theta) / std::cos(surf->angcut));
     }
     /* Find the first affected bin */
     tbin   = max(static_cast<int>(std::floor((theta - surf->angcut) / surf->tbinsize)), 0);
@@ -909,9 +915,9 @@ static void store_surface_point(t_methoddata_insolidangle* surf, rvec x)
              * such that the case above catches this instead of falling through
              * here. */
             pdelta2 = 2
-                      * asin(std::sqrt((gmx::square(std::sin(surf->angcut / 2))
-                                        - gmx::square(std::sin((theta2 - theta) / 2)))
-                                       / (sin(theta) * sin(theta2))));
+                      * std::asin(std::sqrt((gmx::square(std::sin(surf->angcut / 2))
+                                             - gmx::square(std::sin((theta2 - theta) / 2)))
+                                            / (std::sin(theta) * std::sin(theta2))));
         }
         /* Update the bin */
         if (tmax >= theta1 && tmax <= theta2)

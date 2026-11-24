@@ -42,15 +42,24 @@
 
 #include "colvarspreprocessor.h"
 
+#include <list>
+#include <map>
+#include <sstream>
 #include <string>
+
+#include "gromacs/applied_forces/colvars/colvarproxygromacs.h"
+#include "gromacs/pbcutil/pbc.h"
+
+enum class PbcType : int;
 
 namespace gmx
 {
+class MDLogger;
 
 ColvarsPreProcessor::ColvarsPreProcessor(const std::string&   colvarsConfigString,
                                          t_atoms              atoms,
                                          PbcType              pbcType,
-                                         const MDLogger*      logger,
+                                         const MDLogger&      logger,
                                          real                 ensembleTemperature,
                                          int                  seed,
                                          const matrix         box,
@@ -77,7 +86,7 @@ std::vector<RVec> ColvarsPreProcessor::getColvarsCoords()
 {
 
     std::vector<RVec> colvarsCoords;
-
+    colvarsCoords.reserve(atoms_ids.size());
     for (const auto& atom_id : atoms_ids)
     {
         colvarsCoords.push_back(x_[atom_id]);

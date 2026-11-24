@@ -47,10 +47,10 @@
 #include <vector>
 
 #include "gromacs/math/arrayrefwithpadding.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/utility/alignedallocator.h"
 #include "gromacs/utility/allocator.h"
 #include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/vectypes.h"
 
 namespace gmx
 {
@@ -334,7 +334,7 @@ public:
     //! Return whether the storage is empty.
     bool empty() const { return storage_.empty(); }
     //! Swap two PaddedVectors
-    void swap(PaddedVector& x)
+    void swap(PaddedVector& x) noexcept
     {
         std::swap(storage_, x.storage_);
         std::swap(unpaddedEnd_, x.unpaddedEnd_);
@@ -377,20 +377,14 @@ public:
     {
         return ArrayRefWithPadding<const T>(data(), data() + size(), data() + paddedSize());
     }
-    /*! \brief Returns an rvec * pointer for containers of RVec, for use with legacy code.
-     *
-     * \todo Use std::is_same_v when CUDA 11 is a requirement.
-     */
-    template<typename AlsoT = T, typename = typename std::enable_if<std::is_same<AlsoT, RVec>::value>>
+    //! Returns an rvec * pointer for containers of RVec, for use with legacy code.
+    template<typename AlsoT = T, typename = std::enable_if_t<std::is_same_v<AlsoT, RVec>>>
     rvec* rvec_array()
     {
         return as_rvec_array(data());
     }
-    /*! \brief Returns a const rvec * pointer for containers of RVec, for use with legacy code.
-     *
-     * \todo Use std::is_same_v when CUDA 11 is a requirement.
-     */
-    template<typename AlsoT = T, typename = typename std::enable_if<std::is_same<AlsoT, RVec>::value>>
+    //! Returns a const rvec * pointer for containers of RVec, for use with legacy code.
+    template<typename AlsoT = T, typename = std::enable_if_t<std::is_same_v<AlsoT, RVec>>>
     const rvec* rvec_array() const
     {
         return as_rvec_array(data());

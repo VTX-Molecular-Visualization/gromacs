@@ -35,9 +35,15 @@
 
 #include "gromacs/fileio/oenv.h"
 
+#include <cstdlib>
+
+#include <string>
+
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/programcontext.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/stringutil.h"
 
@@ -109,8 +115,8 @@ void output_env_init(gmx_output_env_t**          oenvp,
         oenv->view                    = view;
         oenv->xvgFormat               = xvgFormat;
         oenv->verbosity               = verbosity;
-        const char* env               = getenv("GMX_TRAJECTORY_IO_VERBOSITY");
-        oenv->trajectory_io_verbosity = (env != nullptr ? strtol(env, nullptr, 10) : 1);
+        const char* env               = std::getenv("GMX_TRAJECTORY_IO_VERBOSITY");
+        oenv->trajectory_io_verbosity = (env != nullptr ? std::strtol(env, nullptr, 10) : 1);
     }
     GMX_CATCH_ALL_AND_EXIT_WITH_FATAL_ERROR
 }

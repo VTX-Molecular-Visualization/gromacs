@@ -34,27 +34,41 @@
 #include "gmxpre.h"
 
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 #include <algorithm>
 #include <array>
+#include <filesystem>
+#include <string>
+#include <vector>
 
+#include "gromacs/commandline/filenm.h"
 #include "gromacs/commandline/pargs.h"
 #include "gromacs/commandline/viewit.h"
+#include "gromacs/fileio/filetypes.h"
+#include "gromacs/fileio/oenv.h"
 #include "gromacs/fileio/tpxio.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/fileio/xvgr.h"
 #include "gromacs/gmxana/gmx_ana.h"
 #include "gromacs/math/nrjac.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/pbcutil/rmpbc.h"
 #include "gromacs/topology/index.h"
 #include "gromacs/topology/topology.h"
+#include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/arraysize.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/booltype.h"
 #include "gromacs/utility/cstringutil.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
+
+enum class PbcType : int;
+struct gmx_output_env_t;
 
 static void gyro_eigen(double** gyr, double* eig, double** eigv, int* ord)
 {
@@ -85,19 +99,19 @@ static void gyro_eigen(double** gyr, double* eig, double** eigv, int* ord)
 }
 
 /* Calculate mean square internal distances (Auhl et al., JCP 119, 12718) */
-static void calc_int_dist(double* intd, rvec* x, int i0, int i1)
+static void calc_int_dist(double* intd, rvec* x, gmx::ArrayRef<const int> index)
 {
     int       ii;
-    const int ml = i1 - i0 + 1; /* Number of beads in molecule. */
-    int       bd;               /* Distance between beads */
+    const int ml = index.ssize(); /* Number of beads in index group for the molecule. */
+    int       bd;                 /* Distance between beads */
     double    d;
 
     for (bd = 1; bd < ml; bd++)
     {
         d = 0.;
-        for (ii = i0; ii <= i1 - bd; ii++)
+        for (ii = 0; ii < ml - bd; ii++)
         {
-            d += distance2(x[ii], x[ii + bd]);
+            d += distance2(x[index[ii]], x[index[ii + bd]]);
         }
         d /= ml - bd;
         intd[bd - 1] += d;
@@ -260,7 +274,7 @@ int gmx_polystat(int argc, char* argv[])
     {
         outi = xvgropen(
                 opt2fn("-i", NFILE, fnm), "Internal distances", "n", "<R\\S2\\N(n)>/n (nm\\S2\\N)", oenv);
-        i = index[molind[1] - 1] - index[molind[0]]; /* Length of polymer -1 */
+        i = molind[1] - molind[0] - 1; /* Length of polymer -1 */
         snew(intd, i);
     }
     else
@@ -323,7 +337,7 @@ int gmx_polystat(int argc, char* argv[])
             /* Determine internal distances */
             if (outi)
             {
-                calc_int_dist(intd, x, index[ind0], index[ind1 - 1]);
+                calc_int_dist(intd, x, gmx::constArrayRefFromArray(index + ind0, ind1 - ind0));
             }
 
             /* Determine the radius of gyration */
@@ -407,7 +421,7 @@ int gmx_polystat(int argc, char* argv[])
                 "%10.3f %8.4f %8.4f %8.4f %8.4f %8.4f",
                 t * output_env_get_time_factor(oenv),
                 std::sqrt(sum_eed2),
-                sqrt(sum_gyro),
+                std::sqrt(sum_gyro),
                 std::sqrt(eig[ord[0]]),
                 std::sqrt(eig[ord[1]]),
                 std::sqrt(eig[ord[2]]));
@@ -498,7 +512,7 @@ int gmx_polystat(int argc, char* argv[])
         }
         ymax = -1;
         ymin = 1e300;
-        j    = index[molind[1] - 1] - index[molind[0]]; /* Polymer length -1. */
+        j    = molind[1] - molind[0] - 1; /* Polymer length -1. */
         for (i = 0; i < j; i++)
         {
             intd[i] /= (i + 1) * frame * nmol;

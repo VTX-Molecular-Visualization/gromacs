@@ -45,6 +45,7 @@
 #include "nbnxm_simd.h"
 #include "simd_coulomb_functions.h"
 #include "simd_diagonal_masker.h"
+#include "simd_energy_accumulator.h"
 #include "simd_lennardjones_functions.h"
 #include "simd_load_store_functions.h"
 
@@ -72,7 +73,7 @@
  * and only certain combinations of \p ljCombinationRule and \p vdwModifier are used.
  *
  * Which kernel layouts are instantiated depends on the extent of SIMD support of
- * the architecture and on which layouts are assumed to produce the best peformance.
+ * the architecture and on which layouts are assumed to produce the best performance.
  * Currently we have two kernel layouts:
  * - 4xM: this stores one j-cluster of width M in a SIMD register of width M and
  *        uses 4 registers for each i-atom variable, one for each i-atom.
@@ -91,6 +92,60 @@ namespace gmx
 //! Whether we calculate shift forces, always true, because it's cheap anyhow
 static constexpr bool sc_calculateShiftForces = true;
 
+namespace
+{
+
+//! Energy accumulator without data members can be static
+static EnergyAccumulator<false, false> s_energyAccumulator;
+
+//! General template for EnergyAccumulator getter, only specializations are used
+template<bool haveEnergyGroups, bool computeEnergies>
+class EnergyAccumulatorGetter;
+
+//! Specialized EnergyAccumulator getter for no energy output
+template<>
+class EnergyAccumulatorGetter<false, false>
+{
+public:
+    inline gmx_unused EnergyAccumulatorGetter(nbnxn_atomdata_output_t gmx_unused* out) {}
+
+    inline gmx_unused EnergyAccumulator<false, false>& get() { return s_energyAccumulator; }
+};
+
+//! Specialized EnergyAccumulator getter for single energy group output
+template<>
+class EnergyAccumulatorGetter<false, true>
+{
+public:
+    inline gmx_unused EnergyAccumulatorGetter(nbnxn_atomdata_output_t* out) : out_(*out) {}
+
+    inline gmx_unused EnergyAccumulator<false, true>& get()
+    {
+        return *out_.accumulatorSingleEnergies;
+    }
+
+private:
+    nbnxn_atomdata_output_t& out_;
+};
+
+//! Specialized EnergyAccumulator getter for multiple energy groups output
+template<>
+class EnergyAccumulatorGetter<true, true>
+{
+public:
+    inline gmx_unused EnergyAccumulatorGetter(nbnxn_atomdata_output_t* out) : out_(*out) {}
+
+    inline gmx_unused EnergyAccumulator<true, true>& get()
+    {
+        return *out_.accumulatorGroupEnergies;
+    }
+
+private:
+    nbnxn_atomdata_output_t& out_;
+};
+
+} // namespace
+
 /*! \brief The actual NBNxM SIMD kernel
  *
  * \tparam kernelLayout    The kernel layout: either 2xMM or 4xM
@@ -100,7 +155,7 @@ static constexpr bool sc_calculateShiftForces = true;
  * \tparam vdwModifier     The modifier for the LJ interactions
  * \tparam ljEwald         The type of LJ Ewald treatment, can be none
  * \tparam energyOutput    Which types of output are requested
- * \param[in] nbl          The cluster pair list
+ * \param[in] pairlist     The cluster pair list
  * \param[in] nbat         Input data for atoms, including charges and LJ parameters
  * \param[in] ic           The interaction constants
  * \param[in] shift_vec    A list of PBC shift vectors
@@ -113,18 +168,18 @@ template<KernelLayout         kernelLayout,
          InteractionModifiers vdwModifier,
          LJEwald              ljEwald,
          EnergyOutput         energyOutput>
-void nbnxmKernelSimd(const NbnxnPairlistCpu*    nbl,
-                     const nbnxn_atomdata_t*    nbat,
-                     const interaction_const_t* ic,
+void nbnxmKernelSimd(const NbnxnPairlistCpu&    pairlist,
+                     const nbnxn_atomdata_t&    nbat,
+                     const interaction_const_t& ic,
                      const rvec*                shift_vec,
                      nbnxn_atomdata_output_t*   out)
 {
     constexpr int c_numJClustersPerSimdRegister = (kernelLayout == KernelLayout::r2xMM ? 2 : 1);
 
-    // The i-cluster size
-    constexpr int c_iClusterSize = 4;
-    // The j-cluster size
-    constexpr int c_jClusterSize(GMX_SIMD_REAL_WIDTH / c_numJClustersPerSimdRegister);
+    constexpr int c_iClusterSize = sc_iClusterSize(kernelLayout);
+    constexpr int c_jClusterSize = sc_jClusterSize(kernelLayout);
+
+    static_assert(c_numJClustersPerSimdRegister * c_jClusterSize == GMX_SIMD_REAL_WIDTH);
 
     // The ratio of cluster sizes
     constexpr KernelLayoutClusterRatio clusterRatio = kernelLayoutClusterRatio<kernelLayout>();
@@ -140,27 +195,17 @@ void nbnxmKernelSimd(const NbnxnPairlistCpu*    nbl,
 
     constexpr bool haveLJEwaldGeometric = (ljEwald == LJEwald::CombGeometric);
 
+    constexpr bool haveElectrostatics = (coulombType != KernelCoulombType::None);
+    static_assert(GMX_USE_EXT_FMM || haveElectrostatics,
+                  "Reference kernels that do not compute Coulomb interactions are supported only "
+                  "with an FMM build configuration");
+
     constexpr bool calculateEnergies = (energyOutput != EnergyOutput::None);
     constexpr bool useEnergyGroups   = (energyOutput == EnergyOutput::GroupPairs);
 
     /* Unpack pointers for output */
-    real* f                 = out->f.data();
+    real*            f      = out->f.data();
     real gmx_unused* fshift = out->fshift.data();
-    real*            Vvdw;
-    real*            Vc;
-    if constexpr (calculateEnergies)
-    {
-        if constexpr (useEnergyGroups)
-        {
-            Vvdw = out->VSvdw.data();
-            Vc   = out->VSc.data();
-        }
-        else
-        {
-            Vvdw = out->Vvdw.data();
-            Vc   = out->Vc.data();
-        }
-    }
 
     const SimdReal zero_S(0.0);
 
@@ -168,7 +213,7 @@ void nbnxmKernelSimd(const NbnxnPairlistCpu*    nbl,
     int npair = 0;
 #endif
 
-    const nbnxn_atomdata_t::Params& nbatParams = nbat->params();
+    const nbnxn_atomdata_t::Params& nbatParams = nbat.params();
 
     static_assert(!(haveLJEwaldGeometric && ljCombinationRule == LJCombinationRule::LorentzBerthelot),
                   "Can not have LJ-PME with LB combination rule");
@@ -179,7 +224,7 @@ void nbnxmKernelSimd(const NbnxnPairlistCpu*    nbl,
         ljc = nbatParams.lj_comb.data();
     }
     const real gmx_unused* gmx_restrict nbfp_ptr;
-    const int gmx_unused* gmx_restrict type;
+    const int gmx_unused* gmx_restrict  type;
     if constexpr (ljCombinationRule == LJCombinationRule::None)
     {
         /* No combination rule used */
@@ -188,12 +233,12 @@ void nbnxmKernelSimd(const NbnxnPairlistCpu*    nbl,
     }
 
     /* Set up the diagonal exclusion masks */
-    const DiagonalMasker<nR, kernelLayout, clusterRatio> diagonalMasker(nbat->simdMasks);
+    const DiagonalMasker<nR, kernelLayout, clusterRatio> diagonalMasker(nbat.simdMasks());
 
 #if GMX_DOUBLE && !GMX_SIMD_HAVE_INT32_LOGICAL
-    const std::uint64_t* gmx_restrict exclusion_filter = nbat->simdMasks.exclusion_filter64.data();
+    const std::uint64_t* gmx_restrict exclusion_filter = nbat.simdMasks().exclusion_filter64.data();
 #else
-    const std::uint32_t* gmx_restrict exclusion_filter = nbat->simdMasks.exclusion_filter.data();
+    const std::uint32_t* gmx_restrict exclusion_filter = nbat.simdMasks().exclusion_filter.data();
 #endif
 
     /* Here we cast the exclusion filters from unsigned * to int * or real *.
@@ -212,12 +257,12 @@ void nbnxmKernelSimd(const NbnxnPairlistCpu*    nbl,
 #endif
     }
 
-    CoulombCalculator<coulombType> coulombCalculator(*ic);
+    CoulombCalculator<coulombType> coulombCalculator(ic);
 
     gmx_unused SimdReal ewaldShift;
     if constexpr (coulombType != KernelCoulombType::RF && calculateEnergies)
     {
-        ewaldShift = SimdReal(ic->sh_ewald);
+        ewaldShift = SimdReal(ic.coulomb.ewaldShift);
     }
 
     /* LJ function constants, only actually needed with energies or potential switching */
@@ -227,7 +272,7 @@ void nbnxmKernelSimd(const NbnxnPairlistCpu*    nbl,
     static_assert(!(haveLJEwaldGeometric && vdwModifier != InteractionModifiers::PotShift),
                   "LJ-PME only supports potential-shift");
 
-    LennardJonesCalculator<calculateEnergies, vdwModifier> ljCalculator(*ic);
+    LennardJonesCalculator<calculateEnergies, vdwModifier> ljCalculator(ic.vdw);
 
     std::array<SimdReal, haveLJEwaldGeometric ? 5 : 0> gmx_unused ljEwaldParams;
     real                                                          lj_ewaldcoeff6_6;
@@ -235,42 +280,35 @@ void nbnxmKernelSimd(const NbnxnPairlistCpu*    nbl,
     {
         ljEwaldParams[0]          = SimdReal(1.0_real);
         ljEwaldParams[1]          = SimdReal(0.5_real);
-        const real lj_ewaldcoeff2 = ic->ewaldcoeff_lj * ic->ewaldcoeff_lj;
+        const real lj_ewaldcoeff2 = gmx::square(ic.vdw.ewaldCoeff);
         lj_ewaldcoeff6_6          = lj_ewaldcoeff2 * lj_ewaldcoeff2 * lj_ewaldcoeff2 / 6;
         ljEwaldParams[2]          = SimdReal(lj_ewaldcoeff2);
         ljEwaldParams[3]          = SimdReal(lj_ewaldcoeff6_6);
         /* Determine the grid potential at the cut-off */
-        ljEwaldParams[4] = ic->sh_lj_ewald;
+        ljEwaldParams[4] = ic.vdw.ewaldShift;
     }
 
     /* The kernel either supports rcoulomb = rvdw or rcoulomb >= rvdw */
-    const SimdReal cutoffSquared(ic->rcoulomb * ic->rcoulomb);
+    const SimdReal cutoffSquared(gmx::square(ic.coulomb.cutoff));
     SimdReal       vdwCutoffSquared;
     if constexpr (haveVdwCutoffCheck)
     {
-        vdwCutoffSquared = SimdReal(ic->rvdw * ic->rvdw);
+        vdwCutoffSquared = SimdReal(gmx::square(ic.vdw.cutoff));
     }
 
     const SimdReal minDistanceSquared(c_nbnxnMinDistanceSquared);
 
     const real* gmx_restrict q        = nbatParams.q.data();
-    const real               facel    = ic->epsfac;
+    const real               facel    = ic.coulomb.epsfac;
     const real* gmx_restrict shiftvec = shift_vec[0];
-    const real* gmx_restrict x        = nbat->x().data();
+    const real* gmx_restrict x        = nbat.x().data();
 
+    EnergyAccumulator<useEnergyGroups, calculateEnergies>& energyAccumulator =
+            EnergyAccumulatorGetter<useEnergyGroups, calculateEnergies>(out).get();
 
-    // These constants are only used when useEnergyGroups==true
-    const int egps_ishift  = nbatParams.neg_2log;
-    const int egps_imask   = (1 << egps_ishift) - 1;
-    const int egps_jshift  = 2 * nbatParams.neg_2log;
-    const int egps_jmask   = (1 << egps_jshift) - 1;
-    const int egps_jstride = (c_jClusterSize >> 1) * c_jClusterSize;
-    /* Major division is over i-particle energy groups, determine the stride */
-    const int Vstride_i = nbatParams.nenergrp * (1 << nbatParams.neg_2log) * egps_jstride;
+    const nbnxn_cj_t* l_cj = pairlist.cj.list_.data();
 
-    const nbnxn_cj_t* l_cj = nbl->cj.list_.data();
-
-    for (const nbnxn_ci_t& ciEntry : nbl->ci)
+    for (const nbnxn_ci_t& ciEntry : pairlist.ci)
     {
         const int ish    = (ciEntry.shift & NBNXN_CI_SHIFT);
         const int ish3   = ish * 3;
@@ -284,10 +322,14 @@ void nbnxmKernelSimd(const NbnxnPairlistCpu*    nbl,
         const SimdReal iShiftY(shiftvec[ish3 + 1]);
         const SimdReal iShiftZ(shiftvec[ish3 + 2]);
 
+        // The coordinates, coefficients and forces are stored using contiguous blocks
+        // of size max(c_iClusterSize, c_jClusterSize). Set up the indexing.
+        static_assert(c_iClusterSize >= c_jClusterSize || 2 * c_iClusterSize == c_jClusterSize,
+                      "Only some i/j-cluster size ratios are currently implemented");
         int sci;
         int scix;
         int sci2;
-        if constexpr (c_jClusterSize <= 4)
+        if constexpr (c_iClusterSize >= c_jClusterSize)
         {
             sci  = ci * c_stride;
             scix = sci * DIM;
@@ -308,22 +350,10 @@ void nbnxmKernelSimd(const NbnxnPairlistCpu*    nbl,
          * inner LJ          for full-LJ + no-C / half-LJ + no-C
          */
         const bool do_LJ   = ((ciEntry.shift & NBNXN_CI_DO_LJ(0)) != 0);
-        const bool do_coul = ((ciEntry.shift & NBNXN_CI_DO_COUL(0)) != 0);
+        const bool do_coul = ((ciEntry.shift & NBNXN_CI_DO_COUL(0)) != 0) && haveElectrostatics;
         const bool half_LJ = (((ciEntry.shift & NBNXN_CI_HALF_LJ(0)) != 0) || !do_LJ) && do_coul;
 
-        std::array<real*, useEnergyGroups ? c_iClusterSize : 0> gmx_unused vvdwtp;
-        std::array<real*, useEnergyGroups ? c_iClusterSize : 0> gmx_unused vctp;
-        int                                                                egps_i;
-        if constexpr (useEnergyGroups)
-        {
-            egps_i = nbatParams.energrp[ci];
-            for (int ia = 0; ia < c_iClusterSize; ia++)
-            {
-                int egp_ia = (egps_i >> (ia * egps_ishift)) & egps_imask;
-                vvdwtp[ia] = Vvdw + egp_ia * Vstride_i;
-                vctp[ia]   = Vc + egp_ia * Vstride_i;
-            }
-        }
+        energyAccumulator.template initICluster<c_iClusterSize>(ci);
 
         if constexpr (calculateEnergies)
         {
@@ -339,15 +369,8 @@ void nbnxmKernelSimd(const NbnxnPairlistCpu*    nbl,
                     for (int ia = 0; ia < c_iClusterSize; ia++)
                     {
                         const real qi = q[sci + ia];
-                        if constexpr (useEnergyGroups)
-                        {
-                            vctp[ia][((egps_i >> (ia * egps_ishift)) & egps_imask) * egps_jstride] -=
-                                    facel * qi * qi * Vc_sub_self;
-                        }
-                        else
-                        {
-                            Vc[0] -= facel * qi * qi * Vc_sub_self;
-                        }
+
+                        energyAccumulator.addCoulombEnergy(ia, -facel * qi * qi * Vc_sub_self);
                     }
                 }
 
@@ -358,15 +381,7 @@ void nbnxmKernelSimd(const NbnxnPairlistCpu*    nbl,
                         real c6_i =
                                 nbatParams.nbfp[nbatParams.type[sci + ia] * (nbatParams.numTypes + 1) * 2]
                                 / 6;
-                        if constexpr (useEnergyGroups)
-                        {
-                            vvdwtp[ia][((egps_i >> (ia * egps_ishift)) & egps_imask) * egps_jstride] +=
-                                    0.5 * c6_i * lj_ewaldcoeff6_6;
-                        }
-                        else
-                        {
-                            Vvdw[0] += 0.5 * c6_i * lj_ewaldcoeff6_6;
-                        }
+                        energyAccumulator.addVdwEnergy(ia, 0.5 * c6_i * lj_ewaldcoeff6_6);
                     }
                 }
             }
@@ -431,28 +446,10 @@ void nbnxmKernelSimd(const NbnxnPairlistCpu*    nbl,
             }
         }
 
-        SimdReal Vvdwtot_S;
-        SimdReal vctot_S;
-        if constexpr (calculateEnergies)
-        {
-            /* Zero the potential energy for this list */
-            Vvdwtot_S = setZero();
-            vctot_S   = setZero();
-        }
-
         /* Declare and clear i atom forces */
-        auto forceIXV = genArr<nR>([&](int gmx_unused i) {
-            SimdReal tmp = setZero();
-            return tmp;
-        });
-        auto forceIYV = genArr<nR>([&](int gmx_unused i) {
-            SimdReal tmp = setZero();
-            return tmp;
-        });
-        auto forceIZV = genArr<nR>([&](int gmx_unused i) {
-            SimdReal tmp = setZero();
-            return tmp;
-        });
+        auto forceIXV = genArr<nR>([&](int gmx_unused i) { return setZero(); });
+        auto forceIYV = genArr<nR>([&](int gmx_unused i) { return setZero(); });
+        auto forceIZV = genArr<nR>([&](int gmx_unused i) { return setZero(); });
 
 
         int cjind = cjind0;
@@ -465,7 +462,7 @@ void nbnxmKernelSimd(const NbnxnPairlistCpu*    nbl,
             constexpr ILJInteractions c_iLJInteractions              = ILJInteractions::Half;
             {
                 constexpr bool c_needToCheckExclusions = true;
-                while (cjind < cjind1 && nbl->cj.excl(cjind) != NBNXN_INTERACTION_MASK_ALL)
+                while (cjind < cjind1 && pairlist.cj.excl(cjind) != NBNXN_INTERACTION_MASK_ALL)
                 {
 #include "simd_kernel_inner.h"
                     cjind++;
@@ -486,7 +483,7 @@ void nbnxmKernelSimd(const NbnxnPairlistCpu*    nbl,
             constexpr ILJInteractions c_iLJInteractions              = ILJInteractions::All;
             {
                 constexpr bool c_needToCheckExclusions = true;
-                while (cjind < cjind1 && nbl->cj.excl(cjind) != NBNXN_INTERACTION_MASK_ALL)
+                while (cjind < cjind1 && pairlist.cj.excl(cjind) != NBNXN_INTERACTION_MASK_ALL)
                 {
 #include "simd_kernel_inner.h"
                     cjind++;
@@ -507,7 +504,7 @@ void nbnxmKernelSimd(const NbnxnPairlistCpu*    nbl,
             constexpr ILJInteractions c_iLJInteractions              = ILJInteractions::All;
             {
                 constexpr bool c_needToCheckExclusions = true;
-                while (cjind < cjind1 && nbl->cj.excl(cjind) != NBNXN_INTERACTION_MASK_ALL)
+                while (cjind < cjind1 && pairlist.cj.excl(cjind) != NBNXN_INTERACTION_MASK_ALL)
                 {
 #include "simd_kernel_inner.h"
                     cjind++;
@@ -525,6 +522,7 @@ void nbnxmKernelSimd(const NbnxnPairlistCpu*    nbl,
         real fShiftX;
         real fShiftY;
         real fShiftZ;
+        static_assert(c_iClusterSize == 4, "i-force reductions only support cluster size 4");
         if constexpr (c_numJClustersPerSimdRegister == 1)
         {
             fShiftX = reduceIncr4ReturnSum(f + scix, forceIXV[0], forceIXV[1], forceIXV[2], forceIXV[3]);
@@ -545,15 +543,7 @@ void nbnxmKernelSimd(const NbnxnPairlistCpu*    nbl,
             fshift[ish3 + 2] += fShiftZ;
         }
 
-        if constexpr (calculateEnergies)
-        {
-            if (do_coul)
-            {
-                *Vc += reduce(vctot_S);
-            }
-
-            *Vvdw += reduce(Vvdwtot_S);
-        }
+        energyAccumulator.reduceIEnergies(do_coul);
 
         /* Outer loop uses 6 flops/iteration */
     }

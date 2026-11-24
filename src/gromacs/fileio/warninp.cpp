@@ -35,6 +35,7 @@
 
 #include "warninp.h"
 
+#include <cstdio>
 #include <cstring>
 
 #include <string>
@@ -89,7 +90,7 @@ void WarningHandler::addLowLevel(std::string_view message, const WarningType typ
                     "\n%s %d [file %s, line %d]:\n%s\n\n",
                     warningTypeString(type),
                     numberOfEntries_[type],
-                    fileName_.u8string().c_str(),
+                    fileName_.string().c_str(),
                     lineNumber_,
                     wrapped.c_str());
         }
@@ -99,7 +100,7 @@ void WarningHandler::addLowLevel(std::string_view message, const WarningType typ
                     "\n%s %d [file %s]:\n%s\n\n",
                     warningTypeString(type),
                     numberOfEntries_[type],
-                    fileName_.u8string().c_str(),
+                    fileName_.string().c_str(),
                     wrapped.c_str());
         }
     }
@@ -217,11 +218,11 @@ void done_warning(const WarningHandler& wi, int f_errno, const std::filesystem::
 void too_few_function(WarningHandler* wi, const std::filesystem::path& fn, int line)
 {
     wi->addWarning(gmx::formatString(
-            "Too few parameters on line (source file %s, line %d)", fn.u8string().c_str(), line));
+            "Too few parameters on line (source file %s, line %d)", fn.string().c_str(), line));
 }
 
 void incorrect_n_param_function(WarningHandler* wi, const std::filesystem::path& fn, int line)
 {
     wi->addWarning(gmx::formatString(
-            "Incorrect number of parameters on line (source file %s, line %d)", fn.u8string().c_str(), line));
+            "Incorrect number of parameters on line (source file %s, line %d)", fn.string().c_str(), line));
 }

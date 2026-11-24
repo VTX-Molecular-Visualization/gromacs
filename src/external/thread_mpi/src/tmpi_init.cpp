@@ -325,6 +325,10 @@ static void tMPI_Thread_destroy(struct tmpi_thread *th)
     {
         free(th->argv[i]);
     }
+    if (th->argv)
+    {
+        tMPI_Free(th->argv);
+    }
 }
 
 static int tMPI_Global_init(struct tmpi_global *g, int nthreads)
@@ -421,9 +425,9 @@ int tMPI_Start_threads(tmpi_bool main_returns, int N,
 {
     int ret;
 #ifdef TMPI_TRACE
-    tMPI_Trace_print("tMPI_Start_threads(%d, %d, %d, %d, %d, %p, %p, %p, %p)",
+    tMPI_Trace_print("tMPI_Start_threads(%d, %d, %d, %p, %p, %p, %p, %p)",
                      main_returns, N, aff_strategy, argc, argv, start_fn,
-                     start_arg);
+                     start_arg, start_fn_main);
 #endif
     if (N > 0)
     {
@@ -908,7 +912,7 @@ double tMPI_Wtick(void)
 #endif
 }
 
-int tMPI_Get_count(tMPI_Status *status, tMPI_Datatype datatype, int *count)
+int tMPI_Get_count(const tMPI_Status *status, tMPI_Datatype datatype, int *count)
 {
 #ifdef TMPI_TRACE
     tMPI_Trace_print("tMPI_Get_count(%p, %p, %p)", status, datatype, count);

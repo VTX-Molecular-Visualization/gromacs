@@ -34,23 +34,33 @@
 #include "gmxpre.h"
 
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
 #include <algorithm>
 #include <array>
+#include <filesystem>
+#include <memory>
+#include <string>
+#include <vector>
 
+#include "gromacs/commandline/filenm.h"
 #include "gromacs/commandline/pargs.h"
 #include "gromacs/commandline/viewit.h"
 #include "gromacs/fileio/enxio.h"
+#include "gromacs/fileio/filetypes.h"
+#include "gromacs/fileio/oenv.h"
 #include "gromacs/fileio/tpxio.h"
 #include "gromacs/fileio/trxio.h"
+#include "gromacs/fileio/xdr_datatype.h"
 #include "gromacs/fileio/xvgr.h"
 #include "gromacs/gmxana/gmx_ana.h"
 #include "gromacs/math/functions.h"
 #include "gromacs/mdlib/energyoutput.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
+#include "gromacs/topology/idef.h"
 #include "gromacs/topology/ifunc.h"
 #include "gromacs/topology/mtop_lookup.h"
 #include "gromacs/topology/mtop_util.h"
@@ -59,13 +69,18 @@
 #include "gromacs/trajectoryanalysis/topologyinformation.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/arraysize.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/pleasecite.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/strconvert.h"
 #include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/vectypes.h"
+
+struct gmx_output_env_t;
 
 static constexpr real minthird = -1.0 / 3.0, minsixth = -1.0 / 6.0;
 
@@ -105,7 +120,7 @@ static int* select_it(int nre, gmx::ArrayRef<const std::string> nm, int* nset)
     int*      set;
     gmx_bool  bVerbose = TRUE;
 
-    if ((getenv("GMX_ENER_VERBOSE")) != nullptr)
+    if ((std::getenv("GMX_ENER_VERBOSE")) != nullptr)
     {
         bVerbose = FALSE;
     }
@@ -166,10 +181,10 @@ static void get_orires_parms(const char* topnm, t_inputrec* ir, int* nor, int* n
     top = gmx_mtop_t_to_t_topology(&mtop, FALSE);
 
     ip    = top.idef.iparams;
-    iatom = top.idef.il[F_ORIRES].iatoms;
+    iatom = top.idef.il[InteractionFunction::OrientationRestraints].iatoms;
 
     /* Count how many distance restraint there are... */
-    nb = top.idef.il[F_ORIRES].nr;
+    nb = top.idef.il[InteractionFunction::OrientationRestraints].nr;
     if (nb == 0)
     {
         gmx_fatal(FARGS, "No orientation restraints in topology!\n");
@@ -194,16 +209,16 @@ static void get_orires_parms(const char* topnm, t_inputrec* ir, int* nor, int* n
 
 static int get_bounds(real** bounds, int** index, int** dr_pair, int* npairs, const InteractionDefinitions& idef)
 {
-    int   i, j, k, type, ftype, natom;
-    real* b;
-    int * ind, *pair;
-    int   nb, label1;
+    InteractionFunction ftype;
+    real*               b;
+    int *               ind, *pair;
+    int                 nb, label1;
 
-    gmx::ArrayRef<const t_functype> functype = idef.functype;
-    gmx::ArrayRef<const t_iparams>  iparams  = idef.iparams;
+    gmx::ArrayRef<const InteractionFunction> functype = idef.functype;
+    gmx::ArrayRef<const t_iparams>           iparams  = idef.iparams;
 
     /* Count how many distance restraint there are... */
-    nb = idef.il[F_DISRES].size();
+    nb = idef.il[InteractionFunction::DistanceRestraints].size();
     if (nb == 0)
     {
         gmx_fatal(FARGS, "No distance restraints in topology!\n");
@@ -219,7 +234,7 @@ static int get_bounds(real** bounds, int** index, int** dr_pair, int* npairs, co
     for (gmx::Index i = 0; i < functype.ssize(); i++)
     {
         ftype = functype[i];
-        if (ftype == F_DISRES)
+        if (ftype == InteractionFunction::DistanceRestraints)
         {
 
             label1  = iparams[i].disres.label;
@@ -232,8 +247,9 @@ static int get_bounds(real** bounds, int** index, int** dr_pair, int* npairs, co
 
     /* Fill the index array */
     label1                          = -1;
-    const InteractionList&   disres = idef.il[F_DISRES];
+    const InteractionList&   disres = idef.il[InteractionFunction::DistanceRestraints];
     gmx::ArrayRef<const int> iatom  = disres.iatoms;
+    int                      i, j, k, type, natom;
     for (i = j = k = 0; (i < disres.size());)
     {
         type  = iatom[i];
@@ -389,11 +405,11 @@ int gmx_nmr(int argc, char* argv[])
         { "-dp", FALSE, etBOOL, { &bDp }, "Print energies in high precision" },
         { "-skip", FALSE, etINT, { &skip }, "Skip number of frames between data points" },
         { "-aver",
-          FALSE,
-          etBOOL,
-          { &bPrAll },
-          "Also print the exact average and rmsd stored in the energy frames (only when 1 term is "
-          "requested)" },
+                  FALSE,
+                  etBOOL,
+                  { &bPrAll },
+                  "Also print the exact average and rmsd stored in the energy frames (only when 1 term is "
+                          "requested)" },
         { "-orinst", FALSE, etBOOL, { &bOrinst }, "Analyse instantaneous orientation data" },
         { "-ovec", FALSE, etBOOL, { &bOvec }, "Also plot the eigenvectors with [TT]-oten[tt]" }
     };
@@ -645,9 +661,9 @@ int gmx_nmr(int argc, char* argv[])
             blk_disre = find_block_id_enxframe(&fr, enxDISRE, nullptr);
             if (bDisRe && bDRAll && leg.empty() && blk_disre)
             {
-                const InteractionList&   ilist = top->idef.il[F_DISRES];
-                gmx::ArrayRef<const int> fa    = ilist.iatoms;
-                const t_iparams*         ip    = top->idef.iparams.data();
+                const InteractionList& ilist = top->idef.il[InteractionFunction::DistanceRestraints];
+                gmx::ArrayRef<const int> fa = ilist.iatoms;
+                const t_iparams*         ip = top->idef.iparams.data();
                 if (blk_disre->nsub != 2 || (blk_disre->sub[0].nr != blk_disre->sub[1].nr))
                 {
                     gmx_incons("Number of disre sub-blocks not equal to 2");

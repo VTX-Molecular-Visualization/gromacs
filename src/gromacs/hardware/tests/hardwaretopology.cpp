@@ -44,9 +44,13 @@
 
 #include "config.h"
 
+#include <cstddef>
+
 #include <algorithm>
 #include <array>
 #include <map>
+#include <ostream>
+#include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -57,6 +61,10 @@
 #include "testutils/testasserts.h"
 #include "testutils/testfilemanager.h"
 
+namespace gmx
+{
+namespace test
+{
 namespace
 {
 
@@ -167,6 +175,11 @@ TEST(HardwareTopologyTest, NumaCacheSelfconsistency)
 
     if (hwTop.supportLevel() >= gmx::HardwareTopology::SupportLevel::Full)
     {
+        if (GMX_USE_HWLOC)
+        {
+            // See #5623
+            GTEST_SKIP() << "This test makes wrong assumptions about topology provided by hwloc";
+        }
         // Check that numa node id corresponds to rank
         for (std::size_t i = 0; i < hwTop.machine().numa.nodes.size(); i++)
         {
@@ -235,3 +248,5 @@ TEST(HardwareTopologyTest, NumaCacheSelfconsistency)
 }
 
 } // namespace
+} // namespace test
+} // namespace gmx

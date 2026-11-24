@@ -42,22 +42,33 @@
 
 #include "gromacs/pbcutil/pbc.h"
 
+#include <cinttypes>
 #include <cmath>
+#include <cstdio>
 
 #include <algorithm>
+#include <filesystem>
+#include <string>
+#include <vector>
 
 #include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
 #include "gromacs/math/utilities.h"
-#include "gromacs/math/vec.h"
-#include "gromacs/math/vecdump.h"
+#include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/pbcutil/ishift.h"
 #include "gromacs/pbcutil/mshift.h"
 #include "gromacs/topology/topology.h"
+#include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/basedefinitions.h"
+#include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/gmxassert.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vecdump.h"
+#include "gromacs/utility/vectypes.h"
 
 const gmx::EnumerationArray<PbcType, std::string> c_pbcTypeNames = {
     { "xyz", "no", "xy", "screw", "unset" }
@@ -186,10 +197,11 @@ void matrix_convert(matrix box, const rvec vec, const rvec angleInDegrees)
     rvec angle;
     svmul(gmx::c_deg2Rad, angleInDegrees, angle);
     box[XX][XX] = vec[XX];
-    box[YY][XX] = vec[YY] * cos(angle[ZZ]);
-    box[YY][YY] = vec[YY] * sin(angle[ZZ]);
-    box[ZZ][XX] = vec[ZZ] * cos(angle[YY]);
-    box[ZZ][YY] = vec[ZZ] * (cos(angle[XX]) - cos(angle[YY]) * cos(angle[ZZ])) / sin(angle[ZZ]);
+    box[YY][XX] = vec[YY] * std::cos(angle[ZZ]);
+    box[YY][YY] = vec[YY] * std::sin(angle[ZZ]);
+    box[ZZ][XX] = vec[ZZ] * std::cos(angle[YY]);
+    box[ZZ][YY] = vec[ZZ] * (std::cos(angle[XX]) - std::cos(angle[YY]) * std::cos(angle[ZZ]))
+                  / std::sin(angle[ZZ]);
     box[ZZ][ZZ] =
             std::sqrt(gmx::square(vec[ZZ]) - box[ZZ][XX] * box[ZZ][XX] - box[ZZ][YY] * box[ZZ][YY]);
 }
@@ -469,7 +481,7 @@ static void low_set_pbc(t_pbc* pbc, PbcType pbcType, const ivec dd_pbc, const ma
             if (debug)
             {
                 pr_rvecs(debug, 0, "Box", box, DIM);
-                fprintf(debug, "max cutoff %.3f\n", sqrt(pbc->max_cutoff2));
+                fprintf(debug, "max cutoff %.3f\n", std::sqrt(pbc->max_cutoff2));
             }
             /* We will only need single shifts here */
             for (int kk = 0; kk < 3; kk++)
@@ -493,7 +505,7 @@ static void low_set_pbc(t_pbc* pbc, PbcType pbcType, const ivec dd_pbc, const ma
                         {
                             continue;
                         }
-                        /* A shift is only useful when it is trilinic */
+                        /* A shift is only useful when it is triclinic */
                         if (j != 0 || k != 0)
                         {
                             rvec trial;
@@ -576,8 +588,8 @@ static void low_set_pbc(t_pbc* pbc, PbcType pbcType, const ivec dd_pbc, const ma
                                                     i,
                                                     j,
                                                     k,
-                                                    sqrt(d2old),
-                                                    sqrt(d2new),
+                                                    std::sqrt(d2old),
+                                                    std::sqrt(d2new),
                                                     trial[XX],
                                                     trial[YY],
                                                     trial[ZZ],
@@ -606,7 +618,7 @@ void set_pbc(t_pbc* pbc, PbcType pbcType, const matrix box)
     low_set_pbc(pbc, pbcType, nullptr, box);
 }
 
-t_pbc* set_pbc_dd(t_pbc* pbc, PbcType pbcType, const ivec domdecCells, gmx_bool bSingleDir, const matrix box)
+t_pbc* set_pbc_dd(t_pbc* pbc, PbcType pbcType, const gmx::IVec* domdecCells, gmx_bool bSingleDir, const matrix box)
 {
     if (pbcType == PbcType::No)
     {
@@ -621,7 +633,7 @@ t_pbc* set_pbc_dd(t_pbc* pbc, PbcType pbcType, const ivec domdecCells, gmx_bool 
     }
     else
     {
-        if (pbcType == PbcType::Screw && domdecCells[XX] > 1)
+        if (pbcType == PbcType::Screw && (*domdecCells)[XX] > 1)
         {
             /* The rotation has been taken care of during coordinate communication */
             pbcType = PbcType::Xyz;
@@ -632,7 +644,7 @@ t_pbc* set_pbc_dd(t_pbc* pbc, PbcType pbcType, const ivec domdecCells, gmx_bool 
         for (int i = 0; i < DIM; i++)
         {
             usePBC[i] = 0;
-            if (domdecCells[i] <= (bSingleDir ? 1 : 2) && !(pbcType == PbcType::XY && i == ZZ))
+            if ((*domdecCells)[i] <= (bSingleDir ? 1 : 2) && !(pbcType == PbcType::XY && i == ZZ))
             {
                 usePBC[i] = 1;
                 npbcdim++;
@@ -1429,7 +1441,6 @@ static void putAtomsInBoxTemplated(PbcType                  pbcType,
         GMX_ASSERT(v.size() == x.size(), "Need velocities for box deformation");
     }
 
-    // NOLINTNEXTLINE(readability-misleading-indentation)
     int npbcdim;
 
     if (pbcType == PbcType::Screw)

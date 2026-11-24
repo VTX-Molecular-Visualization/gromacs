@@ -35,9 +35,13 @@
 #ifndef GMX_GMXPREPROCESS_TOPIO_H
 #define GMX_GMXPREPROCESS_TOPIO_H
 
+#include <filesystem>
 #include <memory>
+#include <optional>
 #include <vector>
 
+#include "gromacs/topology/ifunc.h"
+#include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/real.h"
 
 struct gmx_molblock_t;
@@ -61,18 +65,29 @@ class MDLogger;
 double check_mol(const gmx_mtop_t* mtop, WarningHandler* wi);
 /* Check mass and charge */
 
-char** do_top(bool                                  bVerbose,
-              const char*                           topfile,
-              const char*                           topppfile,
-              t_gromppopts*                         opts,
-              bool                                  bZero,
-              t_symtab*                             symtab,
-              gmx::ArrayRef<InteractionsOfType>     plist,
-              CombinationRule*                      combination_rule,
-              double*                               repulsion_power,
-              real*                                 fudgeQQ,
-              PreprocessingAtomTypes*               atype,
-              std::vector<MoleculeInformation>*     molinfo,
+/*! \brief Check that RB/Fourier style dihedral sums to zero in free-energy computation
+ *
+ * Searches for, and emits a warning when dihedral of function type 3 (Ryckaert-Bellemans or
+ * Fourier) have a sum of coefficient different from zero, when performing a free-energy
+ * computation, in stateA and stateB, as this is likely a parameter mistake that can
+ * produce erroneous dHdl values.
+ *
+ */
+void checkRBDihedralSum(const gmx_mtop_t& mtop, const t_inputrec& ir, WarningHandler* wi);
+
+
+char** do_top(bool                                                            bVerbose,
+              const char*                                                     topfile,
+              const std::optional<std::filesystem::path>&                     topppfile,
+              t_gromppopts*                                                   opts,
+              bool                                                            bZero,
+              t_symtab*                                                       symtab,
+              gmx::EnumerationArray<InteractionFunction, InteractionsOfType>& plist,
+              CombinationRule*                                                combination_rule,
+              double*                                                         repulsion_power,
+              real*                                                           fudgeQQ,
+              PreprocessingAtomTypes*                                         atype,
+              std::vector<MoleculeInformation>*                               molinfo,
               std::unique_ptr<MoleculeInformation>* intermolecular_interactions,
               const t_inputrec*                     ir,
               std::vector<gmx_molblock_t>*          molblock,
@@ -80,7 +95,7 @@ char** do_top(bool                                  bVerbose,
               WarningHandler*                       wi,
               const gmx::MDLogger&                  logger);
 
-/* This routine expects sys->molt[m].ilist to be of size F_NRE and ordered. */
+/* This routine expects sys->molt[m].ilist to be of size InteractionFunction::Count and ordered. */
 void generate_qmexcl(gmx_mtop_t* sys, t_inputrec* ir, const gmx::MDLogger& logger);
 
 #endif

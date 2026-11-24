@@ -97,13 +97,13 @@ MdGpuGraph::Impl::~Impl()
     cudaError_t stat = cudaDeviceSynchronize();
     CU_RET_ERR(stat, "cudaDeviceSynchronize during MD graph cleanup failed.");
 
-    if (graphAllocated_)
+    if (graph_)
     {
         stat = cudaGraphDestroy(graph_);
         CU_RET_ERR(stat, "cudaGraphDestroy during MD graph cleanup failed.");
     }
 
-    if (graphInstanceAllocated_)
+    if (instance_)
     {
         stat = cudaGraphExecDestroy(instance_);
         CU_RET_ERR(stat, "cudaGraphExecDestroy during MD graph cleanup failed.");
@@ -131,7 +131,7 @@ void MdGpuGraph::Impl::enqueueEventFromAllPpRanksToRank0Stream(GpuEventSynchroni
         }
         else if (ppRank_ == 0)
         {
-            // rank 0 enqueues recieved event
+            // rank 0 enqueues received event
             GpuEventSynchronizer* eventToEnqueue;
 #    if GMX_MPI
             MPI_Recv(&eventToEnqueue,
@@ -167,7 +167,7 @@ void MdGpuGraph::Impl::enqueueRank0EventToAllPpStreams(GpuEventSynchronizer* eve
 
 void MdGpuGraph::Impl::reset()
 {
-    graphCreated_             = false;
+    graphCaptureStarted_      = false;
     useGraphThisStep_         = false;
     graphIsCapturingThisStep_ = false;
     graphState_               = GraphState::Invalid;
@@ -199,7 +199,7 @@ void MdGpuGraph::Impl::disableForDomainIfAnyPpRankHasCpuForces(bool disableGraph
 bool MdGpuGraph::Impl::captureThisStep(bool canUseGraphThisStep)
 {
     useGraphThisStep_         = canUseGraphThisStep && !disableGraphAcrossAllPpRanks_;
-    graphIsCapturingThisStep_ = useGraphThisStep_ && !graphCreated_;
+    graphIsCapturingThisStep_ = useGraphThisStep_ && !graphCaptureStarted_;
     return graphIsCapturingThisStep_;
 }
 
@@ -239,7 +239,7 @@ void MdGpuGraph::Impl::startRecord(GpuEventSynchronizer* xReadyOnDeviceEvent)
                 xReadyOnDeviceEvent, deviceStreamManager_.stream(gmx::DeviceStreamType::NonBondedLocal));
     }
 
-    graphCreated_ = true;
+    graphCaptureStarted_ = true;
 
     // Begin stream capture on PP rank 0 only. We use a single graph across all ranks.
     if (ppRank_ == 0)
@@ -336,7 +336,7 @@ void MdGpuGraph::Impl::endRecord()
     // now completed, such rank 0 PP task can end stream capture.
     if (ppRank_ == 0)
     {
-        if (graphAllocated_)
+        if (graph_)
         {
             cudaError_t stat = cudaGraphDestroy(graph_);
             CU_RET_ERR(stat, "cudaGraphDestroy in MD graph definition finalization failed.");
@@ -344,7 +344,6 @@ void MdGpuGraph::Impl::endRecord()
         cudaError_t stat = cudaStreamEndCapture(
                 deviceStreamManager_.stream(gmx::DeviceStreamType::NonBondedLocal).stream(), &graph_);
         CU_RET_ERR(stat, "cudaStreamEndCapture in MD graph definition finalization failed.");
-        graphAllocated_ = true;
     }
 
     graphState_ = GraphState::Recorded;
@@ -379,27 +378,18 @@ void MdGpuGraph::Impl::createExecutableGraph(bool forceGraphReinstantiation)
     if (ppRank_ == 0)
     {
         // Update existing graph (which is cheaper than re-instantiation) if possible.
-        bool useGraphUpdate = graphInstanceAllocated_ && !forceGraphReinstantiation
-                              && !needOldDriverTransferWorkaround_;
+        bool useGraphUpdate = instance_ && !forceGraphReinstantiation && !needOldDriverTransferWorkaround_;
         bool updateSuccessful = true;
         if (useGraphUpdate)
         {
-#    if CUDART_VERSION >= 12000
             cudaGraphExecUpdateResultInfo updateResultInfo_out;
             cudaError_t stat = cudaGraphExecUpdate(instance_, graph_, &updateResultInfo_out);
             bool        additionalCheck =
                     (updateResultInfo_out.result == cudaGraphExecUpdateErrorTopologyChanged);
-#    else
-            // Use old API, which doesn't provide as detailed error information
-            cudaGraphNode_t           hErrorNode_out;
-            cudaGraphExecUpdateResult updateResult_out;
-            cudaError_t stat = cudaGraphExecUpdate(instance_, graph_, &hErrorNode_out, &updateResult_out);
-            bool        additionalCheck = true; // dummy
-#    endif
             if ((stat == cudaErrorGraphExecUpdateFailure)
                 && (havePPDomainDecomposition_ || haveSeparatePmeRank_) && additionalCheck)
             {
-                // This unnsuccessful update is due to multithreaded graph capture resulting in a
+                // This unsuccessful update is due to multithreaded graph capture resulting in a
                 // different ordering, which in a minority of cases CUDA wrongly interprets as being
                 // a different graph topology. Reset the error and re-instantiate in this case.
                 stat = cudaSuccess;
@@ -410,24 +400,15 @@ void MdGpuGraph::Impl::createExecutableGraph(bool forceGraphReinstantiation)
         }
         if (!useGraphUpdate || !updateSuccessful)
         {
-            if (graphInstanceAllocated_)
+            if (instance_)
             {
                 cudaError_t stat = cudaGraphExecDestroy(instance_);
                 CU_RET_ERR(stat, "cudaGraphExecDestroy in MD graph definition finalization failed.");
             }
             // Instantiate using existing CUDA stream priorities for relative node priorities within graph
-            cudaError_t stat = cudaGraphInstantiate(&instance_,
-                                                    graph_,
-#    if CUDART_VERSION >= 12000
-                                                    cudaGraphInstantiateFlagUseNodePriority
-#    else
-                                                    nullptr,
-                                                    nullptr,
-                                                    0
-#    endif
-            );
+            cudaError_t stat =
+                    cudaGraphInstantiate(&instance_, graph_, cudaGraphInstantiateFlagUseNodePriority);
             CU_RET_ERR(stat, "cudaGraphInstantiate in MD graph definition finalization failed.");
-            graphInstanceAllocated_ = true;
         }
     }
 

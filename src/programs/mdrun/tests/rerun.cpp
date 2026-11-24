@@ -43,12 +43,27 @@
 
 #include "config.h"
 
+#include <cstdio>
+
+#include <filesystem>
+#include <string>
+#include <tuple>
+#include <vector>
+
+#include <gtest/gtest.h>
+
 #include "gromacs/topology/ifunc.h"
 #include "gromacs/utility/strconvert.h"
 #include "gromacs/utility/stringutil.h"
 
 #include "testutils/mpitest.h"
 #include "testutils/simulationdatabase.h"
+#include "testutils/testasserts.h"
+#include "testutils/testfilemanager.h"
+
+#include "programs/mdrun/tests/comparison_helpers.h"
+#include "programs/mdrun/tests/energycomparison.h"
+#include "programs/mdrun/tests/trajectorycomparison.h"
 
 #include "moduletest.h"
 #include "simulatorcomparison.h"
@@ -136,30 +151,30 @@ void executeRerunTest(TestFileManager*            fileManager,
     auto simulator2EdrFileName        = fileManager->getTemporaryFilePath("sim2.edr");
 
     // Run grompp
-    runner->tprFileName_ = fileManager->getTemporaryFilePath("sim.tpr").u8string();
+    runner->tprFileName_ = fileManager->getTemporaryFilePath("sim.tpr").string();
     runner->useTopGroAndNdxFromDatabase(simulationName);
     runner->useStringAsMdpFile(prepareMdpFileContents(mdpFieldValues));
     auto options = std::vector<SimulationOptionTuple>();
     if (numWarningsToTolerate > 0)
     {
-        options.emplace_back(SimulationOptionTuple("-maxwarn", std::to_string(numWarningsToTolerate)));
+        options.emplace_back("-maxwarn", std::to_string(numWarningsToTolerate));
     }
     runGrompp(runner, options);
 
     // Do first mdrun
-    runner->fullPrecisionTrajectoryFileName_ = simulator1TrajectoryFileName.u8string();
-    runner->edrFileName_                     = simulator1EdrFileName.u8string();
+    runner->fullPrecisionTrajectoryFileName_ = simulator1TrajectoryFileName.string();
+    runner->edrFileName_                     = simulator1EdrFileName.string();
     runMdrun(runner);
 
     // Do second mdrun
-    runner->fullPrecisionTrajectoryFileName_ = simulator2TrajectoryFileName.u8string();
-    runner->edrFileName_                     = simulator2EdrFileName.u8string();
-    runMdrun(runner, { SimulationOptionTuple("-rerun", simulator1TrajectoryFileName.u8string()) });
+    runner->fullPrecisionTrajectoryFileName_ = simulator2TrajectoryFileName.string();
+    runner->edrFileName_                     = simulator2EdrFileName.string();
+    runMdrun(runner, { SimulationOptionTuple("-rerun", simulator1TrajectoryFileName.string()) });
 
     // Compare simulation results
-    compareEnergies(simulator1EdrFileName.u8string(), simulator2EdrFileName.u8string(), energyTermsToCompare);
-    compareTrajectories(simulator1TrajectoryFileName.u8string(),
-                        simulator2TrajectoryFileName.u8string(),
+    compareEnergies(simulator1EdrFileName.string(), simulator2EdrFileName.string(), energyTermsToCompare);
+    compareTrajectories(simulator1TrajectoryFileName.string(),
+                        simulator2TrajectoryFileName.string(),
                         trajectoryComparison);
 }
 
@@ -180,7 +195,7 @@ TEST_P(MdrunRerunTest, WithinTolerances)
     // bd is much less reproducible in a rerun than the other integrators
     const int            toleranceScaleFactor = (integrator == "bd") ? 2 : 1;
     EnergyTermsToCompare energyTermsToCompare{ {
-            { interaction_function[F_EPOT].longname,
+            { interaction_function[InteractionFunction::PotentialEnergy].longname,
               relativeToleranceAsPrecisionDependentUlp(
                       10.0, 24 * toleranceScaleFactor, 40 * toleranceScaleFactor) },
     } };
@@ -240,12 +255,15 @@ TEST_P(MdrunRerunFreeEnergyTest, WithinTolerances)
     mdpFieldValues["init-lambda-state"] = toString(initLambdaState);
 
     EnergyTermsToCompare energyTermsToCompare{
-        { { interaction_function[F_EPOT].longname, relativeToleranceAsPrecisionDependentUlp(10.0, 24, 32) },
-          { interaction_function[F_DVDL_COUL].longname, relativeToleranceAsPrecisionDependentUlp(1.0, 8, 8) },
-          { interaction_function[F_DVDL_VDW].longname, relativeToleranceAsPrecisionDependentUlp(1.0, 8, 8) },
-          { interaction_function[F_DVDL_BONDED].longname,
+        { { interaction_function[InteractionFunction::PotentialEnergy].longname,
+            relativeToleranceAsPrecisionDependentUlp(10.0, 24, 32) },
+          { interaction_function[InteractionFunction::dVCoulombdLambda].longname,
             relativeToleranceAsPrecisionDependentUlp(1.0, 8, 8) },
-          { interaction_function[F_DVDL_RESTRAINT].longname,
+          { interaction_function[InteractionFunction::dVvanderWaalsdLambda].longname,
+            relativeToleranceAsPrecisionDependentUlp(1.0, 8, 8) },
+          { interaction_function[InteractionFunction::dVbondeddLambda].longname,
+            relativeToleranceAsPrecisionDependentUlp(1.0, 8, 8) },
+          { interaction_function[InteractionFunction::dVrestraintdLambda].longname,
             relativeToleranceAsPrecisionDependentUlp(1.0, 8, 8) } }
     };
 

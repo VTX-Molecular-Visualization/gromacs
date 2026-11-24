@@ -37,7 +37,11 @@
 
 #include <cstring>
 
+#include <filesystem>
+#include <string>
+
 #include "gromacs/utility/arraysize.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/path.h"
 
@@ -46,6 +50,7 @@ enum
     eftASC,
     eftXDR,
     eftTNG,
+    eftH5MD,
     eftGEN,
     eftNR
 };
@@ -53,16 +58,16 @@ enum
 /* To support multiple file types with one general (eg TRX) we have
  * these arrays.
  */
-static const int trxs[] = { efXTC, efTRR, efCPT, efGRO, efG96, efPDB, efTNG };
+static const int trxs[] = { efXTC, efTRR, efCPT, efGRO, efG96, efPDB, efTNG, efH5MD };
 #define NTRXS asize(trxs)
 
 static const int trcompressed[] = { efXTC, efTNG };
 #define NTRCOMPRESSED asize(trcompressed)
 
-static const int tros[] = { efXTC, efTRR, efGRO, efG96, efPDB, efTNG };
+static const int tros[] = { efXTC, efTRR, efGRO, efG96, efPDB, efTNG, efH5MD };
 #define NTROS asize(tros)
 
-static const int trns[] = { efTRR, efCPT, efTNG };
+static const int trns[] = { efTRR, efCPT, efTNG, efH5MD };
 #define NTRNS asize(trns)
 
 static const int stos[] = { efGRO, efG96, efPDB, efBRK, efENT, efESP };
@@ -101,6 +106,7 @@ static const t_deffile deffile[efNR] = {
       trcompressed },
     { eftXDR, ".xtc", "traj", nullptr, "Compressed trajectory (portable xdr format): xtc" },
     { eftTNG, ".tng", "traj", nullptr, "Trajectory file (tng format)" },
+    { eftH5MD, ".h5md", "traj", nullptr, "Trajectory file (H5md format)" },
     { eftXDR, ".edr", "ener", nullptr, "Energy file" },
     { eftGEN, ".???", "conf", "-c", "Structure file", NSTXS, stxs },
     { eftGEN, ".???", "out", "-o", "Structure file", NSTOS, stos },
@@ -288,7 +294,7 @@ int fn2ftp(const std::filesystem::path& fn)
     // We need an extra check if the path is ONLY the extension, or if there is no extension
     if (!fn.has_extension())
     {
-        if (!gmx::concatenateBeforeExtension("t", fn.filename().u8string()).has_extension())
+        if (!gmx::concatenateBeforeExtension("t", fn.filename().string()).has_extension())
         {
             return efNR;
         }

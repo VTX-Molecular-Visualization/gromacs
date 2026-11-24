@@ -43,13 +43,21 @@
  */
 #include "testsystems.h"
 
+#include <map>
+#include <utility>
+
+#include "gromacs/utility/vectypes.h"
+
 #include "nblib/exception.h"
+#include "nblib/interactions.h"
+#include "nblib/listed_forces/bondtypes.h"
+#include "nblib/util/util.hpp"
 
 namespace nblib
 {
 
 //! User class to hold ParticleTypes
-//! Note: this is not part of NBLIB, users should write their own
+//! Note: this is not part of NB-LIB, users should write their own
 class ParticleLibrary
 {
 public:

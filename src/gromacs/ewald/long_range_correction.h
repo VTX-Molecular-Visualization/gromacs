@@ -47,10 +47,9 @@
 #ifndef GMX_EWALD_LONG_RANGE_CORRECTION_H
 #define GMX_EWALD_LONG_RANGE_CORRECTION_H
 
-#include "gromacs/math/vectypes.h"
 #include "gromacs/utility/real.h"
+#include "gromacs/utility/vectypes.h"
 
-struct t_commrec;
 struct t_forcerec;
 struct t_inputrec;
 enum class EwaldGeometry : int;
@@ -59,14 +58,16 @@ namespace gmx
 {
 template<typename>
 class ArrayRef;
-}
+class ForceWithVirial;
+class MpiComm;
+} // namespace gmx
 
 /*! \brief Calculate long-range Ewald correction terms.
  *
  * Calculate correction for electrostatic surface dipole terms.
  */
 void ewald_LRcorrection(int                            numAtomsLocal,
-                        const t_commrec*               commrec,
+                        const gmx::MpiComm&            mpiComm,
                         int                            numThreads,
                         int                            thread,
                         real                           epsilonR,
@@ -81,7 +82,7 @@ void ewald_LRcorrection(int                            numAtomsLocal,
                         gmx::ArrayRef<const gmx::RVec> coords,
                         const matrix                   box,
                         gmx::ArrayRef<const gmx::RVec> mu_tot,
-                        gmx::ArrayRef<gmx::RVec>       forces,
+                        gmx::ForceWithVirial*          forceWithVirial,
                         real*                          Vcorr_q,
                         real                           lambda_q,
                         real*                          dvdlambda_q);

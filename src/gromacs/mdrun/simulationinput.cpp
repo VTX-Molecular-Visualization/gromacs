@@ -36,6 +36,8 @@
 
 #include "simulationinput.h"
 
+#include <filesystem>
+
 #include "gromacs/fileio/checkpoint.h"
 #include "gromacs/fileio/tpxio.h"
 #include "gromacs/mdtypes/inputrec.h"
@@ -51,14 +53,13 @@ void applyGlobalSimulationState(const SimulationInput&      simulationInput,
                                 t_inputrec*                 inputRecord,
                                 gmx_mtop_t*                 molecularTopology)
 {
-    *partialDeserializedTpr = read_tpx_state(
-            simulationInput.tprFilename_.c_str(), inputRecord, globalState, molecularTopology);
+    *partialDeserializedTpr =
+            read_tpx_state(simulationInput.tprFilename_, inputRecord, globalState, molecularTopology);
 }
 
 void applyLocalState(const SimulationInput&         simulationInput,
                      t_fileio*                      logfio,
-                     const t_commrec*               cr,
-                     int*                           dd_nc,
+                     const MpiComm&                 mpiCommSimulation,
                      t_inputrec*                    inputRecord,
                      t_state*                       state,
                      ObservablesHistory*            observablesHistory,
@@ -69,8 +70,7 @@ void applyLocalState(const SimulationInput&         simulationInput,
 {
     load_checkpoint(simulationInput.cpiFilename_.c_str(),
                     logfio,
-                    cr,
-                    dd_nc,
+                    mpiCommSimulation,
                     inputRecord,
                     state,
                     observablesHistory,

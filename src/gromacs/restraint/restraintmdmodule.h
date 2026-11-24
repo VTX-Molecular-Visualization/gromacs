@@ -44,6 +44,9 @@
  * \ingroup module_restraint
  */
 
+#include <memory>
+#include <vector>
+
 #include "gromacs/mdtypes/imdmodule.h"
 #include "gromacs/restraint/restraintpotential.h"
 
@@ -53,6 +56,9 @@ namespace gmx
 // Forward declaration to allow opaque pointer to library internal class.
 class RestraintMDModuleImpl;
 struct MDModulesNotifiers;
+class ForceProviders;
+class IMDOutputProvider;
+class IMdpOptionProvider;
 
 /*! \libinternal \ingroup module_restraint
  * \brief MDModule wrapper for Restraint implementations.
@@ -87,6 +93,9 @@ public:
     static std::unique_ptr<RestraintMDModule> create(std::shared_ptr<gmx::IRestraintPotential> restraint,
                                                      const std::vector<int>& sites);
 
+    //! The name of the module
+    static constexpr std::string_view sc_name = "restraint-potential";
+
     /*!
      * \brief Implement IMDModule interface
      *
@@ -115,6 +124,8 @@ public:
 
     //! Subscribe to simulation setup notifications
     void subscribeToSimulationSetupNotifications(MDModulesNotifiers* notifiers) override;
+    //! Subscribe to simulation run notifications
+    void subscribeToSimulationRunNotifications(MDModulesNotifiers* notifiers) override;
     //! Subscribe to pre processing notifications
     void subscribeToPreProcessingNotifications(MDModulesNotifiers* notifiers) override;
 

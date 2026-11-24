@@ -42,10 +42,15 @@
 #ifndef GMX_APPLIED_FORCES_COLVARPROXYGROMACS_H
 #define GMX_APPLIED_FORCES_COLVARPROXYGROMACS_H
 
+#include <map>
+#include <string>
+
 // NOLINTBEGIN
 // Disabling clang-tidy checks on Colvars library code that is not called directly by GROMACS,
 // or is not even used at all (e.g. code used by NAMD or VMD interfaces)
 #include "external/colvars/colvarproxy.h"
+
+#include "gromacs/utility/real.h"
 // NOLINTEND
 
 #include "gromacs/pbcutil/pbc.h"
@@ -53,6 +58,8 @@
 #include "gromacs/random/threefry.h"
 #include "gromacs/topology/atoms.h"
 #include "gromacs/utility/logger.h"
+
+enum class PbcType : int;
 
 
 namespace gmx
@@ -78,7 +85,7 @@ protected:
     t_pbc   gmxPbc_;
 
     // GROMACS logger instance
-    const MDLogger* logger_ = nullptr;
+    const MDLogger& logger_;
 
     //! Activate or not the parsing of the Colvars config file
     bool doParsing_;
@@ -90,8 +97,6 @@ protected:
 
 
 public:
-    friend class cvm::atom;
-
     /*! \brief Construct ColvarProxyGromacs from its parameters
      *
      * \param[in] colvarsConfigString Content of the colvars input file.
@@ -106,7 +111,7 @@ public:
     ColvarProxyGromacs(const std::string&                        colvarsConfigString,
                        t_atoms                                   atoms,
                        PbcType                                   pbcType,
-                       const MDLogger*                           logger,
+                       const MDLogger&                           logger,
                        bool                                      doParsing,
                        const std::map<std::string, std::string>& inputStrings,
                        real                                      ensembleTemperature,

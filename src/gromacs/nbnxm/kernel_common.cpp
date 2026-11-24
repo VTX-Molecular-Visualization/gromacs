@@ -45,54 +45,12 @@
 
 #include "kernel_common.h"
 
+#include "gromacs/gpu_utils/hostallocator.h"
 #include "gromacs/pbcutil/ishift.h"
 #include "gromacs/utility/gmxassert.h"
 
-//! Clears all elements of buffer
-static void clearBufferAll(gmx::ArrayRef<real> buffer)
+namespace gmx
 {
-    for (real& elem : buffer)
-    {
-        elem = 0;
-    }
-}
-
-/*! \brief Clears elements of size and stride \p numComponentsPerElement
- *
- * Only elements with flags in \p nbat set for index \p outputIndex
- * are cleared.
- */
-template<int numComponentsPerElement>
-static void clearBufferFlagged(const nbnxn_atomdata_t& nbat, int outputIndex, gmx::ArrayRef<real> buffer)
-{
-    gmx::ArrayRef<const gmx_bitmask_t> flags = nbat.buffer_flags;
-    gmx_bitmask_t                      our_flag; // NOLINT(cppcoreguidelines-init-variables)
-    bitmask_init_bit(&our_flag, outputIndex);
-
-    constexpr size_t numComponentsPerBlock = NBNXN_BUFFERFLAG_SIZE * numComponentsPerElement;
-
-    for (size_t b = 0; b < flags.size(); b++)
-    {
-        if (!bitmask_is_disjoint(flags[b], our_flag))
-        {
-            clearBufferAll(buffer.subArray(b * numComponentsPerBlock, numComponentsPerBlock));
-        }
-    }
-}
-
-void clearForceBuffer(nbnxn_atomdata_t* nbat, int outputIndex)
-{
-    if (nbat->bUseBufferFlags)
-    {
-        GMX_ASSERT(nbat->fstride == DIM, "Only fstride=3 is currently handled here");
-
-        clearBufferFlagged<DIM>(*nbat, outputIndex, nbat->out[outputIndex].f);
-    }
-    else
-    {
-        clearBufferAll(nbat->out[outputIndex].f);
-    }
-}
 
 void clear_fshift(real* fshift)
 {
@@ -104,16 +62,16 @@ void clear_fshift(real* fshift)
 
 void reduce_energies_over_lists(const nbnxn_atomdata_t* nbat, int nlist, real* Vvdw, real* Vc)
 {
-    const int nenergrp = nbat->params().nenergrp;
+    const int nenergrp = nbat->params().numEnergyGroups;
 
     for (int nb = 0; nb < nlist; nb++)
     {
         for (int i = 0; i < nenergrp; i++)
         {
             /* Reduce the diagonal terms */
-            int ind = i * nenergrp + i;
-            Vvdw[ind] += nbat->out[nb].Vvdw[ind];
-            Vc[ind] += nbat->out[nb].Vc[ind];
+            int indDiagonal = i * nenergrp + i;
+            Vvdw[indDiagonal] += nbat->outputBuffer(nb).Vvdw[indDiagonal];
+            Vc[indDiagonal] += nbat->outputBuffer(nb).Vc[indDiagonal];
 
             /* Reduce the off-diagonal terms */
             for (int j = i + 1; j < nenergrp; j++)
@@ -121,9 +79,11 @@ void reduce_energies_over_lists(const nbnxn_atomdata_t* nbat, int nlist, real* V
                 /* The output should contain only one off-diagonal part */
                 int ind  = i * nenergrp + j;
                 int indr = j * nenergrp + i;
-                Vvdw[ind] += nbat->out[nb].Vvdw[ind] + nbat->out[nb].Vvdw[indr];
-                Vc[ind] += nbat->out[nb].Vc[ind] + nbat->out[nb].Vc[indr];
+                Vvdw[ind] += nbat->outputBuffer(nb).Vvdw[ind] + nbat->outputBuffer(nb).Vvdw[indr];
+                Vc[ind] += nbat->outputBuffer(nb).Vc[ind] + nbat->outputBuffer(nb).Vc[indr];
             }
         }
     }
 }
+
+} // namespace gmx

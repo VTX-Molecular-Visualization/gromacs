@@ -54,6 +54,7 @@
 #include "gromacs/gpu_utils/device_stream.h"
 #include "gromacs/hardware/device_information.h"
 #include "gromacs/hardware/device_management.h"
+#include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/exceptions.h"
@@ -78,20 +79,7 @@ bool isHostMemoryPinned(const void* h_ptr)
     bool isPinned = false;
     switch (stat)
     {
-        case cudaSuccess:
-            // In CUDA 11.0, the field called memoryType in
-            // cudaPointerAttributes was replaced by a field called
-            // type, along with a documented change of behavior when the
-            // pointer passed to cudaPointerGetAttributes is to
-            // non-registered host memory. That change means that this
-            // code needs conditional compilation and different
-            // execution paths to function with all supported versions.
-#if CUDART_VERSION < 11 * 1000
-            isPinned = true;
-#else
-            isPinned = (memoryAttributes.type == cudaMemoryTypeHost);
-#endif
-            break;
+        case cudaSuccess: isPinned = (memoryAttributes.type == cudaMemoryTypeHost); break;
 
         case cudaErrorInvalidValue:
             // If the buffer was not pinned, then it will not be recognized by CUDA at all
@@ -201,7 +189,7 @@ static void peerAccessCheckStat(const cudaError_t    stat,
     }
 }
 
-void setupGpuDevicePeerAccess(const std::vector<int>& gpuIdsToUse, const gmx::MDLogger& mdlog)
+void setupGpuDevicePeerAccess(gmx::ArrayRef<const int> gpuIdsToUse, const gmx::MDLogger& mdlog)
 {
     cudaError_t stat;
 
@@ -266,7 +254,7 @@ void setupGpuDevicePeerAccess(const std::vector<int>& gpuIdsToUse, const gmx::MD
 
 void checkPendingDeviceErrorBetweenSteps()
 {
-    std::string errorPrefix =
-            "An unhandled error from a CUDA operation during the current MD step was detected:";
-    gmx::checkDeviceError(cudaGetLastError(), errorPrefix);
+    gmx::checkDeviceError(
+            cudaGetLastError(),
+            "An unhandled error from a CUDA operation during the current MD step was detected:");
 }

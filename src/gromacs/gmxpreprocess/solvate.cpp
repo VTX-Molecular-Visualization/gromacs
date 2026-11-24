@@ -35,20 +35,26 @@
 
 #include "solvate.h"
 
+#include <cstdio>
 #include <cstring>
 
 #include <algorithm>
+#include <filesystem>
 #include <random>
+#include <string>
 #include <vector>
 
+#include "gromacs/commandline/filenm.h"
 #include "gromacs/commandline/pargs.h"
 #include "gromacs/fileio/confio.h"
+#include "gromacs/fileio/filetypes.h"
+#include "gromacs/fileio/oenv.h"
 #include "gromacs/fileio/pdbio.h"
 #include "gromacs/gmxlib/conformation_utilities.h"
 #include "gromacs/gmxpreprocess/makeexclusiondistances.h"
 #include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
-#include "gromacs/math/vec.h"
+#include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/pbcutil/boxutilities.h"
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/random/seed.h"
@@ -59,11 +65,18 @@
 #include "gromacs/topology/mtop_util.h"
 #include "gromacs/topology/topology.h"
 #include "gromacs/utility/arraysize.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/futil.h"
 #include "gromacs/utility/gmxassert.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
+
+struct gmx_output_env_t;
+struct t_symtab;
 
 using gmx::RVec;
 
@@ -95,9 +108,10 @@ static void sort_molecule(t_atoms** atoms_solvt, t_atoms** newatoms, std::vector
         {
             /* see if this was a molecule type we haven't had yet: */
             auto matchingMolType = std::find_if(
-                    molTypes.begin(), molTypes.end(), [atoms, i](const MoleculeType& molecule) {
-                        return molecule.name == *atoms->resinfo[atoms->atom[i].resind].name;
-                    });
+                    molTypes.begin(),
+                    molTypes.end(),
+                    [atoms, i](const MoleculeType& molecule)
+                    { return molecule.name == *atoms->resinfo[atoms->atom[i].resind].name; });
             if (matchingMolType == molTypes.end())
             {
                 int numAtomsInMolType = 0;
@@ -745,14 +759,13 @@ static void update_top(t_atoms*        atoms,
     char        buf[STRLEN * 2], buf2[STRLEN], *temp;
     const char* topinout;
     bool        bSystem;
-    int         i;
     double      mtot;
     real        vol, mm;
 
     int nsol = atoms->nres - firstSolventResidueIndex;
 
     mtot = 0;
-    for (i = 0; (i < atoms->nr); i++)
+    for (int i = 0; (i < atoms->nr); i++)
     {
         aps->setAtomProperty(epropMass,
                              std::string(*atoms->resinfo[atoms->atom[i].resind].name),
@@ -772,16 +785,16 @@ static void update_top(t_atoms*        atoms,
     if (ftp2bSet(efTOP, NFILE, fnm))
     {
         char temporary_filename[STRLEN];
-        strncpy(temporary_filename, "temp.topXXXXXX", STRLEN);
+        std::strncpy(temporary_filename, "temp.topXXXXXX", STRLEN);
 
         fprintf(stderr, "Processing topology\n");
         fpin    = gmx_ffopen(topinout, "r");
         fpout   = gmx_fopen_temporary(temporary_filename);
         bSystem = false;
-        while (fgets(buf, STRLEN, fpin))
+        while (std::fgets(buf, STRLEN, fpin))
         {
-            strcpy(buf2, buf);
-            if ((temp = strchr(buf2, '\n')) != nullptr)
+            std::strcpy(buf2, buf);
+            if ((temp = std::strchr(buf2, '\n')) != nullptr)
             {
                 temp[0] = '\0';
             }
@@ -789,14 +802,14 @@ static void update_top(t_atoms*        atoms,
             if (buf2[0] == '[')
             {
                 buf2[0] = ' ';
-                if ((temp = strchr(buf2, '\n')) != nullptr)
+                if ((temp = std::strchr(buf2, '\n')) != nullptr)
                 {
                     temp[0] = '\0';
                 }
                 rtrim(buf2);
-                if (buf2[strlen(buf2) - 1] == ']')
+                if (buf2[std::strlen(buf2) - 1] == ']')
                 {
-                    buf2[strlen(buf2) - 1] = '\0';
+                    buf2[std::strlen(buf2) - 1] = '\0';
                     ltrim(buf2);
                     rtrim(buf2);
                     bSystem = (gmx_strcasecmp(buf2, "system") == 0);
@@ -806,7 +819,7 @@ static void update_top(t_atoms*        atoms,
             {
                 /* if sol present, append "in water" to system name */
                 rtrim(buf2);
-                if (buf2[0] && (!strstr(buf2, " water")))
+                if (buf2[0] && (!std::strstr(buf2, " water")))
                 {
                     sprintf(buf, "%s in water\n", buf2);
                     bSystem = false;
@@ -939,19 +952,19 @@ int gmx_solvate(int argc, char* argv[])
         { "-box", FALSE, etRVEC, { new_box }, "Box size (in nm)" },
         { "-radius", FALSE, etREAL, { &defaultDistance }, "Default van der Waals distance" },
         { "-scale",
-          FALSE,
-          etREAL,
-          { &scaleFactor },
-          "Scale factor to multiply Van der Waals radii from the database in "
-          "share/gromacs/top/vdwradii.dat. The default value of 0.57 yields density close to 1000 "
-          "g/l for proteins in water." },
+                    FALSE,
+                    etREAL,
+                    { &scaleFactor },
+                    "Scale factor to multiply Van der Waals radii from the database in "
+                              "share/gromacs/top/vdwradii.dat. The default value of 0.57 yields density close to 1000 "
+                              "g/l for proteins in water." },
         { "-shell", FALSE, etREAL, { &r_shell }, "Thickness of optional water layer around solute" },
         { "-maxsol",
-          FALSE,
-          etINT,
-          { &max_sol },
-          "Maximum number of solvent molecules to add if they fit in the box. If zero (default) "
-          "this is ignored" },
+                    FALSE,
+                    etINT,
+                    { &max_sol },
+                    "Maximum number of solvent molecules to add if they fit in the box. If zero (default) "
+                              "this is ignored" },
         { "-vel", FALSE, etBOOL, { &bReadV }, "Keep velocities from input solute and solvent" },
     };
 

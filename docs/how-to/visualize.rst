@@ -26,8 +26,8 @@ Topology bonds vs Rendered bonds
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Remember that each of these visualization tools is only looking at the coordinate file you gave it.
-Thus it's not using your topology which is described in either your :ref:`top` file or your 
-:ref:`tpr` file. Each of these programs makes their own guesses about where the chemical bonds 
+Thus it's not using your topology which is described in either your :ref:`top` file or your
+:ref:`tpr` file. Each of these programs makes their own guesses about where the chemical bonds
 are for rendering purposes, so do not be surprised if the heuristics do not always match your topology.
 
 .. _Rasmol: http://www.umass.edu/microbio/rasmol/index2.htm
@@ -69,7 +69,7 @@ that have been specifically formatted for direct use in Grace. You can, however,
 all |Gromacs| analysis programs turn off the Grace specific codes by running the programs
 with the ``-xvg none`` option. This circumvents problems with tools like gnuplot and Excel (see below).
 
-Note that Grace uses some embedded backslash codes to indicate superscripts, normal script, etc. in units. So "Area (nm\S2\N)" is nm squared. 
+Note that Grace uses some embedded backslash codes to indicate superscripts, normal script, etc. in units. So "Area (nm\S2\N)" is nm squared.
 
 Software
 ^^^^^^^^
@@ -90,6 +90,17 @@ Some software packages that can be used to graph data in a :ref:`xvg` file:
     plot "file.xvg" using 1:2 with lines
 
   is a hack that will achieve the right result.
+* Matplotlib - a popular Python library for visualization. A simple script that will plot the data
+  in ``file.xvg`` and show the result on the screen
+
+  .. code-block:: python
+
+      import numpy as np
+      import matplotlib.pyplot as plt
+      x, y = np.loadtxt("file.xvg", comments=["@", "#", "&"], unpack=True)
+      plt.plot(x, y)
+      plt.show()
+
 * MS Excel - change the file extension to .csv and open the file (when prompted, choose to ignore the
   first 20 or so rows and select fixed-width columns, if you are using German MS Excel version, you
   have to change decimal delimiter from "," to ".", or use your favourite \*nix tool.

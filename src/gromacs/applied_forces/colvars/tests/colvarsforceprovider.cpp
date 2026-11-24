@@ -42,6 +42,10 @@
 
 #include "gromacs/applied_forces/colvars/colvarsforceprovider.h"
 
+#include <array>
+#include <filesystem>
+#include <map>
+#include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -51,24 +55,33 @@
 #include "gromacs/fileio/confio.h"
 #include "gromacs/gmxpreprocess/grompp.h"
 #include "gromacs/math/paddedvector.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/mdlib/forcerec.h"
-#include "gromacs/mdtypes/commrec.h"
+#include "gromacs/mdrunutility/multisim.h"
 #include "gromacs/mdtypes/enerdata.h"
 #include "gromacs/mdtypes/forceoutput.h"
 #include "gromacs/mdtypes/iforceprovider.h"
 #include "gromacs/pbcutil/pbc.h"
+#include "gromacs/topology/atoms.h"
+#include "gromacs/topology/ifunc.h"
 #include "gromacs/topology/mtop_lookup.h"
 #include "gromacs/topology/mtop_util.h"
 #include "gromacs/topology/topology.h"
 #include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/logger.h"
+#include "gromacs/utility/mpicomm.h"
+#include "gromacs/utility/real.h"
+#include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/textreader.h"
 #include "gromacs/utility/textwriter.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "testutils/cmdlinetest.h"
 #include "testutils/refdata.h"
 #include "testutils/testasserts.h"
 #include "testutils/testfilemanager.h"
+
+enum class PbcType : int;
 
 namespace gmx
 {
@@ -79,27 +92,23 @@ public:
     void PrepareInputForceProvider(const std::string& fileName)
     {
 
-        gmx::test::TestFileManager fileManager_;
-        const std::string          simData =
-                gmx::test::TestFileManager::getTestSimulationDatabaseDirectory().u8string();
+        gmx::test::TestFileManager  fileManager_;
+        const std::filesystem::path simData =
+                gmx::test::TestFileManager::getTestSimulationDatabaseDirectory();
 
         // Generate empty mdp file
         const std::string mdpInputFileName =
-                fileManager_.getTemporaryFilePath(fileName + ".mdp").u8string();
+                fileManager_.getTemporaryFilePath(fileName + ".mdp").string();
         gmx::TextWriter::writeFileFromString(mdpInputFileName, "");
 
         // Generate tpr file
-        const std::string tprName = fileManager_.getTemporaryFilePath(fileName + ".tpr").u8string();
+        const std::string tprName = fileManager_.getTemporaryFilePath(fileName + ".tpr").string();
         {
             gmx::test::CommandLine caller;
             caller.append("grompp");
             caller.addOption("-f", mdpInputFileName);
-            caller.addOption(
-                    "-p",
-                    std::filesystem::path(simData).append(fileName).replace_extension(".top").u8string());
-            caller.addOption(
-                    "-c",
-                    std::filesystem::path(simData).append(fileName).replace_extension(".gro").u8string());
+            caller.addOption("-p", (simData / fileName).replace_extension(".top").string());
+            caller.addOption("-c", (simData / fileName).replace_extension(".gro").string());
             caller.addOption("-o", tprName);
             ASSERT_EQ(0, gmx_grompp(caller.argc(), caller.argv()));
         }
@@ -116,7 +125,7 @@ public:
     void ColvarsConfigStringFromFile(const std::string& filename)
     {
         // Path to the sample colvars input file
-        std::string colvarsInputFile = gmx::test::TestFileManager::getInputFilePath(filename).u8string();
+        std::filesystem::path colvarsInputFile = gmx::test::TestFileManager::getInputFilePath(filename);
 
         colvarsConfigString_ = TextReader::readFileToString(colvarsInputFile);
     }
@@ -146,8 +155,8 @@ public:
     void IncorrectColvarsConfigString()
     {
         // Path to the sample colvars input file
-        std::string colvarsInputFile =
-                gmx::test::TestFileManager::getInputFilePath("colvars_sample.dat").u8string();
+        std::filesystem::path colvarsInputFile =
+                gmx::test::TestFileManager::getInputFilePath("colvars_sample.dat");
 
         colvarsConfigString_ = TextReader::readFileToString(colvarsInputFile);
     }
@@ -167,7 +176,8 @@ protected:
     PbcType                            pbcType_;
     MDLogger                           logger_;
     t_atoms                            atoms_;
-    t_commrec                          cr_;
+    const MpiComm                      mpiComm_ = MpiComm(MpiComm::SingleRank{});
+    const gmx_domdec_t*                dd_      = nullptr;
     std::map<std::string, std::string> KVTInputs;
     ColvarsForceProviderState          colvarsState_;
 
@@ -184,16 +194,17 @@ protected:
 
 TEST_F(ColvarsForceProviderTest, CanConstructOrNot)
 {
-
+    pbcType_ = PbcType::No;
     EXPECT_NO_THROW(ColvarsForceProvider forceProvider(colvarsConfigString_,
                                                        atoms_,
                                                        pbcType_,
-                                                       &logger_,
+                                                       logger_,
                                                        KVTInputs,
                                                        temperature_,
                                                        seed_,
                                                        &atomSetManager_,
-                                                       &cr_,
+                                                       mpiComm_,
+                                                       nullptr,
                                                        simulationTimeStep_,
                                                        atomCoords_,
                                                        prefixOutput_,
@@ -213,12 +224,13 @@ TEST_F(ColvarsForceProviderTest, SimpleInputs)
     ColvarsForceProvider forceProvider(colvarsConfigString_,
                                        atoms_,
                                        pbcType_,
-                                       &logger_,
+                                       logger_,
                                        KVTInputs,
                                        temperature_,
                                        seed_,
                                        &atomSetManager_,
-                                       &cr_,
+                                       mpiComm_,
+                                       nullptr,
                                        simulationTimeStep_,
                                        atomCoords_,
                                        prefixOutput_,
@@ -226,7 +238,8 @@ TEST_F(ColvarsForceProviderTest, SimpleInputs)
 
 
     // Re-use the PreProcessorTest since the ForceProvider recalls colvars initilization and the input are identicals.
-    gmx::test::TestReferenceData    data("ColvarsPreProcessorTest_CheckValuesFourWaters.xml");
+    gmx::test::TestReferenceData data(
+            std::filesystem::path{ "ColvarsPreProcessorTest_CheckValuesFourWaters.xml" });
     gmx::test::TestReferenceChecker checker(data.rootChecker());
 
     // Check colvars & atoms values are correctly read
@@ -274,12 +287,13 @@ TEST_F(ColvarsForceProviderTest, WrongColvarsInput)
     EXPECT_ANY_THROW(ColvarsForceProvider forceProvider(colvarsConfigString_,
                                                         atoms_,
                                                         pbcType_,
-                                                        &logger_,
+                                                        logger_,
                                                         KVTInputs,
                                                         temperature_,
                                                         seed_,
                                                         &atomSetManager_,
-                                                        &cr_,
+                                                        mpiComm_,
+                                                        nullptr,
                                                         simulationTimeStep_,
                                                         atomCoords_,
                                                         prefixOutput_,
@@ -302,7 +316,7 @@ TEST_F(ColvarsForceProviderTest, CalculateForces4water)
     atomCoords_ = { RVec(x_[0]), RVec(x_[4]) };
 
     // Prepare a ForceProviderInput
-    ForceProviderInput forceProviderInput(x_, atoms_.nr, {}, {}, 0.0, 0, box_, cr_);
+    ForceProviderInput forceProviderInput(x_, atoms_.nr, {}, {}, 0.0, 0, box_, mpiComm_, dd_);
 
     // Prepare a ForceProviderOutput
     std::vector<RVec>   forces(atoms_.nr, RVec{ 0, 0, 0 });
@@ -313,12 +327,13 @@ TEST_F(ColvarsForceProviderTest, CalculateForces4water)
     ColvarsForceProvider forceProvider(colvarsConfigString_,
                                        atoms_,
                                        pbcType_,
-                                       &logger_,
+                                       logger_,
                                        KVTInputs,
                                        temperature_,
                                        seed_,
                                        &atomSetManager_,
-                                       &cr_,
+                                       mpiComm_,
+                                       nullptr,
                                        simulationTimeStep_,
                                        atomCoords_,
                                        prefixOutput_,
@@ -327,7 +342,8 @@ TEST_F(ColvarsForceProviderTest, CalculateForces4water)
     forceProvider.calculateForces(forceProviderInput, &forceProviderOutput);
 
     checker.setDefaultTolerance(gmx::test::relativeToleranceAsFloatingPoint(100.0, 5e-5));
-    checker.checkReal(enerdDummy.term[F_COM_PULL], "Bias Energy");
+    checker.checkReal(enerdDummy.term[InteractionFunction::CenterOfMassPullingEnergy],
+                      "Bias Energy");
     checker.checkSequence(forces.begin(), forces.end(), "Forces");
 
     done_atom(&atoms_);
@@ -346,7 +362,7 @@ TEST_F(ColvarsForceProviderTest, CalculateForcesAlanine)
     atomCoords_ = { RVec(x_[0]), RVec(x_[4]), RVec(x_[10]), RVec(x_[11]) };
 
     // Prepare a ForceProviderInput
-    ForceProviderInput forceProviderInput(x_, atoms_.nr, {}, {}, 0.0, 0, box_, cr_);
+    ForceProviderInput forceProviderInput(x_, atoms_.nr, {}, {}, 0.0, 0, box_, mpiComm_, dd_);
 
     // Prepare a ForceProviderOutput
     std::vector<RVec>   forces(atoms_.nr, RVec{ 0, 0, 0 });
@@ -357,12 +373,13 @@ TEST_F(ColvarsForceProviderTest, CalculateForcesAlanine)
     ColvarsForceProvider forceProvider(colvarsConfigString_,
                                        atoms_,
                                        pbcType_,
-                                       &logger_,
+                                       logger_,
                                        KVTInputs,
                                        temperature_,
                                        seed_,
                                        &atomSetManager_,
-                                       &cr_,
+                                       mpiComm_,
+                                       nullptr,
                                        simulationTimeStep_,
                                        atomCoords_,
                                        prefixOutput_,
@@ -371,7 +388,8 @@ TEST_F(ColvarsForceProviderTest, CalculateForcesAlanine)
     forceProvider.calculateForces(forceProviderInput, &forceProviderOutput);
 
     checker.setDefaultTolerance(gmx::test::relativeToleranceAsFloatingPoint(10.0, 5e-5));
-    checker.checkReal(enerdDummy.term[F_COM_PULL], "Bias Energy");
+    checker.checkReal(enerdDummy.term[InteractionFunction::CenterOfMassPullingEnergy],
+                      "Bias Energy");
     checker.checkSequence(forces.begin(), forces.end(), "Forces");
 
     done_atom(&atoms_);

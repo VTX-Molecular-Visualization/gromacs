@@ -12,7 +12,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [windows-2019, ubuntu-22.04]
+        os: [windows-latest, ubuntu-latest, macos-latest]
       fail-fast: false
 
     steps:
@@ -29,15 +29,15 @@ jobs:
       uses: turtlebrowser/get-conan@v1.2
       
     - name: Create default profile
-      run: conan profile detect --force
+      run: conan profile detect
            
     - name: Create package
       working-directory: ${{env.CMAKELISTS_DIR}}
-      run: conan create . --settings=compiler.cppstd=17
+      run: conan create . --settings=compiler.cppstd=20
                
-    - name: Upload dependencies
-      working-directory: ${{env.CMAKELISTS_DIR}}
-      run: |
-        conan remote add --insecure cano7782 ${{ secrets.CONAN_SERVER_HOST }}
-        conan remote login -p ${{ secrets.CONAN_SERVER_PASSWORD }} cano7782 ${{ secrets.CONAN_SERVER_USER }}
-        conan upload gromacs -r=cano7782 --force
+#    - name: Upload dependencies
+#      working-directory: ${{env.CMAKELISTS_DIR}}
+#      run: |
+#        conan remote add --insecure cano7782 ${{ secrets.CONAN_SERVER_HOST }}
+#        conan remote login -p ${{ secrets.CONAN_SERVER_PASSWORD }} cano7782 ${{ secrets.CONAN_SERVER_USER }}
+#        conan upload gromacs -r=cano7782 --force

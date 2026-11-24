@@ -44,17 +44,22 @@
 
 #include "bench_system.h"
 
+#include <filesystem>
 #include <numeric>
 #include <vector>
 
-#include "gromacs/math/vec.h"
+#include "gromacs/math/functions.h"
 #include "gromacs/mdlib/dispersioncorrection.h"
 #include "gromacs/mdtypes/atominfo.h"
 #include "gromacs/mdtypes/forcerec.h"
+#include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/nbnxm/nbnxm.h"
 #include "gromacs/pbcutil/ishift.h"
 #include "gromacs/pbcutil/pbc.h"
+#include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/gmxassert.h"
+#include "gromacs/utility/vec.h"
 
 #include "bench_coords.h"
 
@@ -204,7 +209,7 @@ BenchmarkSystem::BenchmarkSystem(const int multiplicationFactor, const std::stri
     calc_shifts(box, forceRec.shift_vec);
     if (!outputFile.empty())
     {
-        csv = fopen(outputFile.c_str(), "w+");
+        csv = std::fopen(outputFile.c_str(), "w+");
     }
 }
 

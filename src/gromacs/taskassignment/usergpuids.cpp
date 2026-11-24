@@ -42,16 +42,22 @@
 #include "gromacs/taskassignment/usergpuids.h"
 
 #include <cctype>
+#include <cstddef>
 
 #include <algorithm>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
 
 #include "gromacs/hardware/device_management.h"
 #include "gromacs/hardware/hw_info.h"
+#include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/exceptions.h"
+#include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/stringutil.h"
+
+struct DeviceInformation;
 
 namespace gmx
 {
@@ -62,7 +68,7 @@ namespace gmx
  *                           supplied by the user.
  *                           Must contain only unique decimal digits, or only decimal
  *                           digits separated by comma delimiters. A terminal
- *                           comma is accceptable (and required to specify a
+ *                           comma is acceptable (and required to specify a
  *                           single ID that is larger than 9).
  *
  * \returns  A vector of numeric IDs extracted from \c gpuIdString.

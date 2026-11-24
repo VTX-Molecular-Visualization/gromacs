@@ -46,6 +46,9 @@
 
 #include "gromacs/utility/cstringutil.h"
 
+#include <cstdlib>
+#include <cstring>
+
 #include <string>
 
 #include <gtest/gtest.h>
@@ -102,7 +105,7 @@ void testInplace(F f, const char* input, const char* expectedOutput)
     char* tmp = strdup(input);
     f(tmp);
     EXPECT_STREQ(tmp, expectedOutput);
-    free(tmp);
+    std::free(tmp);
 }
 
 TEST(CStringUtilityTest, strip_comment)

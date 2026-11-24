@@ -44,12 +44,23 @@
 #ifndef NBLIB_TOPOLOGY_H
 #define NBLIB_TOPOLOGY_H
 
+#include <cstddef>
+
+#include <string>
+#include <tuple>
+#include <type_traits>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
+#include "nblib/basicdefinitions.h"
 #include "nblib/interactions.h"
+#include "nblib/kerneloptions.h"
+#include "nblib/listed_forces/bondtypes.h"
 #include "nblib/listed_forces/definitions.h"
 #include "nblib/molecules.h"
 #include "nblib/particlesequencer.h"
+#include "nblib/particletype.h"
 
 namespace nblib
 {
@@ -197,10 +208,11 @@ private:
 //! array of length numParticles()
 template<class F>
 inline auto expandQuantity(const Topology& topology, F&& particleTypeExtractor)
+        -> std::vector<std::invoke_result_t<decltype(particleTypeExtractor), ParticleType>>
 {
-    using ValueType = decltype((std::declval<ParticleType>().*std::declval<F>())());
+    using QuantityType = std::invoke_result_t<decltype(particleTypeExtractor), ParticleType>;
 
-    std::vector<ValueType> ret;
+    std::vector<QuantityType> ret;
     ret.reserve(topology.numParticles());
 
     const std::vector<ParticleType>& particleTypes = topology.getParticleTypes();

@@ -48,6 +48,8 @@
 #ifndef GMX_SELECTION_SELELEM_H
 #define GMX_SELECTION_SELELEM_H
 
+#include <cstdio>
+
 #include <memory>
 #include <string>
 
@@ -65,6 +67,7 @@ struct gmx_sel_evaluate_t;
 struct gmx_sel_mempool_t;
 
 struct t_compiler_data;
+struct gmx_ana_indexgrps_t;
 
 namespace gmx
 {
@@ -451,13 +454,7 @@ public:
         //! Operation type for \ref SEL_BOOLEAN elements.
         e_boolean_t boolt;
         //! Operation type for \ref SEL_ARITHMETIC elements.
-        struct
-        {
-            //! Operation type.
-            e_arithmetic_t type;
-            //! String representation.
-            char* opstr;
-        } arith;
+        e_arithmetic_t type;
         //! Associated selection parameter for \ref SEL_SUBEXPRREF elements.
         struct gmx_ana_selparam_t* param;
         //! The string/number used to reference the group.

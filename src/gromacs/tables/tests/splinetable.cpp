@@ -41,10 +41,14 @@
 #include "gmxpre.h"
 
 #include <cmath>
+#include <cstdlib>
 
 #include <algorithm>
 #include <functional>
+#include <ostream>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -55,6 +59,8 @@
 #include "gromacs/simd/simd.h"
 #include "gromacs/tables/cubicsplinetable.h"
 #include "gromacs/tables/quadraticsplinetable.h"
+#include "gromacs/utility/exceptions.h"
+#include "gromacs/utility/real.h"
 
 #include "testutils/testasserts.h"
 #include "testutils/testoptions.h"
@@ -119,10 +125,10 @@ private:
 
 template<class T>
 template<int numFuncInTable, int funcIndex>
-void SplineTableTest<T>::testSplineTableAgainstFunctions(const std::string&                   desc,
+void SplineTableTest<T>::testSplineTableAgainstFunctions(const std::string& desc,
                                                          const std::function<double(double)>& refFunc,
                                                          const std::function<double(double)>& refDer,
-                                                         const T&                             table,
+                                                         const T&                     table,
                                                          const std::pair<real, real>& testRange)
 {
     real dx = (testRange.second - testRange.first) / s_testPoints_;
@@ -362,7 +368,7 @@ double pmeCorrDerivative(double r)
     }
     else
     {
-        return (2.0 * std::exp(-r * r) / std::sqrt(3.14159265358979323846) * r - erf(r)) / (r * r);
+        return (2.0 * std::exp(-r * r) / std::sqrt(3.14159265358979323846) * r - std::erf(r)) / (r * r);
     }
 }
 

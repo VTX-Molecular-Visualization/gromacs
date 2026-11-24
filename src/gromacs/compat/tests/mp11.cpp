@@ -31,11 +31,21 @@
  * To help us fund GROMACS development, we humbly ask that you cite
  * the research papers on the package. Check out https://www.gromacs.org.
  */
+/*!
+ * \defgroup module_compat Module Compat
+ * \brief AA brief description for Module Compat
+ */
 #include "gmxpre.h"
 
 #include "gromacs/compat/mp11.h"
 
+#include <cstddef>
+
+#include <string>
+
 #include <gtest/gtest.h>
+
+#include "gromacs/utility/exceptions.h"
 
 // Defining some dummy functions to use later
 
@@ -83,9 +93,9 @@ TEST(TemplateMPTest, MpWithIndexInt)
 TEST(TemplateMPTest, MpWithIndexIntBad)
 {
     static constexpr int maxArgValue = 4;
-    int                  i           = maxArgValue;
+    int                  value       = maxArgValue;
     // Function requirement: i < maxArgValue
-    EXPECT_THROW(mp_with_index<maxArgValue>(i, [](auto i) { return testIncrement<i>(); }),
+    EXPECT_THROW(mp_with_index<maxArgValue>(value, [](auto i) { return testIncrement<i>(); }),
                  gmx::InternalError);
 }
 
@@ -101,9 +111,9 @@ TEST(TemplateMPTest, MpWithIndexEnum)
 {
     int five           = 5;
     int two1plus2plus5 = mp_with_index<static_cast<size_t>(Options::Count)>(
-            static_cast<size_t>(Options::Op2), [=](auto i) {
-                return testEnumTwoIPlusJPlusK<Options::Op1, static_cast<Options>(size_t(i))>(five);
-            });
+            static_cast<size_t>(Options::Op2),
+            [=](auto i)
+            { return testEnumTwoIPlusJPlusK<Options::Op1, static_cast<Options>(size_t(i))>(five); });
     EXPECT_EQ(two1plus2plus5, 9);
 }
 

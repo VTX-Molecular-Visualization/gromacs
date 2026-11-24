@@ -43,6 +43,8 @@
 #ifndef NBNXM_CUDA_TYPES_H
 #define NBNXM_CUDA_TYPES_H
 
+#include <memory>
+
 #include "gromacs/gpu_utils/cuda_arch_utils.cuh"
 #include "gromacs/gpu_utils/cudautils.cuh"
 #include "gromacs/gpu_utils/devicebuffer.h"
@@ -52,14 +54,11 @@
 #include "gromacs/mdtypes/interaction_const.h"
 #include "gromacs/nbnxm/gpu_types_common.h"
 #include "gromacs/nbnxm/nbnxm.h"
-#include "gromacs/nbnxm/pairlist.h"
 #include "gromacs/timing/gpu_timing.h"
 #include "gromacs/utility/enumerationhelpers.h"
 
-/* TODO: consider moving this to kernel_utils */
-/* Convenience defines */
-/*! \brief cluster size = number of atoms per cluster. */
-static constexpr int c_clSize = c_nbnxnGpuClusterSize;
+namespace gmx
+{
 
 /*! \internal
  * \brief Main data structure for CUDA nonbonded force calculations.
@@ -88,22 +87,26 @@ struct NbnxmGpu
     int* cxy_na = nullptr;
     /*! \brief number of elements in cxy_na */
     int ncxy_na = 0;
-    /*! \brief number of elements allocated allocated in device buffer */
+    /*! \brief number of elements allocated in device buffer */
     int ncxy_na_alloc = 0;
     /*! \brief x buf ops cell index mapping */
     int* cxy_ind = nullptr;
     /*! \brief number of elements in cxy_ind */
     int ncxy_ind = 0;
-    /*! \brief number of elements allocated allocated in device buffer */
+    /*! \brief number of elements allocated in device buffer */
     int ncxy_ind_alloc = 0;
     /*! \brief parameters required for the non-bonded calc. */
     NBParamGpu* nbparam = nullptr;
     /*! \brief pair-list data structures (local and non-local) */
-    gmx::EnumerationArray<Nbnxm::InteractionLocality, Nbnxm::gpu_plist*> plist = { { nullptr } };
+    EnumerationArray<InteractionLocality, std::unique_ptr<GpuPairlist>> plist = { { nullptr } };
+    /*! \brief fep-list data structures (local and non-local) */
+    EnumerationArray<InteractionLocality, std::unique_ptr<GpuFeplist>> feplist = { { nullptr } };
+    /*! \brief host buffers required for the FEP H2D copies */
+    GpuFepHostData* fephostdata = nullptr;
     /*! \brief staging area where fshift/energies get downloaded */
     NBStagingData nbst;
     /*! \brief local and non-local GPU streams */
-    gmx::EnumerationArray<Nbnxm::InteractionLocality, const DeviceStream*> deviceStreams;
+    EnumerationArray<InteractionLocality, const DeviceStream*> deviceStreams;
 
     /*! \brief Event triggered when the non-local non-bonded
      * kernel is done (and the local transfer can proceed) */
@@ -123,7 +126,7 @@ struct NbnxmGpu
      * domain. As long as bonded work is not split up into
      * local/nonlocal, if there is bonded GPU work, both flags
      * will be true. */
-    gmx::EnumerationArray<Nbnxm::InteractionLocality, bool> haveWork = { { false } };
+    EnumerationArray<InteractionLocality, bool> haveWork = { { false } };
 
     /* NOTE: With current CUDA versions (<=5.0) timing doesn't work with multiple
      * concurrent streams, so we won't time if both l/nl work is done on GPUs.
@@ -132,9 +135,11 @@ struct NbnxmGpu
     /*! \brief True if event-based timing is enabled. */
     bool bDoTime = false;
     /*! \brief CUDA event-based timers. */
-    Nbnxm::GpuTimers* timers = nullptr;
+    GpuTimers* timers = nullptr;
     /*! \brief Timing data. TODO: deprecate this and query timers for accumulated data instead */
-    gmx_wallclock_gpu_nbnxn_t* timings = nullptr;
+    std::unique_ptr<gmx_wallclock_gpu_nbnxn_t> timings;
 };
+
+} // namespace gmx
 
 #endif /* NBNXN_CUDA_TYPES_H */

@@ -457,14 +457,14 @@ std::unique_ptr<IOptionValueStore<T>> OptionStorageTemplate<T>::createStore(Valu
 template<typename T>
 std::vector<Any> OptionStorageTemplate<T>::defaultValues() const
 {
-    std::vector<Any> result;
     if (hasFlag(efOption_NoDefaultValue))
     {
-        return result;
+        return {};
     }
     GMX_RELEASE_ASSERT(
             hasFlag(efOption_HasDefaultValue),
             "Current option implementation can only provide default values before assignment");
+    std::vector<Any> result;
     for (const auto& value : values())
     {
         result.push_back(Any::create<T>(value));
@@ -548,9 +548,7 @@ void OptionStorageTemplate<T>::commitValues()
     }
     store_->reserve(setValues_.size());
     // For bool the loop variable isn't a reference (it's its special reference type)
-    // clang-format off
-    CLANG_DIAGNOSTIC_IGNORE(-Wrange-loop-analysis);
-    // clang-format on
+    CLANG_DIAGNOSTIC_IGNORE("-Wrange-loop-analysis");
     for (const auto& value : setValues_)
     {
         store_->append(value);

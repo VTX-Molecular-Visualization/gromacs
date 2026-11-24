@@ -42,13 +42,18 @@
 
 #include "gromacs/topology/index.h"
 
+#include <filesystem>
+#include <memory>
 #include <string>
+#include <vector>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include "gromacs/topology/atoms.h"
 #include "gromacs/trajectoryanalysis/topologyinformation.h"
 #include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/smalloc.h"
 
 #include "testutils/cmdlinetest.h"
@@ -126,7 +131,7 @@ IndexTest::IndexTest() : checker_(data_.rootChecker())
 {
     // When we have many test cases using this class, refactor to fill
     // a static topInfo only once, in SetUpTestSuite()
-    topInfo_.fillFromInputFile(manager()->getInputFilePath("lysozyme.gro").u8string());
+    topInfo_.fillFromInputFile(manager()->getInputFilePath("lysozyme.gro").string());
 }
 
 TEST_F(IndexTest, AnalyseWorksDefaultGroups)
@@ -139,7 +144,7 @@ TEST_F(IndexTest, WriteIndexWorks)
 {
     auto        indexGroups = analyse(atoms(), false, false);
     std::string fileName    = "out.ndx";
-    std::string fullPath    = manager()->getTemporaryFilePath(fileName).u8string();
+    std::string fullPath    = manager()->getTemporaryFilePath(fileName).string();
     write_index(fullPath.c_str(), indexGroups, false, atoms()->nr);
     checkFileMatch(checker(), fileName, fullPath);
 }
@@ -148,7 +153,7 @@ TEST_F(IndexTest, WriteAndReadIndexWorks)
 {
     auto        indexGroups = analyse(atoms(), false, false);
     std::string fileName    = "out.ndx";
-    std::string fullPath    = manager()->getTemporaryFilePath(fileName).u8string();
+    std::string fullPath    = manager()->getTemporaryFilePath(fileName).string();
     write_index(fullPath.c_str(), indexGroups, false, atoms()->nr);
     auto newIndex = init_index(fullPath.c_str());
     compareBlocks(indexGroups, newIndex);

@@ -38,9 +38,18 @@ gmx_add_libgromacs_sources(
     logging.cpp
     mdmodulesnotifiers.cpp
     multisim.cpp
+    plainpairlistranges.cpp
+    print_validation.cpp
     printtime.cpp
     threadaffinity.cpp
     )
+
+# Must annotate this file specially so it can include device_information.h
+if (GMX_GPU_SYCL)
+    _gmx_add_files_to_property(SYCL_SOURCES
+        print_validation.cpp
+        )
+endif()
 
 # Source files have the following private module dependencies.
 target_link_libraries(mdrunutility PRIVATE
@@ -52,8 +61,7 @@ target_link_libraries(mdrunutility PRIVATE
 
 # Public interface for modules, including dependencies and interfaces
 #target_include_directories(mdrunutility PUBLIC
-target_include_directories(mdrunutility INTERFACE
-                           $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+#                           $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 #target_link_libraries(mdrunutility PUBLIC
 target_link_libraries(mdrunutility INTERFACE
                       legacy_api

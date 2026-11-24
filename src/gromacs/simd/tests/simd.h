@@ -73,22 +73,27 @@
  * \author Erik Lindahl <erik.lindahl@scilifelab.se>
  * \ingroup module_simd
  */
+#include <cstdint>
+
 #include <vector>
 
 #include <gtest/gtest.h>
 
 #include "gromacs/simd/simd.h"
+#include "gromacs/utility/real.h"
 
 #include "base.h"
 #include "data.h"
-
-#if GMX_SIMD
 
 namespace gmx
 {
 namespace test
 {
 
+// Type for half-open intervals specifying test ranges
+using RealRange = std::pair<real, real>;
+
+#if GMX_SIMD
 
 /*! \cond internal */
 /*! \addtogroup module_simd */
@@ -301,9 +306,9 @@ SimdInt32 setSimdIntFrom1I(int value);
 /*! \} */
 /*! \endcond */
 
+#endif // GMX_SIMD
+
 } // namespace test
 } // namespace gmx
-
-#endif // GMX_SIMD
 
 #endif // GMX_SIMD_TESTS_SIMD_H

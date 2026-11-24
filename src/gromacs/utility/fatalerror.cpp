@@ -38,12 +38,16 @@
 #include "config.h"
 
 #include <cerrno>
+#include <cstdarg>
 #include <cstddef>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
 #include <exception>
+#include <filesystem>
 #include <mutex>
+#include <string>
 
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/baseversion.h"
@@ -210,7 +214,7 @@ void gmx_fatal_mpi_va(int /*f_errno*/,
                       gmx_bool                     bMain,
                       gmx_bool                     bFinalize,
                       const char*                  fmt,
-                      va_list                      ap)
+                      std::va_list                 ap)
 {
     if (bMain)
     {
@@ -228,7 +232,7 @@ void gmx_fatal_mpi_va(int /*f_errno*/,
 
 void gmx_fatal(int f_errno, const std::filesystem::path& file, int line, gmx_fmtstr const char* fmt, ...)
 {
-    va_list ap;
+    std::va_list ap;
     va_start(ap, fmt);
     gmx_fatal_mpi_va(f_errno, file, line, TRUE, FALSE, fmt, ap);
     va_end(ap);
@@ -271,8 +275,8 @@ void range_check_function(int                          n,
 
 void gmx_warning(gmx_fmtstr const char* fmt, ...)
 {
-    va_list ap;
-    char    msg[STRLEN];
+    std::va_list ap;
+    char         msg[STRLEN];
 
     va_start(ap, fmt);
     vsprintf(msg, fmt, ap);

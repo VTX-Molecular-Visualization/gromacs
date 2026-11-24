@@ -42,6 +42,7 @@ file(GLOB NBNXM_SOURCES
     atomdata.cpp
     exclusionchecker.cpp
     freeenergydispatch.cpp
+    freeenergykernel.cpp
     grid.cpp
     gridset.cpp
     kernel_common.cpp
@@ -52,14 +53,18 @@ file(GLOB NBNXM_SOURCES
     pairlist.cpp
     pairlistparams.cpp
     pairlistset.cpp
+    pairlistsets.cpp
     pairlistwork.cpp
+    pairlist_simd_kernel.cpp
     pairlist_tuning.cpp
     pairsearch.cpp
     prunekerneldispatch.cpp
     # Reference kernel source files
     kernels_reference/kernel_gpu_ref.cpp
-    kernels_reference/kernel_ref.cpp
+    kernels_reference/kernel_ref_1x1.cpp
+    kernels_reference/kernel_ref_4x4.cpp
     kernels_reference/kernel_ref_prune.cpp
+    simd_energy_accumulator.cpp
     simd_prune_kernel.cpp
     # Benchmark source files
     # TODO these should not be in libgromacs
@@ -85,7 +90,13 @@ endif()
 if(GMX_GPU_SYCL)
     add_subdirectory(sycl)
     gmx_add_libgromacs_sources(nbnxm_gpu_data_mgmt.cpp nbnxm_gpu_buffer_ops.cpp)
-    _gmx_add_files_to_property(SYCL_SOURCES nbnxm_gpu_data_mgmt.cpp nbnxm_gpu_buffer_ops.cpp nbnxm.cpp)
+    _gmx_add_files_to_property(SYCL_SOURCES nbnxm_gpu_data_mgmt.cpp nbnxm_gpu_buffer_ops.cpp)
+endif()
+    
+if(GMX_GPU_HIP)
+    add_subdirectory(hip)
+    gmx_add_libgromacs_sources(nbnxm_gpu_data_mgmt.cpp nbnxm_gpu_buffer_ops.cpp)
+    _gmx_add_files_to_property(HIP_SOURCES nbnxm_gpu_data_mgmt.cpp nbnxm_gpu_buffer_ops.cpp)
 endif()
 
 set(LIBGROMACS_SOURCES ${LIBGROMACS_SOURCES} ${NBNXM_SOURCES} PARENT_SCOPE)
@@ -97,8 +108,7 @@ target_link_libraries(nbnxm PRIVATE
 
 # Public interface for modules, including dependencies and interfaces
 #target_include_directories(nbnxm PUBLIC
-target_include_directories(nbnxm INTERFACE
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+#        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 #target_link_libraries(nbnxm PUBLIC
 target_link_libraries(nbnxm INTERFACE
         legacy_api

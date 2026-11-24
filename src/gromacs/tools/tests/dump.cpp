@@ -41,6 +41,14 @@
 
 #include "gromacs/tools/dump.h"
 
+#include <filesystem>
+#include <functional>
+#include <memory>
+#include <string>
+
+#include <gtest/gtest.h>
+
+#include "gromacs/commandline/cmdlineoptionsmodule.h"
 #include "gromacs/gmxpreprocess/grompp.h"
 #include "gromacs/utility/textwriter.h"
 
@@ -91,7 +99,7 @@ TEST_F(DumpTest, WorksWithTpr)
 TEST_F(DumpTest, WorksWithTprAndMdpWriting)
 {
     TestFileManager fileManager;
-    std::string     mdpName = fileManager.getTemporaryFilePath("output.mdp").u8string();
+    std::string     mdpName = fileManager.getTemporaryFilePath("output.mdp").string();
     const char* const command[] = { "dump", "-s", s_tprFileHandle->tprName().c_str(), "-om", mdpName.c_str() };
     CommandLine cmdline(command);
     runTest(&cmdline);

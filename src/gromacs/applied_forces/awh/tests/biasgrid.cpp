@@ -36,17 +36,23 @@
 #include "gromacs/applied_forces/awh/biasgrid.h"
 
 #include <cmath>
+#include <cstdlib>
 
+#include <algorithm>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include "gromacs/applied_forces/awh/dimparams.h"
 #include "gromacs/applied_forces/awh/tests/awh_setup.h"
 #include "gromacs/mdtypes/awh_params.h"
+#include "gromacs/serialization/inmemoryserializer.h"
+#include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/gmxassert.h"
-#include "gromacs/utility/inmemoryserializer.h"
+#include "gromacs/utility/real.h"
 
 #include "testutils/testasserts.h"
 
@@ -83,7 +89,7 @@ TEST(biasGridTest, neighborhood)
         auto   awhDimBuffer =
                 awhDimParamSerialized(coordinateProvider, coordIndex, origin, end, period, diffusion);
         gmx::InMemoryDeserializer serializer(awhDimBuffer, false);
-        awhDimParams.emplace_back(AwhDimParams(&serializer));
+        awhDimParams.emplace_back(&serializer);
     }
     {
         int    coordIndex = 1;
@@ -93,7 +99,7 @@ TEST(biasGridTest, neighborhood)
         auto   awhDimBuffer =
                 awhDimParamSerialized(coordinateProvider, coordIndex, origin, end, period, diffusion);
         gmx::InMemoryDeserializer serializer(awhDimBuffer, false);
-        awhDimParams.emplace_back(AwhDimParams(&serializer));
+        awhDimParams.emplace_back(&serializer);
     }
 
     const real conversionFactor = 1;

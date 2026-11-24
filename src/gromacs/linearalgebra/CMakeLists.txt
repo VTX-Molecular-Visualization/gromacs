@@ -33,11 +33,17 @@
 
 add_library(linearalgebra OBJECT)
 target_sources(linearalgebra PRIVATE
+        binary_information.cpp
         eigensolver.cpp
         gmx_arpack.cpp
         matrix.cpp
         sparsematrix.cpp
 )
+
+# Note that the use of MKL for FFT determines that MKL will be used
+# also for linear algebra, for simplicity.
+set_source_files_properties(binary_information.cpp PROPERTIES COMPILE_FLAGS
+    "-DGMX_DESCRIBE_BLAS=\"${GMX_DESCRIBE_BLAS}\" -DGMX_DESCRIBE_LAPACK=\"${GMX_DESCRIBE_LAPACK}\" -DGMX_FFT_MKL=${GMX_FFT_MKL}")
 
 if (NOT GMX_EXTERNAL_BLAS)
     file(GLOB BLAS_SOURCES gmx_blas/*.cpp)
@@ -56,13 +62,16 @@ endif()
 target_include_directories(linearalgebra PUBLIC
                            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 target_include_directories(linearalgebra PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+if (GMX_EXTERNAL_BLAS AND GMX_EXTERNAL_LAPACK AND GMX_FFT_MKL)
+    target_link_libraries(linearalgebra PRIVATE MKL::MKL)
+endif()
 
 gmx_target_compile_options(linearalgebra)
 target_compile_definitions(linearalgebra PRIVATE HAVE_CONFIG_H)
 # The linearalgebra code is all considered external, and we will
 # not keep it free of warnings. Any compiler suppressions required
 # should be added here.
-if (WIN32)
+if (MSVC)
     gmx_target_warning_suppression(linearalgebra /wd4305 HAS_NO_MSVC_INITIALIZING_FLOAT_FROM_DOUBLE)
     gmx_target_warning_suppression(linearalgebra /wd4244 HAS_NO_MSVC_LOSSY_CONVERSION_DOUBLE_TO_REAL)
     gmx_target_warning_suppression(linearalgebra /wd4996 HAS_NO_MSVC_UNSAFE_FUNCTION)

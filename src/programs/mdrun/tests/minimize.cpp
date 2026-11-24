@@ -41,10 +41,14 @@
  */
 #include "gmxpre.h"
 
+#include <cstdio>
+
+#include <filesystem>
 #include <map>
 #include <memory>
 #include <string>
 #include <tuple>
+#include <unordered_map>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -57,10 +61,12 @@
 #include "gromacs/utility/basenetwork.h"
 #include "gromacs/utility/stringutil.h"
 
+#include "testutils/cmdlinetest.h"
 #include "testutils/mpitest.h"
 #include "testutils/refdata.h"
 #include "testutils/simulationdatabase.h"
 #include "testutils/testasserts.h"
+#include "testutils/testfilemanager.h"
 
 #include "energycomparison.h"
 #include "energyreader.h"
@@ -134,7 +140,7 @@ TEST_P(EnergyMinimizationTest, WithinTolerances)
     }
 
     // do mdrun, preparing to check the energies later
-    runner_.edrFileName_ = fileManager_.getTemporaryFilePath("minimize.edr").u8string();
+    runner_.edrFileName_ = fileManager_.getTemporaryFilePath("minimize.edr").string();
     {
         CommandLine mdrunCaller;
         mdrunCaller.append("mdrun");
@@ -153,7 +159,8 @@ TEST_P(EnergyMinimizationTest, WithinTolerances)
     }
 
     EnergyTermsToCompare energyTermsToCompare{ {
-            { interaction_function[F_EPOT].longname, potentialEnergyToleranceForSystem_g.at(simulationName) },
+            { interaction_function[InteractionFunction::PotentialEnergy].longname,
+              potentialEnergyToleranceForSystem_g.at(simulationName) },
     } };
 
     TestReferenceData refData;
@@ -170,8 +177,8 @@ std::vector<std::string> unconstrainedSystemsToTest_g = { "argon12",
 std::vector<std::string> minimizersToTest_g           = { "steep", "cg", "l-bfgs" };
 
 std::vector<std::string> constrainedSystemsToTest_g        = { "tip3p5",
-                                                        "glycine_vacuo",
-                                                        "alanine_vsite_vacuo" };
+                                                               "glycine_vacuo",
+                                                               "alanine_vsite_vacuo" };
 std::vector<std::string> minimizersToTestWithConstraints_g = { "steep", "cg" };
 //! \}
 

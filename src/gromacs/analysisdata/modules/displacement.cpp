@@ -42,12 +42,17 @@
 
 #include "gromacs/analysisdata/modules/displacement.h"
 
+#include <memory>
+#include <vector>
+
+#include "gromacs/analysisdata/abstractdata.h"
 #include "gromacs/analysisdata/dataframe.h"
 #include "gromacs/analysisdata/datamodulemanager.h"
 #include "gromacs/analysisdata/modules/histogram.h"
 #include "gromacs/math/utilities.h"
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/gmxassert.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
 
 namespace gmx
@@ -147,13 +152,13 @@ void AnalysisDataDisplacementModule::setMSDHistogram(const AnalysisDataBinAverag
 }
 
 
-AnalysisDataFrameRef AnalysisDataDisplacementModule::tryGetDataFrameInternal(int /*index*/) const
+AnalysisDataFrameRef AnalysisDataDisplacementModule::tryGetDataFrameInternal(size_t /*index*/) const
 {
     return AnalysisDataFrameRef();
 }
 
 
-bool AnalysisDataDisplacementModule::requestStorageInternal(int /*nframes*/)
+bool AnalysisDataDisplacementModule::requestStorageInternal(size_t /*nframes*/)
 {
     return false;
 }

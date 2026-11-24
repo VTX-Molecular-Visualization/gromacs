@@ -39,14 +39,16 @@
 # https://cmake.org/cmake/help/latest/module/FindPython3.html#artifacts-specification
 option(Python3_ARTIFACTS_INTERACTIVE TRUE
        "Make artifacts specification global and cached.")
+mark_as_advanced(Python3_ARTIFACTS_INTERACTIVE)
 
 # Note: If necessary, the Python location can be hinted with Python3_ROOT_DIR
 # For additional parameters affecting Python installation discovery, see
 # https://cmake.org/cmake/help/latest/module/FindPython3.html#hints
-if(FIND_PACKAGE_MESSAGE_DETAILS_Python3)
+if (Python3_FIND_QUIETLY_AFTER_FIRST_RUN)
     # Keep quiet on subsequent runs of cmake
-    set(Python3_FIND_QUIETLY ON)
-    set(PythonInterp_FIND_QUIETLY ON)
+    set (Python3_FIND_QUIETLY TRUE)
+else()
+    set (Python3_FIND_QUIETLY FALSE)
 endif()
 if (NOT Python3_FIND_STRATEGY)
     # If the user provides a hint for the Python installation with Python3_ROOT_DIR,
@@ -59,16 +61,17 @@ if(NOT Python3_FIND_VIRTUALENV)
     # we want to preferentially discover user-space software.
     set(Python3_FIND_VIRTUALENV FIRST)
 endif()
-find_package(Python3 3.7 COMPONENTS Interpreter Development)
+find_package(Python3 3.9 COMPONENTS Interpreter Development)
 if (GMX_PYTHON_PACKAGE AND (NOT Python3_FOUND OR NOT Python3_Development_FOUND))
     message(FATAL_ERROR "Could not locate Python development requirements. \
             Provide appropriate CMake hints or set GMX_PYTHON_PACKAGE=OFF")
 endif ()
+set(Python3_FIND_QUIETLY_AFTER_FIRST_RUN TRUE CACHE INTERNAL "Be quiet during future attempts to find Python3")
 
 # Provide hints for other Python detection that may occur later.
 #
-# Other components, such as pybind and googletest, may expect the
-# PYTHON_EXECUTABLE variable from pre-3.12 FindPythonInterp.cmake.
+# Other components, such as pybind, googletest, and our python_packaging
+# expect the PYTHON_EXECUTABLE variable from pre-3.12 FindPythonInterp.cmake.
 if (Python3_Interpreter_FOUND)
     set(PYTHON_EXECUTABLE ${Python3_EXECUTABLE} CACHE FILEPATH "Location hint for Python interpreter.")
 endif ()
@@ -76,7 +79,7 @@ endif ()
 # may call find_package(PythonInterp) later on.
 set(Python3_FIND_QUIETLY ON)
 set(PythonInterp_FIND_QUIETLY ON)
-# Older versions of FindPythonLibs and FindPythonInterp might not search for
-# Python newer than 3.7 by default. (as of CMake 3.9)
-# Note that this hint is not used by the newer FindPython module we rely on above.
-set(Python_ADDITIONAL_VERSIONS 3.8 3.9 3.10)
+
+# The standard FindPython3.cmake is not fully reproducible when run a second time in the
+# same build tree, so we work around that here
+unset(_Python3_Interpreter_REASON_FAILURE CACHE)

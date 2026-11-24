@@ -36,26 +36,31 @@
 #include "sfactor.h"
 
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 #include <algorithm>
+#include <filesystem>
+#include <string>
 
 #include "gromacs/fileio/confio.h"
 #include "gromacs/fileio/trxio.h"
 #include "gromacs/fileio/xvgr.h"
 #include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/topology/index.h"
 #include "gromacs/topology/topology.h"
 #include "gromacs/trajectory/trajectoryframe.h"
 #include "gromacs/utility/arraysize.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/fileptr.h"
 #include "gromacs/utility/futil.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/strdb.h"
+#include "gromacs/utility/vec.h"
 
 
 typedef struct gmx_structurefactors
@@ -194,7 +199,7 @@ extern void compute_structure_factor(structure_factor_t* sft,
     for (i = 0; i < maxkx; i++)
     {
         fprintf(stderr, "\rdone %3.1f%%     ", (100.0 * (i + 1)) / maxkx);
-        fflush(stderr);
+        std::fflush(stderr);
         kx = i * k_factor[XX];
         for (j = 0; j < maxky; j++)
         {
@@ -227,12 +232,12 @@ extern void compute_structure_factor(structure_factor_t* sft,
             }
         }
     } /* end loop on i */
-      /*
-       *  compute the square modulus of the structure factor, averaging on the surface
-       *  kx*kx + ky*ky + kz*kz = krr*krr
-       *  note that this is correct only for a (on the macroscopic scale)
-       *  isotropic system.
-       */
+    /*
+     *  compute the square modulus of the structure factor, averaging on the surface
+     *  kx*kx + ky*ky + kz*kz = krr*krr
+     *  note that this is correct only for a (on the macroscopic scale)
+     *  isotropic system.
+     */
     for (i = 0; i < maxkx; i++)
     {
         kx = i * k_factor[XX];
@@ -644,7 +649,7 @@ extern double CMSF(gmx_structurefactors_t* gsf, int type, int nh, double lambda,
         tmp = c;
         for (i = 0; (i < 4); i++)
         {
-            tmp += a[i] * exp(-b[i] * k2);
+            tmp += a[i] * std::exp(-b[i] * k2);
         }
     }
     return tmp;

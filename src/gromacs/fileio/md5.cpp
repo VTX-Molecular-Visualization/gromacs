@@ -414,7 +414,7 @@ void gmx_md5_append(md5_state_t* pms, const md5_byte_t* data, int nbytes)
     /* Process a final partial block. */
     if (left)
     {
-        memcpy(pms->buf, p, left);
+        std::memcpy(pms->buf, p, left);
     }
 }
 
@@ -425,10 +425,9 @@ std::array<unsigned char, 16> gmx_md5_finish(md5_state_t* pms)
                                         0,    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                                         0,    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
     md5_byte_t              data[8];
-    int                     i;
 
     /* Save the length before padding. */
-    for (i = 0; i < 8; ++i)
+    for (int i = 0; i < 8; ++i)
     {
         data[i] = static_cast<md5_byte_t>(pms->count[i >> 2] >> ((i & 3) << 3));
     }

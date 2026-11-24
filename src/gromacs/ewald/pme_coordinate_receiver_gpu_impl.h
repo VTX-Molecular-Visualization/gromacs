@@ -113,11 +113,17 @@ public:
 
     /*! \brief
      * Return PP co-ordinate transfer event received from PP
-     * rank determined from pipeline stage, for consumer to enqueue
-     * \param[in] pipelineStage  stage of pipeline corresponding to this transfer
-     * \returns                  tuple with rank of sending PP task and corresponding event
+     * rank determined from \c senderIndex, for consumer to enqueue
+     *
+     * The returned sender index may correspond to a PP rank with an
+     * empty domain, which transfers no particles but still takes part
+     * in the communication.
+     *
+     * \param[in]  senderIndex   Index of the sender within the set of PP ranks
+     * \returns                  tuple with index of sending PP rank
+     *                           and corresponding event.
      */
-    std::tuple<int, GpuEventSynchronizer*> receivePpCoordinateSendEvent(int pipelineStage);
+    std::tuple<int, GpuEventSynchronizer*> receivePpCoordinateSendEvent(int senderIndex);
 
     /*! \brief
      * Wait for coordinates from any PP rank
@@ -138,12 +144,12 @@ public:
     std::tuple<int, int> ppCommAtomRange(int senderIndex);
 
     /*! \brief
-     * Return number of PP ranks involved in PME-PP communication
+     * Return number of PP ranks communicating with this PME rank
      */
-    int ppCommNumSenderRanks();
+    int ppCommNumRanks();
 
-    /*! \brief
-     * Mark an event in the sender stream \p senderIndex and enqueue it into \p stream.
+    /*! \brief Mark an event in the sender stream \p senderIndex
+     * (which must be valid) and enqueue it into \p stream.
      */
     void insertAsDependencyIntoStream(int senderIndex, const DeviceStream& stream);
 
@@ -152,8 +158,6 @@ private:
     MPI_Comm comm_;
     //! MPI requests, one per PP rank
     std::vector<MPI_Request> requests_;
-    //! GPU context handle (not used in CUDA)
-    const DeviceContext& deviceContext_;
     //! Communication manager objects corresponding to multiple sending PP ranks
     std::vector<PpCommManager> ppCommManagers_;
 };

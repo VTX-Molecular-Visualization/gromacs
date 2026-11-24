@@ -44,6 +44,8 @@
 
 #include <cstdio>
 
+#include <filesystem>
+#include <map>
 #include <string>
 #include <utility>
 
@@ -53,9 +55,11 @@
 #include "gromacs/commandline/cmdlineparser.h"
 #include "gromacs/commandline/cmdlineprogramcontext.h"
 #include "gromacs/math/utilities.h"
+#include "gromacs/mdrun/binary_information.h"
 #include "gromacs/options/basicoptions.h"
 #include "gromacs/options/options.h"
 #include "gromacs/utility/basenetwork.h"
+#include "gromacs/utility/classhelpers.h"
 #include "gromacs/utility/coolstuff.h"
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/fatalerror.h"
@@ -544,7 +548,7 @@ int CommandLineModuleManager::run(int argc, char* argv[])
         filename.append(".debug");
 
         fprintf(stderr, "Will write debug log file: %s\n", filename.c_str());
-        gmx_init_debug(optionsHolder.debugLevel(), filename.c_str());
+        gmx_init_debug(optionsHolder.debugLevel(), filename);
     }
     // Set the nice level unless disabled in the configuration.
     if (optionsHolder.niceLevel() != 0)

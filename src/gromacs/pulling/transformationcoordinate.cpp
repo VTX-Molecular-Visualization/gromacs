@@ -35,6 +35,14 @@
 
 #include "gromacs/pulling/transformationcoordinate.h"
 
+#include "config.h"
+
+#include <cstdio>
+
+#include <string>
+#include <vector>
+
+#include "gromacs/mdtypes/pull_params.h"
 #include "gromacs/pulling/pull_internal.h"
 #include "gromacs/pulling/pullcoordexpressionparser.h"
 #include "gromacs/utility/arrayref.h"
@@ -53,7 +61,7 @@ namespace
 double getTransformationPullCoordinateValue(pull_coord_work_t* coord)
 {
     const int transformationPullCoordinateIndex = coord->params_.coordIndex;
-    GMX_ASSERT(ssize(coord->transformationVariables) == transformationPullCoordinateIndex + 1,
+    GMX_ASSERT(gmx::ssize(coord->transformationVariables) == transformationPullCoordinateIndex + 1,
                "We need as many variables as the transformation pull coordinate index plus one");
     double result = 0;
     try

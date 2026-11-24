@@ -35,18 +35,27 @@
 
 #include "gromacs/gmxpreprocess/massrepartitioning.h"
 
+#include <string>
+#include <vector>
+
 #include <gtest/gtest.h>
 
 #include "gromacs/fileio/warninp.h"
+#include "gromacs/topology/atoms.h"
 #include "gromacs/topology/idef.h"
 #include "gromacs/topology/ifunc.h"
 #include "gromacs/topology/topology.h"
+#include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/basedefinitions.h"
+#include "gromacs/utility/real.h"
+#include "gromacs/utility/smalloc.h"
 
 #include "testutils/testasserts.h"
 
 namespace gmx
 {
-
+namespace test
+{
 namespace
 {
 
@@ -54,7 +63,7 @@ void setupMTop(gmx_mtop_t* mtop, ArrayRef<const real> masses, ArrayRef<const int
 {
     gmx_moltype_t moltype;
 
-    std::vector<int>& iatoms = moltype.ilist[F_CONNBONDS].iatoms;
+    std::vector<int>& iatoms = moltype.ilist[InteractionFunction::ConnectBonds].iatoms;
     for (Index i = 0; i < bonds.ssize(); i += 2)
     {
         iatoms.push_back(0);
@@ -142,4 +151,5 @@ TEST(MassRepartitioning, LightPartnerGivesError)
 }
 
 } // namespace
+} // namespace test
 } // namespace gmx

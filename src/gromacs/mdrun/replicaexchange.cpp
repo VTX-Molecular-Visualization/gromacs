@@ -46,27 +46,39 @@
 
 #include "config.h"
 
+#include <cinttypes>
 #include <cmath>
 
+#include <array>
+#include <filesystem>
+#include <memory>
 #include <random>
+#include <string>
+#include <vector>
 
 #include "gromacs/domdec/collect.h"
 #include "gromacs/gmxlib/network.h"
+#include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/mdrunutility/multisim.h"
 #include "gromacs/mdtypes/commrec.h"
 #include "gromacs/mdtypes/enerdata.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/mdtypes/state.h"
+#include "gromacs/random/seed.h"
 #include "gromacs/random/threefry.h"
 #include "gromacs/random/uniformintdistribution.h"
 #include "gromacs/random/uniformrealdistribution.h"
+#include "gromacs/topology/ifunc.h"
+#include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/pleasecite.h"
 #include "gromacs/utility/smalloc.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
 
 //! Helps cut off probability values.
 constexpr int c_probabilityCutoff = 100;
@@ -176,7 +188,7 @@ static gmx_bool repl_quantity(const gmx_multisim_t* ms, struct gmx_repl_ex* re, 
     bDiff = FALSE;
     for (s = 1; s < ms->numSimulations_; s++)
     {
-        if (fabs(qall[s] - qall[0]) > 1e-5) /* Each quantity normally has 2-4 significant digits */
+        if (std::fabs(qall[s] - qall[0]) > 1e-5) /* Each quantity normally has 2-4 significant digits */
         {
             bDiff = TRUE;
         }
@@ -254,18 +266,21 @@ gmx_repl_ex_t init_replica_exchange(FILE*                            fplog,
      * This, of course, do not guarantee that the systems are the same,
      * but it does guarantee that we can perform replica exchange.
      */
-    check_multi_int(fplog, ms, numAtomsInSystem, "the number of atoms", FALSE);
-    check_multi_int(fplog, ms, static_cast<int>(ir->eI), "the integrator", FALSE);
-    check_multi_int64(fplog, ms, ir->init_step + ir->nsteps, "init_step+nsteps", FALSE);
+    check_multi_int(fplog, *ms, numAtomsInSystem, "the number of atoms", FALSE);
+    check_multi_int(fplog, *ms, static_cast<int>(ir->eI), "the integrator", FALSE);
+    check_multi_int64(fplog, *ms, ir->init_step + ir->nsteps, "init_step+nsteps", FALSE);
     const int nst = replExParams.exchangeInterval;
-    check_multi_int64(
-            fplog, ms, (ir->init_step + nst - 1) / nst, "first exchange step: init_step/-replex", FALSE);
-    check_multi_int(fplog, ms, static_cast<int>(ir->etc), "the temperature coupling", FALSE);
-    check_multi_int(fplog, ms, ir->opts.ngtc, "the number of temperature coupling groups", FALSE);
+    check_multi_int64(fplog,
+                      *ms,
+                      gmx::divideRoundUp<int64_t>(ir->init_step, nst),
+                      "first exchange step: init_step/-replex",
+                      FALSE);
+    check_multi_int(fplog, *ms, static_cast<int>(ir->etc), "the temperature coupling", FALSE);
+    check_multi_int(fplog, *ms, ir->opts.ngtc, "the number of temperature coupling groups", FALSE);
     check_multi_int(
-            fplog, ms, static_cast<int>(ir->pressureCouplingOptions.epc), "the pressure coupling", FALSE);
-    check_multi_int(fplog, ms, static_cast<int>(ir->efep), "free energy", FALSE);
-    check_multi_int(fplog, ms, ir->fepvals->n_lambda, "number of lambda states", FALSE);
+            fplog, *ms, static_cast<int>(ir->pressureCouplingOptions.epc), "the pressure coupling", FALSE);
+    check_multi_int(fplog, *ms, static_cast<int>(ir->efep), "free energy", FALSE);
+    check_multi_int(fplog, *ms, ir->fepvals->n_lambda, "number of lambda states", FALSE);
 
     re->temp = constantEnsembleTemperature(*ir);
     for (i = 1; (i < ir->opts.ngtc); i++)
@@ -904,7 +919,7 @@ static void test_for_replica_exchange(FILE*                 fplog,
             re->Epot[i] = 0;
         }
         bEpot              = TRUE;
-        re->Epot[re->repl] = enerd->term[F_EPOT];
+        re->Epot[re->repl] = enerd->term[InteractionFunction::PotentialEnergy];
         /* temperatures of different states*/
         for (i = 0; i < re->nrepl; i++)
         {
@@ -1017,7 +1032,7 @@ static void test_for_replica_exchange(FILE*                 fplog,
                 }
                 else
                 {
-                    prob[0] = exp(-delta);
+                    prob[0] = std::exp(-delta);
                 }
                 // roll a number to determine if accepted. For now it is superfluous to
                 // reset, but just in case we ever add more calls in different branches
@@ -1066,7 +1081,7 @@ static void test_for_replica_exchange(FILE*                 fplog,
                     }
                     else
                     {
-                        prob[i] = exp(-delta);
+                        prob[i] = std::exp(-delta);
                     }
                     // roll a number to determine if accepted. For now it is superfluous to
                     // reset, but just in case we ever add more calls in different branches
@@ -1104,7 +1119,7 @@ static void test_for_replica_exchange(FILE*                 fplog,
         re->nmoves[re->ind[i]][pind[i]] += 1;
         re->nmoves[pind[i]][re->ind[i]] += 1;
     }
-    fflush(fplog); /* make sure we can see what the last exchange was */
+    std::fflush(fplog); /* make sure we can see what the last exchange was */
 }
 
 static void cyclic_decomposition(const int* destinations, int** cyclic, gmx_bool* incycle, const int nrepl, int* nswap)
@@ -1164,7 +1179,7 @@ static void cyclic_decomposition(const int* destinations, int** cyclic, gmx_bool
             }
             fprintf(debug, "\n");
         }
-        fflush(debug);
+        std::fflush(debug);
     }
 }
 
@@ -1207,7 +1222,7 @@ static void compute_exchange_order(int** cyclic, int** order, const int nrepl, c
             }
             fprintf(debug, "\n");
         }
-        fflush(debug);
+        std::fflush(debug);
     }
 }
 
@@ -1270,6 +1285,8 @@ gmx_bool replica_exchange(FILE*                 fplog,
                           int64_t               step,
                           real                  time)
 {
+    const bool isMainRank = cr->commMyGroup.isMainRank();
+
     int j;
     int replica_id = 0;
     int exchange_partner;
@@ -1280,7 +1297,7 @@ gmx_bool replica_exchange(FILE*                 fplog,
     /* The order in which multiple exchanges will occur. */
     gmx_bool bThisReplicaExchanged = FALSE;
 
-    if (MAIN(cr))
+    if (isMainRank)
     {
         replica_id = re->repl;
         test_for_replica_exchange(fplog, ms, re, enerd, det(state_local->box), step, time);
@@ -1293,7 +1310,11 @@ gmx_bool replica_exchange(FILE*                 fplog,
     if (haveDDAtomOrdering(*cr))
     {
 #if GMX_MPI
-        MPI_Bcast(&bThisReplicaExchanged, sizeof(gmx_bool), MPI_BYTE, MAINRANK(cr), cr->mpi_comm_mygroup);
+        MPI_Bcast(&bThisReplicaExchanged,
+                  sizeof(gmx_bool),
+                  MPI_BYTE,
+                  cr->commMyGroup.mainRank(),
+                  cr->commMyGroup.comm());
 #endif
     }
 
@@ -1310,7 +1331,7 @@ gmx_bool replica_exchange(FILE*                 fplog,
             copy_state_serial(state_local, state);
         }
 
-        if (MAIN(cr))
+        if (isMainRank)
         {
             /* There will be only one swap cycle with standard replica
              * exchange, but there may be multiple swap cycles if we

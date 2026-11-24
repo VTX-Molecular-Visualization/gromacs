@@ -42,6 +42,9 @@
 
 #include "checkpointhelper.h"
 
+#include <functional>
+#include <type_traits>
+
 #include "gromacs/domdec/domdec.h"
 #include "gromacs/mdlib/mdoutf.h"
 #include "gromacs/mdtypes/checkpointdata.h"
@@ -50,6 +53,8 @@
 #include "gromacs/mdtypes/observableshistory.h"
 #include "gromacs/mdtypes/pullhistory.h"
 #include "gromacs/mdtypes/state.h"
+#include "gromacs/modularsimulator/modularsimulatorinterfaces.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/stringutil.h"
 
 #include "trajectoryelement.h"
@@ -61,7 +66,7 @@ CheckpointHelper::CheckpointHelper(std::vector<std::tuple<std::string, ICheckpoi
                                    int                                initStep,
                                    TrajectoryElement*                 trajectoryElement,
                                    FILE*                              fplog,
-                                   t_commrec*                         cr,
+                                   const t_commrec*                   cr,
                                    ObservablesHistory*                observablesHistory,
                                    gmx_walltime_accounting*           walltime_accounting,
                                    t_state*                           state_global,
@@ -116,11 +121,14 @@ void CheckpointHelper::writeCheckpoint(Step step, Time time)
     WriteCheckpointDataHolder checkpointDataHolder;
     for (const auto& [key, client] : clients_)
     {
-        client->saveCheckpointState(
-                MAIN(cr_) ? std::make_optional(checkpointDataHolder.checkpointData(key)) : std::nullopt, cr_);
+        client->saveCheckpointState(cr_->commMyGroup.isMainRank()
+                                            ? std::make_optional(checkpointDataHolder.checkpointData(key))
+                                            : std::nullopt,
+                                    cr_->commMyGroup,
+                                    cr_->dd);
     }
 
-    if (MAIN(cr_))
+    if (cr_->commMyGroup.isMainRank())
     {
         mdoutf_write_checkpoint(
                 trajectoryElement_->outf_, fplog_, cr_, step, time, state_global_, observablesHistory_, &checkpointDataHolder);
@@ -134,7 +142,7 @@ std::optional<SignallerCallback> CheckpointHelper::registerLastStepCallback()
 
 CheckpointHelperBuilder::CheckpointHelperBuilder(std::unique_ptr<ReadCheckpointDataHolder> checkpointDataHolder,
                                                  StartingBehavior startingBehavior,
-                                                 t_commrec*       cr) :
+                                                 const t_commrec* cr) :
     resetFromCheckpoint_(startingBehavior != StartingBehavior::NewSimulation),
     checkpointDataHolder_(std::move(checkpointDataHolder)),
     checkpointHandler_(nullptr),
@@ -162,7 +170,7 @@ void CheckpointHelperBuilder::registerClient(ICheckpointHelperClient* client)
     clientsMap_[key] = client;
     if (resetFromCheckpoint_)
     {
-        if (MAIN(cr_) && !checkpointDataHolder_->keyExists(key))
+        if (cr_->commMyGroup.isMainRank() && !checkpointDataHolder_->keyExists(key))
         {
             throw SimulationAlgorithmSetupError(
                     formatString(
@@ -173,8 +181,11 @@ void CheckpointHelperBuilder::registerClient(ICheckpointHelperClient* client)
                             .c_str());
         }
         client->restoreCheckpointState(
-                MAIN(cr_) ? std::make_optional(checkpointDataHolder_->checkpointData(key)) : std::nullopt,
-                cr_);
+                cr_->commMyGroup.isMainRank()
+                        ? std::make_optional(checkpointDataHolder_->checkpointData(key))
+                        : std::nullopt,
+                cr_->commMyGroup,
+                cr_->dd);
     }
 }
 

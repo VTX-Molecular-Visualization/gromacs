@@ -39,6 +39,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include <filesystem>
 #include <string_view>
 
 #include "gromacs/fileio/filetypes.h"
@@ -67,8 +68,8 @@ static const t_filenm* getFileOption(const char* opt, int nfile, const t_filenm 
 
     for (int i = 0; i < nfile; i++)
     {
-        if ((fnm[i].opt != nullptr && strcmp(opt, fnm[i].opt) == 0)
-            || (fnm[i].opt == nullptr && strcmp(opt, ftp2defopt(fnm[i].ftp)) == 0))
+        if ((fnm[i].opt != nullptr && std::strcmp(opt, fnm[i].opt) == 0)
+            || (fnm[i].opt == nullptr && std::strcmp(opt, ftp2defopt(fnm[i].ftp)) == 0))
         {
             return &fnm[i];
         }
@@ -180,6 +181,16 @@ gmx_bool opt2bSet(const char* opt, int nfile, const t_filenm fnm[])
     return FALSE;
 }
 
+std::optional<std::filesystem::path> opt2path_optional(const char* opt, int nfile, const t_filenm fnm[])
+{
+    const char* r = opt2fn_null(opt, nfile, fnm);
+    if (r != nullptr)
+    {
+        return std::make_optional<std::filesystem::path>(r);
+    }
+    return std::nullopt;
+}
+
 const char* opt2fn_null(const char* opt, int nfile, const t_filenm fnm[])
 {
     const t_filenm* fileOption = getFileOption(opt, nfile, fnm);
@@ -199,6 +210,16 @@ const char* opt2fn_null(const char* opt, int nfile, const t_filenm fnm[])
     GMX_RELEASE_ASSERT(false, "opt2fn_null should be called with a valid option");
 
     return nullptr;
+}
+
+std::optional<std::filesystem::path> ftp2path_optional(int ftp, int nfile, const t_filenm fnm[])
+{
+    const char* r = ftp2fn_null(ftp, nfile, fnm);
+    if (r != nullptr)
+    {
+        return std::make_optional<std::filesystem::path>(r);
+    }
+    return std::nullopt;
 }
 
 const char* ftp2fn_null(int ftp, int nfile, const t_filenm fnm[])
@@ -292,7 +313,7 @@ int add_suffix_to_output_names(t_filenm* fnm, int nfile, const char* suffix)
                     temporary += filename.substr(partPosition + 9);
                     filename.swap(temporary);
                 }
-                filename = gmx::concatenateBeforeExtension(filename, suffix).u8string();
+                filename = gmx::concatenateBeforeExtension(filename, suffix).string();
             }
         }
     }

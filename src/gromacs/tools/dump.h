@@ -31,10 +31,15 @@
  * To help us fund GROMACS development, we humbly ask that you cite
  * the research papers on the package. Check out https://www.gromacs.org.
  */
+/*!
+ * \defgroup module_tools Module Tools
+ * \brief A brief description for Module Tools
+ */
 #ifndef GMX_TOOLS_DUMP_H
 #define GMX_TOOLS_DUMP_H
 
 #include "gromacs/commandline/cmdlineoptionsmodule.h"
+#include "gromacs/libgromacs_export.h"
 
 namespace gmx
 {

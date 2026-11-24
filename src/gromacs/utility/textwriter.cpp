@@ -42,7 +42,13 @@
 
 #include "gromacs/utility/textwriter.h"
 
+#include <cstdarg>
+#include <cstdio>
 #include <cstring>
+
+#include <filesystem>
+#include <memory>
+#include <string>
 
 #include "gromacs/utility/filestream.h"
 #include "gromacs/utility/nodelete.h"
@@ -118,14 +124,14 @@ public:
 };
 
 // static
-void TextWriter::writeFileFromString(const std::string& filename, const std::string& text)
+void TextWriter::writeFileFromString(const std::filesystem::path& filename, const std::string& text)
 {
     TextWriter file(filename);
     file.writeString(text);
     file.close();
 }
 
-TextWriter::TextWriter(const std::string& filename) :
+TextWriter::TextWriter(const std::filesystem::path& filename) :
     impl_(new Impl(TextOutputStreamPointer(new TextOutputFile(filename))))
 {
 }
@@ -167,7 +173,7 @@ void TextWriter::writeString(const std::string& str)
 
 void TextWriter::writeStringFormatted(const char* fmt, ...)
 {
-    va_list ap;
+    std::va_list ap;
 
     va_start(ap, fmt);
     writeString(formatStringV(fmt, ap));
@@ -188,7 +194,7 @@ void TextWriter::writeLine(const std::string& line)
 
 void TextWriter::writeLineFormatted(const char* fmt, ...)
 {
-    va_list ap;
+    std::va_list ap;
 
     va_start(ap, fmt);
     writeString(formatStringV(fmt, ap));
@@ -221,6 +227,22 @@ void TextWriter::ensureEmptyLine()
 void TextWriter::close()
 {
     impl_->stream_->close();
+}
+
+ScopedIndenter TextWriter::addScopedIndentation(const int extraIndentation)
+{
+    return ScopedIndenter(this, extraIndentation);
+}
+
+ScopedIndenter::ScopedIndenter(TextWriter* writer, const int extraIndentation) :
+    settings_(writer->wrapperSettings()), oldIndentation_(settings_.indent())
+{
+    settings_.setIndent(oldIndentation_ + extraIndentation);
+}
+
+ScopedIndenter::~ScopedIndenter()
+{
+    settings_.setIndent(oldIndentation_);
 }
 
 } // namespace gmx

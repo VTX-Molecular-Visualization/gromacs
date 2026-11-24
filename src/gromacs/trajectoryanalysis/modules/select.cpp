@@ -45,7 +45,10 @@
 #include <cstdio>
 
 #include <algorithm>
+#include <filesystem>
+#include <memory>
 #include <set>
+#include <string>
 #include <vector>
 
 #include "gromacs/analysisdata/analysisdata.h"
@@ -59,18 +62,29 @@
 #include "gromacs/options/basicoptions.h"
 #include "gromacs/options/filenameoption.h"
 #include "gromacs/options/ioptionscontainer.h"
+#include "gromacs/options/optionfiletype.h"
+#include "gromacs/selection/indexutil.h"
 #include "gromacs/selection/selection.h"
+#include "gromacs/selection/selectionenums.h"
 #include "gromacs/selection/selectionoption.h"
+#include "gromacs/topology/atoms.h"
 #include "gromacs/trajectory/trajectoryframe.h"
 #include "gromacs/trajectoryanalysis/analysissettings.h"
 #include "gromacs/trajectoryanalysis/topologyinformation.h"
 #include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/basedefinitions.h"
+#include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/gmxassert.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/vectypes.h"
+
+struct t_pbc;
 
 namespace gmx
 {
+class AbstractAnalysisData;
 
 namespace analysismodules
 {
@@ -197,7 +211,7 @@ void IndexFileWriterModule::pointsAdded(const AnalysisDataPointSetRef& points)
     if (points.firstColumn() == 0)
     {
         ++currentGroup_;
-        GMX_RELEASE_ASSERT(currentGroup_ < ssize(groups_), "Too few groups initialized");
+        GMX_RELEASE_ASSERT(currentGroup_ < gmx::ssize(groups_), "Too few groups initialized");
         if (bFirstFrame || groups_[currentGroup_].bDynamic_)
         {
             if (!bFirstFrame || currentGroup_ > 0)

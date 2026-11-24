@@ -35,13 +35,27 @@
 
 #include "gromacs/pbcutil/pbcmethods.h"
 
+#include <cstdio>
+#include <cstring>
+
 #include <algorithm>
+#include <filesystem>
 #include <memory>
 
+#include "gromacs/math/functions.h"
 #include "gromacs/pbcutil/pbc.h"
+#include "gromacs/topology/atoms.h"
+#include "gromacs/topology/block.h"
 #include "gromacs/topology/topology.h"
+#include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/fatalerror.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
+
+enum class PbcType : int;
 
 void calc_pbc_cluster(int ecenter, int nrefat, t_topology* top, PbcType pbcType, rvec x[], const int index[], matrix box)
 {
@@ -226,7 +240,7 @@ void calc_pbc_cluster(int ecenter, int nrefat, t_topology* top, PbcType pbcType,
             rvec_inc(x[j], m_shift[jmin]);
         }
         fprintf(stdout, "\rClustering iteration %d of %d...", nadded, ncluster);
-        fflush(stdout);
+        std::fflush(stdout);
     }
 
     sfree(added);

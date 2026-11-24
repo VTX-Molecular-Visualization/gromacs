@@ -54,6 +54,7 @@
 
 #include <algorithm>
 
+#include "gromacs/gpu_utils/capabilities.h"
 #include "gromacs/gpu_utils/device_context.h"
 #include "gromacs/gpu_utils/device_stream.h"
 #include "gromacs/gpu_utils/devicebuffer.h"
@@ -65,8 +66,6 @@
 #include "gromacs/mdtypes/mdatom.h"
 #include "gromacs/timing/wallcycle.h"
 #include "gromacs/topology/mtop_util.h"
-
-static constexpr bool sc_haveGpuConstraintSupport = (GMX_GPU_CUDA != 0) || (GMX_GPU_SYCL != 0);
 
 namespace gmx
 {
@@ -94,17 +93,14 @@ void UpdateConstrainGpu::Impl::integrate(GpuEventSynchronizer*             fRead
 
     if (numAtoms_ != 0)
     {
-        // The integrate should save a copy of the current coordinates in d_xp_ and write updated
-        // once into d_x_. The d_xp_ is only needed by constraints.
+        // A copy of the current coordinates is saved into d_x0_ by integrate(), and
+        // d_x_ is updated by integration and constraints.
         integrator_->integrate(
-                d_x_, d_xp_, d_v_, d_f_, dt, doTemperatureScaling, tcstat, doParrinelloRahman, dtPressureCouple, prVelocityScalingMatrix);
-        // Constraints need both coordinates before (d_x_) and after (d_xp_) update. However, after constraints
-        // are applied, the d_x_ can be discarded. So we intentionally swap the d_x_ and d_xp_ here to avoid the
-        // d_xp_ -> d_x_ copy after constraints. Note that the integrate saves them in the wrong order as well.
-        if (sc_haveGpuConstraintSupport)
+                d_x_, d_x0_, d_v_, d_f_, dt, doTemperatureScaling, tcstat, doParrinelloRahman, dtPressureCouple, prVelocityScalingMatrix);
+        if constexpr (GpuConfigurationCapabilities::Update)
         {
-            lincsGpu_->apply(d_xp_, d_x_, updateVelocities, d_v_, 1.0 / dt, computeVirial, virial, pbcAiuc_);
-            settleGpu_->apply(d_xp_, d_x_, updateVelocities, d_v_, 1.0 / dt, computeVirial, virial, pbcAiuc_);
+            lincsGpu_->apply(d_x0_, d_x_, updateVelocities, d_v_, 1.0 / dt, computeVirial, virial, pbcAiuc_);
+            settleGpu_->apply(d_x0_, d_x_, updateVelocities, d_v_, 1.0 / dt, computeVirial, virial, pbcAiuc_);
         }
 
         // scaledVirial -> virial (methods above returns scaled values)
@@ -169,7 +165,7 @@ UpdateConstrainGpu::Impl::Impl(const t_inputrec&    ir,
     deviceContext_(deviceContext), deviceStream_(deviceStream), wcycle_(wcycle)
 {
     integrator_ = std::make_unique<LeapFrogGpu>(deviceContext_, deviceStream_, numTempScaleValues);
-    if (sc_haveGpuConstraintSupport)
+    if constexpr (GpuConfigurationCapabilities::Update)
     {
         lincsGpu_ = std::make_unique<LincsGpu>(ir.nLincsIter, ir.nProjOrder, deviceContext_, deviceStream_);
         settleGpu_ = std::make_unique<SettleGpu>(mtop, deviceContext_, deviceStream_);
@@ -178,8 +174,15 @@ UpdateConstrainGpu::Impl::Impl(const t_inputrec&    ir,
 
 UpdateConstrainGpu::Impl::~Impl()
 {
-    freeDeviceBuffer(&d_xp_);
-    freeDeviceBuffer(&d_inverseMasses_);
+    try
+    {
+        freeDeviceBuffer(&d_x0_);
+        freeDeviceBuffer(&d_inverseMasses_);
+    }
+    catch (gmx::InternalError& e)
+    {
+        fprintf(stderr, "Internal error in destructor of UpdateConstrainGpu: %s\n", e.what());
+    }
 }
 
 void UpdateConstrainGpu::Impl::set(DeviceBuffer<Float3>          d_x,
@@ -188,8 +191,7 @@ void UpdateConstrainGpu::Impl::set(DeviceBuffer<Float3>          d_x,
                                    const InteractionDefinitions& idef,
                                    const t_mdatoms&              md)
 {
-    wallcycle_start_nocount(wcycle_, WallCycleCounter::LaunchGpuPp);
-    wallcycle_sub_start(wcycle_, WallCycleSubCounter::LaunchGpuUpdateConstrain);
+    wallcycle_start(wcycle_, WallCycleCounter::GpuSetConstr);
 
     GMX_ASSERT(d_x, "Coordinates device buffer should not be null.");
     GMX_ASSERT(d_v, "Velocities device buffer should not be null.");
@@ -201,26 +203,29 @@ void UpdateConstrainGpu::Impl::set(DeviceBuffer<Float3>          d_x,
 
     numAtoms_ = md.homenr;
 
-    reallocateDeviceBuffer(&d_xp_, numAtoms_, &numXp_, &numXpAlloc_, deviceContext_);
+    reallocateDeviceBuffer(&d_x0_, numAtoms_, &numXp_, &numXpAlloc_, deviceContext_);
 
     reallocateDeviceBuffer(
             &d_inverseMasses_, numAtoms_, &numInverseMasses_, &numInverseMassesAlloc_, deviceContext_);
 
     // Integrator should also update something, but it does not even have a method yet
     integrator_->set(numAtoms_, md.invmass, md.cTC);
-    if (sc_haveGpuConstraintSupport)
+    if constexpr (GpuConfigurationCapabilities::Update)
     {
+        wallcycle_sub_start(wcycle_, WallCycleSubCounter::GpuSetLincs);
         lincsGpu_->set(idef, numAtoms_, md.invmass);
+        wallcycle_sub_stop(wcycle_, WallCycleSubCounter::GpuSetLincs);
+        wallcycle_sub_start(wcycle_, WallCycleSubCounter::GpuSetSettle);
         settleGpu_->set(idef);
+        wallcycle_sub_stop(wcycle_, WallCycleSubCounter::GpuSetSettle);
     }
     else
     {
-        GMX_ASSERT(idef.il[F_SETTLE].empty(), "SETTLE not supported");
-        GMX_ASSERT(idef.il[F_CONSTR].empty(), "LINCS not supported");
+        GMX_ASSERT(idef.il[InteractionFunction::SETTLE].empty(), "SETTLE not supported");
+        GMX_ASSERT(idef.il[InteractionFunction::Constraints].empty(), "LINCS not supported");
     }
 
-    wallcycle_sub_stop(wcycle_, WallCycleSubCounter::LaunchGpuUpdateConstrain);
-    wallcycle_stop(wcycle_, WallCycleCounter::LaunchGpuPp);
+    wallcycle_stop(wcycle_, WallCycleCounter::GpuSetConstr);
 }
 
 void UpdateConstrainGpu::Impl::setPbc(const PbcType pbcType, const matrix box)
@@ -305,7 +310,7 @@ bool UpdateConstrainGpu::isNumCoupledConstraintsSupported(const gmx_mtop_t& mtop
 
 bool UpdateConstrainGpu::areConstraintsSupported()
 {
-    return sc_haveGpuConstraintSupport;
+    return GpuConfigurationCapabilities::Update;
 }
 
 } // namespace gmx

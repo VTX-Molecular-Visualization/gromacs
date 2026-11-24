@@ -48,6 +48,11 @@
 
 #include "constrtestdata.h"
 
+#include <algorithm>
+#include <array>
+
+#include "gromacs/mdtypes/md_enums.h"
+#include "gromacs/topology/forcefieldparameters.h"
 #include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/stringutil.h"
 
@@ -126,7 +131,7 @@ ConstraintsTestData::ConstraintsTestData(const std::string&       title,
     }
 
     int maxType = 0;
-    for (Index i = 0; i < ssize(constraints); i += 3)
+    for (Index i = 0; i < gmx::ssize(constraints); i += 3)
     {
         if (maxType < constraints.at(i))
         {
@@ -135,15 +140,15 @@ ConstraintsTestData::ConstraintsTestData(const std::string&       title,
     }
     auto& iparams = mtop_.ffparams.iparams;
     iparams.resize(maxType + 1);
-    for (Index i = 0; i < ssize(constraints) / 3; i++)
+    for (Index i = 0; i < gmx::ssize(constraints) / 3; i++)
     {
         iparams[constraints.at(3 * i)].constr.dA = constraintsR0.at(constraints.at(3 * i));
         iparams[constraints.at(3 * i)].constr.dB = constraintsR0.at(constraints.at(3 * i));
     }
     idef_ = std::make_unique<InteractionDefinitions>(mtop_.ffparams);
-    for (Index i = 0; i < ssize(constraints); i++)
+    for (Index i = 0; i < gmx::ssize(constraints); i++)
     {
-        idef_->il[F_CONSTR].iatoms.push_back(constraints.at(i));
+        idef_->il[InteractionFunction::Constraints].iatoms.push_back(constraints.at(i));
     }
 
     // Constraints and their parameters (global topology)
@@ -154,9 +159,9 @@ ConstraintsTestData::ConstraintsTestData(const std::string&       title,
     interactionListEmpty.iatoms.resize(0);
 
     gmx_moltype_t molType;
-    molType.atoms.nr             = numAtoms;
-    molType.ilist.at(F_CONSTR)   = interactionList;
-    molType.ilist.at(F_CONSTRNC) = interactionListEmpty;
+    molType.atoms.nr                                          = numAtoms;
+    molType.ilist[InteractionFunction::Constraints]           = interactionList;
+    molType.ilist[InteractionFunction::ConstraintsNoCoupling] = interactionListEmpty;
     mtop_.moltype.push_back(molType);
 
     gmx_molblock_t molBlock;

@@ -44,12 +44,30 @@
 
 #include "config.h"
 
+#include <cstdio>
+#include <cstdlib>
+
+#include <filesystem>
+#include <string>
+#include <tuple>
+#include <unordered_map>
+#include <utility>
+
+#include <gtest/gtest.h>
+
 #include "gromacs/topology/ifunc.h"
+#include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/stringutil.h"
 
 #include "testutils/mpitest.h"
 #include "testutils/setenv.h"
 #include "testutils/simulationdatabase.h"
+#include "testutils/testasserts.h"
+#include "testutils/testfilemanager.h"
+
+#include "programs/mdrun/tests/comparison_helpers.h"
+#include "programs/mdrun/tests/energycomparison.h"
+#include "programs/mdrun/tests/trajectorycomparison.h"
 
 #include "moduletest.h"
 #include "simulatorcomparison.h"
@@ -191,14 +209,16 @@ TEST_P(SimulatorComparisonTest, WithinTolerances)
     }
 
     EnergyTermsToCompare energyTermsToCompare{ {
-            { interaction_function[F_EPOT].longname, relativeToleranceAsPrecisionDependentUlp(60.0, 200, 160) },
-            { interaction_function[F_EKIN].longname, relativeToleranceAsPrecisionDependentUlp(60.0, 200, 160) },
-            { interaction_function[F_PRES].longname,
+            { interaction_function[InteractionFunction::PotentialEnergy].longname,
+              relativeToleranceAsPrecisionDependentUlp(60.0, 200, 160) },
+            { interaction_function[InteractionFunction::KineticEnergy].longname,
+              relativeToleranceAsPrecisionDependentUlp(60.0, 200, 160) },
+            { interaction_function[InteractionFunction::Pressure].longname,
               relativeToleranceAsPrecisionDependentFloatingPoint(10.0, 0.01, 0.001) },
     } };
     if (hasConservedField)
     {
-        energyTermsToCompare.emplace(interaction_function[F_ECONSERVED].longname,
+        energyTermsToCompare.emplace(interaction_function[InteractionFunction::ConservedEnergy].longname,
                                      relativeToleranceAsPrecisionDependentUlp(50.0, 100, 80));
     }
 
@@ -206,16 +226,16 @@ TEST_P(SimulatorComparisonTest, WithinTolerances)
     {
         // Without constraints, we can be more strict
         energyTermsToCompare = { {
-                { interaction_function[F_EPOT].longname,
+                { interaction_function[InteractionFunction::PotentialEnergy].longname,
                   relativeToleranceAsPrecisionDependentUlp(10.0, 24, 80) },
-                { interaction_function[F_EKIN].longname,
+                { interaction_function[InteractionFunction::KineticEnergy].longname,
                   relativeToleranceAsPrecisionDependentUlp(10.0, 24, 80) },
-                { interaction_function[F_PRES].longname,
+                { interaction_function[InteractionFunction::Pressure].longname,
                   relativeToleranceAsPrecisionDependentFloatingPoint(10.0, 0.001, 0.0001) },
         } };
         if (hasConservedField)
         {
-            energyTermsToCompare.emplace(interaction_function[F_ECONSERVED].longname,
+            energyTermsToCompare.emplace(interaction_function[InteractionFunction::ConservedEnergy].longname,
                                          relativeToleranceAsPrecisionDependentUlp(10.0, 24, 80));
         }
     }
@@ -245,30 +265,30 @@ TEST_P(SimulatorComparisonTest, WithinTolerances)
     const auto simulator2EdrFileName        = fileManager_.getTemporaryFilePath("sim2.edr");
 
     // Run grompp
-    runner_.tprFileName_ = fileManager_.getTemporaryFilePath("sim.tpr").u8string();
+    runner_.tprFileName_ = fileManager_.getTemporaryFilePath("sim.tpr").string();
     runner_.useTopGroAndNdxFromDatabase(simulationName);
     runner_.useStringAsMdpFile(prepareMdpFileContents(mdpFieldValues));
     runner_.setMaxWarn(maxNumWarnings);
     runGrompp(&runner_);
 
     // Backup current state of both environment variables and unset them
-    const char* environmentVariableBackupOn  = getenv(envVariableModSimOn.c_str());
-    const char* environmentVariableBackupOff = getenv(envVariableModSimOff.c_str());
+    const char* environmentVariableBackupOn  = std::getenv(envVariableModSimOn.c_str());
+    const char* environmentVariableBackupOff = std::getenv(envVariableModSimOff.c_str());
     gmxUnsetenv(envVariableModSimOn.c_str());
     gmxUnsetenv(envVariableModSimOff.c_str());
 
     // Do first mdrun
-    runner_.fullPrecisionTrajectoryFileName_ = simulator1TrajectoryFileName.u8string();
-    runner_.edrFileName_                     = simulator1EdrFileName.u8string();
+    runner_.fullPrecisionTrajectoryFileName_ = simulator1TrajectoryFileName.string();
+    runner_.edrFileName_                     = simulator1EdrFileName.string();
     runMdrun(&runner_);
 
     // Set tested environment variable
-    const int overWriteEnvironmentVariable = 1;
+    const bool overWriteEnvironmentVariable = true;
     gmxSetenv(environmentVariable.c_str(), "ON", overWriteEnvironmentVariable);
 
     // Do second mdrun
-    runner_.fullPrecisionTrajectoryFileName_ = simulator2TrajectoryFileName.u8string();
-    runner_.edrFileName_                     = simulator2EdrFileName.u8string();
+    runner_.fullPrecisionTrajectoryFileName_ = simulator2TrajectoryFileName.string();
+    runner_.edrFileName_                     = simulator2EdrFileName.string();
     runMdrun(&runner_);
 
     // Unset tested environment variable
@@ -284,9 +304,9 @@ TEST_P(SimulatorComparisonTest, WithinTolerances)
     }
 
     // Compare simulation results
-    compareEnergies(simulator1EdrFileName.u8string(), simulator2EdrFileName.u8string(), energyTermsToCompare);
-    compareTrajectories(simulator1TrajectoryFileName.u8string(),
-                        simulator2TrajectoryFileName.u8string(),
+    compareEnergies(simulator1EdrFileName.string(), simulator2EdrFileName.string(), energyTermsToCompare);
+    compareTrajectories(simulator1TrajectoryFileName.string(),
+                        simulator2TrajectoryFileName.string(),
                         trajectoryComparison);
 }
 

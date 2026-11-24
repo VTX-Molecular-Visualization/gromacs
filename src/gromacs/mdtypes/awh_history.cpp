@@ -31,16 +31,21 @@
  * To help us fund GROMACS development, we humbly ask that you cite
  * the research papers on the package. Check out https://www.gromacs.org.
  */
-
 /*! \internal \file
  * \brief Defines functions of the AWH history used by modular checkpointing
  *
  * \author Pascal Merz <pascal.merz@me.com>
  */
+/*!
+ * \defgroup module_mdspan Module MdSpan
+ * \brief A brief description for Module MdSpan
+ */
 
 #include "gmxpre.h"
 
 #include "awh_history.h"
+
+#include <string>
 
 #include "gromacs/utility/strconvert.h"
 
@@ -66,7 +71,7 @@ enum class CheckpointVersion
 constexpr auto c_currentVersion = CheckpointVersion(int(CheckpointVersion::Count) - 1);
 
 template<CheckpointDataOperation operation>
-static void doCheckpoint(CheckpointData<operation> checkpointData, AwhPointStateHistory* awhPointStateHistory)
+void doCheckpoint(CheckpointData<operation> checkpointData, AwhPointStateHistory* awhPointStateHistory)
 {
     checkpointData.scalar("bias", &awhPointStateHistory->bias);
     checkpointData.scalar("free_energy", &awhPointStateHistory->free_energy);
@@ -83,7 +88,7 @@ static void doCheckpoint(CheckpointData<operation> checkpointData, AwhPointState
 }
 
 template<CheckpointDataOperation operation>
-static void doCheckpoint(CheckpointData<operation> checkpointData, AwhBiasStateHistory* awhBiasStateHistory)
+void doCheckpoint(CheckpointData<operation> checkpointData, AwhBiasStateHistory* awhBiasStateHistory)
 {
     checkpointData.scalar("umbrellaGridpoint", &awhBiasStateHistory->umbrellaGridpoint);
     checkpointData.scalar("origin_index_updatelist", &awhBiasStateHistory->origin_index_updatelist);
@@ -118,7 +123,7 @@ void doCheckpoint(CheckpointData<operation>    checkpointData,
 }
 
 template<CheckpointDataOperation operation>
-static void doCheckpoint(CheckpointData<operation> checkpointData, CorrelationGridHistory* correlationGridHistory)
+void doCheckpoint(CheckpointData<operation> checkpointData, CorrelationGridHistory* correlationGridHistory)
 {
     checkpointData.scalar("numCorrelationTensors", &correlationGridHistory->numCorrelationTensors);
     checkpointData.scalar("tensorSize", &correlationGridHistory->tensorSize);

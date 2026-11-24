@@ -44,8 +44,8 @@
 #include "update_constrain_gpu_internal.h"
 
 #include "gromacs/gpu_utils/cudautils.cuh"
-#include "gromacs/gpu_utils/typecasts.cuh"
-#include "gromacs/gpu_utils/vectype_ops.cuh"
+#include "gromacs/gpu_utils/typecasts_cuda_hip.h"
+#include "gromacs/gpu_utils/vectype_ops_cuda.h"
 
 namespace gmx
 {
@@ -59,9 +59,9 @@ constexpr static int c_threadsPerBlock = 256;
 constexpr static int c_maxThreadsPerBlock = c_threadsPerBlock;
 
 __launch_bounds__(c_maxThreadsPerBlock) __global__
-        static void scaleCoordinates_kernel(const int numAtoms,
-                                            float3* __restrict__ gm_x,
-                                            const ScalingMatrix scalingMatrix)
+        static void scaleCoordinatesKernel(const int numAtoms,
+                                           float3* __restrict__ gm_x,
+                                           const ScalingMatrix scalingMatrix)
 {
     int threadIndex = blockIdx.x * blockDim.x + threadIdx.x;
     if (threadIndex < numAtoms)
@@ -88,16 +88,17 @@ void launchScaleCoordinatesKernel(const int            numAtoms,
     kernelLaunchConfig.blockSize[2]     = 1;
     kernelLaunchConfig.sharedMemorySize = 0;
 
-    kernelLaunchConfig.gridSize[0] = (numAtoms + c_threadsPerBlock - 1) / c_threadsPerBlock;
+    kernelLaunchConfig.gridSize[0] = divideRoundUp(numAtoms, c_threadsPerBlock);
 
     const auto kernelArgs = prepareGpuKernelArguments(
-            scaleCoordinates_kernel, kernelLaunchConfig, &numAtoms, asFloat3Pointer(&d_coordinates), &mu);
-    launchGpuKernel(scaleCoordinates_kernel,
+            scaleCoordinatesKernel, kernelLaunchConfig, &numAtoms, asFloat3Pointer(&d_coordinates), &mu);
+    launchGpuKernel(scaleCoordinatesKernel,
                     kernelLaunchConfig,
                     deviceStream,
                     nullptr,
                     "scaleCoordinates_kernel",
                     kernelArgs);
+
     // TODO: Although this only happens on the pressure coupling steps, this synchronization
     //       can affect the performance if nstpcouple is small. See Issue #4018
     deviceStream.synchronize();

@@ -48,12 +48,12 @@
 
 #include "gromacs/gpu_utils/gpu_utils.h"
 #include "gromacs/gpu_utils/hostallocator.h"
-#include "gromacs/gpu_utils/pmalloc.h"
 #include "gromacs/utility/alignedallocator.h"
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/gmxmpi.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
 
 #ifdef NOGMX
@@ -135,6 +135,8 @@ static int vmax(const int* a, int s)
     }
     return max;
 }
+
+static constexpr bool allocatePmeGpuMixedMode = (GMX_GPU && !GMX_GPU_OPENCL);
 
 
 /* NxMxK the size of the data
@@ -265,26 +267,26 @@ fft5d_plan fft5d_plan_3d(int                NG,
 
     /*for transpose we need to know the size for each processor not only our own size*/
 
-    N0  = static_cast<int*>(malloc(P[0] * sizeof(int)));
-    N1  = static_cast<int*>(malloc(P[1] * sizeof(int)));
-    M0  = static_cast<int*>(malloc(P[0] * sizeof(int)));
-    M1  = static_cast<int*>(malloc(P[1] * sizeof(int)));
-    K0  = static_cast<int*>(malloc(P[0] * sizeof(int)));
-    K1  = static_cast<int*>(malloc(P[1] * sizeof(int)));
-    oN0 = static_cast<int*>(malloc(P[0] * sizeof(int)));
-    oN1 = static_cast<int*>(malloc(P[1] * sizeof(int)));
-    oM0 = static_cast<int*>(malloc(P[0] * sizeof(int)));
-    oM1 = static_cast<int*>(malloc(P[1] * sizeof(int)));
-    oK0 = static_cast<int*>(malloc(P[0] * sizeof(int)));
-    oK1 = static_cast<int*>(malloc(P[1] * sizeof(int)));
+    N0  = static_cast<int*>(std::malloc(P[0] * sizeof(int)));
+    N1  = static_cast<int*>(std::malloc(P[1] * sizeof(int)));
+    M0  = static_cast<int*>(std::malloc(P[0] * sizeof(int)));
+    M1  = static_cast<int*>(std::malloc(P[1] * sizeof(int)));
+    K0  = static_cast<int*>(std::malloc(P[0] * sizeof(int)));
+    K1  = static_cast<int*>(std::malloc(P[1] * sizeof(int)));
+    oN0 = static_cast<int*>(std::malloc(P[0] * sizeof(int)));
+    oN1 = static_cast<int*>(std::malloc(P[1] * sizeof(int)));
+    oM0 = static_cast<int*>(std::malloc(P[0] * sizeof(int)));
+    oM1 = static_cast<int*>(std::malloc(P[1] * sizeof(int)));
+    oK0 = static_cast<int*>(std::malloc(P[0] * sizeof(int)));
+    oK1 = static_cast<int*>(std::malloc(P[1] * sizeof(int)));
 
     for (i = 0; i < P[0]; i++)
     {
 #define EVENDIST
 #ifndef EVENDIST
-        oN0[i] = i * ceil((double)NG / P[0]);
-        oM0[i] = i * ceil((double)MG / P[0]);
-        oK0[i] = i * ceil((double)KG / P[0]);
+        oN0[i] = i * std::ceil((double)NG / P[0]);
+        oM0[i] = i * std::ceil((double)MG / P[0]);
+        oK0[i] = i * std::ceil((double)KG / P[0]);
 #else
         oN0[i] = (NG * i) / P[0];
         oM0[i] = (MG * i) / P[0];
@@ -294,9 +296,9 @@ fft5d_plan fft5d_plan_3d(int                NG,
     for (i = 0; i < P[1]; i++)
     {
 #ifndef EVENDIST
-        oN1[i] = i * ceil((double)NG / P[1]);
-        oM1[i] = i * ceil((double)MG / P[1]);
-        oK1[i] = i * ceil((double)KG / P[1]);
+        oN1[i] = i * std::ceil((double)NG / P[1]);
+        oM1[i] = i * std::ceil((double)MG / P[1]);
+        oK1[i] = i * std::ceil((double)KG / P[1]);
 #else
         oN1[i] = (NG * i) / P[1];
         oM1[i] = (MG * i) / P[1];
@@ -368,10 +370,10 @@ fft5d_plan fft5d_plan_3d(int                NG,
         K[2]     = vmax(N1, P[1]);
         pK[2]    = N1[prank[1]];
         oK[2]    = oN1[prank[1]];
-        free(N0);
-        free(oN0); /*these are not used for this order*/
-        free(M1);
-        free(oM1); /*the rest is freed in destroy*/
+        std::free(N0);
+        std::free(oN0); /*these are not used for this order*/
+        std::free(M1);
+        std::free(oM1); /*the rest is freed in destroy*/
     }
     else
     {
@@ -407,10 +409,10 @@ fft5d_plan fft5d_plan_3d(int                NG,
         K[2]     = vmax(M1, P[1]);
         pK[2]    = M1[prank[1]];
         oK[2]    = oM1[prank[1]];
-        free(N1);
-        free(oN1); /*these are not used for this order*/
-        free(K0);
-        free(oK0); /*the rest is freed in destroy*/
+        std::free(N1);
+        std::free(oN1); /*these are not used for this order*/
+        std::free(K0);
+        std::free(oK0); /*the rest is freed in destroy*/
     }
     N[2] = pN[2] = -1; /*not used*/
 
@@ -425,11 +427,11 @@ fft5d_plan fft5d_plan_3d(int                NG,
     if (!(flags & FFT5D_NOMALLOC))
     {
         // only needed for PME GPU mixed mode
-        if ((GMX_GPU_CUDA || GMX_GPU_SYCL)
-            && realGridAllocationPinningPolicy == gmx::PinningPolicy::PinnedIfSupported)
+        if (allocatePmeGpuMixedMode && realGridAllocationPinningPolicy == gmx::PinningPolicy::PinnedIfSupported)
         {
-            const std::size_t numBytes = lsize * sizeof(t_complex);
-            pmalloc(reinterpret_cast<void**>(&lin), numBytes);
+            gmx::HostAllocationPolicy policy(realGridAllocationPinningPolicy);
+            const std::size_t         numBytes = lsize * sizeof(t_complex);
+            lin = reinterpret_cast<t_complex*>(policy.malloc(numBytes));
         }
         else
         {
@@ -622,7 +624,7 @@ fft5d_plan fft5d_plan_3d(int                NG,
             {
                 fprintf(debug, "FFT5D: Plan s %d rC %d M %d pK %d C %d lsize %d\n", s, rC[s], M[s], pK[s], C[s], lsize);
             }
-            plan->p1d[s] = static_cast<gmx_fft_t*>(malloc(sizeof(gmx_fft_t) * nthreads));
+            plan->p1d[s] = static_cast<gmx_fft_t*>(std::malloc(sizeof(gmx_fft_t) * nthreads));
 
             /* Make sure that the init routines are only called by one thread at a time and in order
                (later is only important to not confuse valgrind)
@@ -942,8 +944,8 @@ static void compute_offsets(fft5d_plan plan, int xs[], int xl[], int xc[], int N
     /*    int direction = plan->direction;
         int fftorder = plan->fftorder;*/
 
-    int  o = 0;
-    int  pos[3], i;
+    int o = 0;
+    int pos[3], i;
     int *pM = plan->pM, *pK = plan->pK, *oM = plan->oM, *oK = plan->oK, *C = plan->C, *rC = plan->rC;
 
     NG[0] = plan->NG;
@@ -1286,8 +1288,8 @@ void fft5d_execute(fft5d_plan plan, int thread, fft5d_time times)
 #else
                 wallcycle_stop(times, WallCycleCounter::PmeFftComm);
 #endif
-            }       /*main*/
-        }           /* bPrallelDim */
+            } /*main*/
+        } /* bPrallelDim */
 #pragma omp barrier /*both needed for parallel and non-parallel dimension (either have to wait on data from AlltoAll or from last FFT*/
 
         /* ---------- END SPLIT + TRANSPOSE------------ */
@@ -1430,26 +1432,26 @@ void fft5d_destroy(fft5d_plan plan)
             {
                 gmx_many_fft_destroy(plan->p1d[s][t]);
             }
-            free(plan->p1d[s]);
+            std::free(plan->p1d[s]);
         }
         if (plan->iNin[s])
         {
-            free(plan->iNin[s]);
+            std::free(plan->iNin[s]);
             plan->iNin[s] = nullptr;
         }
         if (plan->oNin[s])
         {
-            free(plan->oNin[s]);
+            std::free(plan->oNin[s]);
             plan->oNin[s] = nullptr;
         }
         if (plan->iNout[s])
         {
-            free(plan->iNout[s]);
+            std::free(plan->iNout[s]);
             plan->iNout[s] = nullptr;
         }
         if (plan->oNout[s])
         {
-            free(plan->oNout[s]);
+            std::free(plan->oNout[s]);
             plan->oNout[s] = nullptr;
         }
     }
@@ -1465,14 +1467,15 @@ void fft5d_destroy(fft5d_plan plan)
     if (!(plan->flags & FFT5D_NOMALLOC))
     {
         // only needed for PME GPU mixed mode
-        if ((GMX_GPU_CUDA || GMX_GPU_SYCL) && plan->pinningPolicy == gmx::PinningPolicy::PinnedIfSupported)
+        if (allocatePmeGpuMixedMode && plan->pinningPolicy == gmx::PinningPolicy::PinnedIfSupported)
         {
             /* We need DeviceContext to properly check pinning with SYCL. We can work around that,
              * but for an assert it's not overly important.
              */
             GMX_ASSERT(GMX_GPU_SYCL || isHostMemoryPinned(plan->lin),
                        "Memory should have been pinned");
-            pfree(plan->lin);
+            gmx::HostAllocationPolicy policy(plan->pinningPolicy);
+            policy.free(plan->lin);
         }
         else
         {
@@ -1492,5 +1495,5 @@ void fft5d_destroy(fft5d_plan plan)
 #    endif
 #endif
 
-    free(plan);
+    std::free(plan);
 }

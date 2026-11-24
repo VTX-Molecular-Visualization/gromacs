@@ -37,14 +37,9 @@ endif()
 
 set(LIBGROMACS_SOURCES)
 
-if (GMX_CLANG_CUDA)
-    include(gmxClangCudaUtils)
-endif()
-
 set_property(GLOBAL PROPERTY GMX_LIBGROMACS_SOURCES)
 set_property(GLOBAL PROPERTY CUDA_SOURCES)
-set_property(GLOBAL PROPERTY GMX_INSTALLED_HEADERS)
-set_property(GLOBAL PROPERTY GMX_AVX_512_SOURCE)
+set_property(GLOBAL PROPERTY HIP_SOURCES)
 
 set(libgromacs_object_library_dependencies "")
 function (_gmx_add_files_to_property PROPERTY)
@@ -73,6 +68,10 @@ mark_as_advanced(GMX_USE_SIMD_KERNELS)
 # pulling is using the muparser target as well, so detect it early
 gmx_manage_muparser()
 
+# The following functions and macros called here sets up the "module_x_active" variable before
+# including the directories with their own modules
+gmx_manage_plumed()
+
 # Add these contents first because linking their tests can take a lot
 # of time, so we want lots of parallel work still available after
 # linking starts.
@@ -87,6 +86,7 @@ add_subdirectory(commandline)
 add_subdirectory(domdec)
 add_subdirectory(ewald)
 add_subdirectory(fft)
+add_subdirectory(fmm)
 add_subdirectory(gpu_utils)
 add_subdirectory(hardware)
 add_subdirectory(linearalgebra)
@@ -100,6 +100,7 @@ add_subdirectory(options)
 add_subdirectory(pbcutil)
 add_subdirectory(random)
 add_subdirectory(restraint)
+add_subdirectory(serialization)
 add_subdirectory(tables)
 add_subdirectory(taskassignment)
 add_subdirectory(timing)
@@ -136,12 +137,22 @@ tmpi_get_source_list(THREAD_MPI_SOURCES ${PROJECT_SOURCE_DIR}/src/external/threa
 add_library(thread_mpi OBJECT ${THREAD_MPI_SOURCES})
 target_compile_definitions(thread_mpi PRIVATE HAVE_CONFIG_H)
 target_compile_definitions(thread_mpi PRIVATE TMPI_EXPORTS TMPI_USE_VISIBILITY)
+option(GMX_TMPI_DEBUG "On for debugging output from thread-MPI" OFF)
+mark_as_advanced(GMX_TMPI_DEBUG)
+if (GMX_TMPI_DEBUG)
+    target_compile_definitions(thread_mpi PRIVATE TMPI_DEBUG)
+endif()
+option(GMX_TMPI_TRACE "On for tracing of MPI calls from thread-MPI" OFF)
+mark_as_advanced(GMX_TMPI_TRACE)
+if (GMX_TMPI_TRACE)
+    target_compile_definitions(thread_mpi PRIVATE TMPI_TRACE)
+endif()
 if(CYGWIN)
     # Needs POSIX-isms for strdup, not just std-isms
     target_compile_definitions(thread_mpi PRIVATE _POSIX_C_SOURCE=200809L)
 endif()
 gmx_target_compile_options(thread_mpi)
-if (WIN32)
+if (MSVC)
     gmx_target_warning_suppression(thread_mpi /wd4996 HAS_NO_MSVC_UNSAFE_FUNCTION)
 endif()
 list(APPEND libgromacs_object_library_dependencies thread_mpi)
@@ -165,43 +176,33 @@ list(APPEND LIBGROMACS_SOURCES ${GENERATED_VERSION_FILE})
 # Mark some shared GPU implementation files to compile with CUDA if needed
 if (GMX_GPU_CUDA)
     get_property(CUDA_SOURCES GLOBAL PROPERTY CUDA_SOURCES)
-    set_source_files_properties(${CUDA_SOURCES} PROPERTIES CUDA_SOURCE_PROPERTY_FORMAT OBJ)
+    set_source_files_properties(${CUDA_SOURCES} PROPERTIES LANGUAGE CUDA)
 endif()
 
 if (GMX_GPU_CUDA)
-    if(GMX_USE_cuFFTMp)
-        # needed as we need to include cufftmp include path before CUDA include path
-        cuda_include_directories(${cuFFTMp_INCLUDE_DIR})
-    endif()
-    # Work around FindCUDA that prevents using target_link_libraries()
-    # with keywords otherwise...
-    set(CUDA_LIBRARIES PRIVATE ${CUDA_LIBRARIES})
-
-    if (NOT GMX_CLANG_CUDA AND NOT GMX_NVSHMEM)
-        gmx_cuda_add_library(libgromacs ${LIBGROMACS_SOURCES})
-    else()
-        add_library(libgromacs ${LIBGROMACS_SOURCES})
-    endif()
+    add_library(libgromacs ${LIBGROMACS_SOURCES})
 
     #we cannot link with both cufftmp and cufft
     if(GMX_USE_cuFFTMp)
-        target_link_libraries(libgromacs PRIVATE ${cuFFTMp_LIBRARY})
         target_include_directories(libgromacs PRIVATE ${cuFFTMp_INCLUDE_DIR})
+        target_link_libraries(libgromacs PRIVATE ${cuFFTMp_LIBRARY})
     else()
-        target_link_libraries(libgromacs PRIVATE ${CUDA_CUFFT_LIBRARIES})
+        target_link_libraries(libgromacs PRIVATE CUDA::cufft)
     endif()
+
+    target_compile_options(libgromacs PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:${GMX_CUDA_FLAGS}>")
+    set_target_properties(libgromacs PROPERTIES CUDA_ARCHITECTURES "${GMX_CUDA_ARCHITECTURES}")
+
     if (GMX_NVSHMEM)
-        set_target_properties(libgromacs PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
-        # -fvisibility=hidden is required to be passed during device link phase to hide the
-        # libnvshmem_device.a symbols in libgromacs in order to allow application/tests to link
-        # libnvshmem_device.a for their nvshmem kernel as well while linking with libgromacs.
-        # not setting this causes runtime failure.
+        target_link_libraries(libgromacs PRIVATE nvshmem_host_lib)
+        # -fvisibility=hidden must be passed during the device link of libgromacs
+        # to hide downstream nvshmem based static libs and libnvshmem_device.a symbols
+        # from the libgromacs device link output. This allows applications/tests to also link
+        # libnvshmem_device.a for their own NVSHMEM kernels while linking against libgromacs.
+        # Omitting this causes runtime failures due to conflicting device symbols.
         target_link_options(libgromacs PRIVATE $<DEVICE_LINK:-fvisibility=hidden>)
-        set_target_properties(libgromacs PROPERTIES CUDA_RESOLVE_DEVICE_SYMBOLS ON)
-        target_link_libraries(libgromacs PRIVATE nvshmem_host_lib nvshmem_device_lib)
-        # NVSHMEM only supports SM 60+ so we make use of filtered GMX_NVSHMEM_LINK_ARCHS
-        set_target_properties(libgromacs PROPERTIES CUDA_ARCHITECTURES "${GMX_NVSHMEM_LINK_ARCHS}")
     endif()
+
     if (GMX_USE_cuFFTMp OR GMX_NVSHMEM)
         # We need to PUBLIC link to the stub libraries nvml/cuda to WAR an issue
         # with `bfd` linker which expects you always have dependencies on the link line.
@@ -211,8 +212,17 @@ if (GMX_GPU_CUDA)
         # version which is not present on the system where driver is not installed.
         # At some future release cmake will provide a workaround for this under the hood at which
         # point we can use PRIVATE linking for these libs until then we stick with PUBLIC linking.
-        target_link_libraries(libgromacs PUBLIC ${GMX_CUDA_DRV_LIB} ${GMX_NVIDIA_ML_LIB})
+        target_link_libraries(libgromacs PUBLIC CUDA::nvml CUDA::cuda_driver)
     endif()
+elseif(GMX_GPU_HIP)
+    get_property(PROPERTY_HIP_SOURCES GLOBAL PROPERTY HIP_SOURCES)
+
+    foreach(hip_file ${PROPERTY_HIP_SOURCES})
+       set_source_files_properties(${hip_file} PROPERTIES LANGUAGE HIP)
+    endforeach()
+
+    gmx_hip_add_library(libgromacs ${LIBGROMACS_SOURCES})
+    target_link_libraries(libgromacs PRIVATE hip::host)
 else()
     add_library(libgromacs ${LIBGROMACS_SOURCES})
 endif()
@@ -221,9 +231,29 @@ if (TARGET Heffte::Heffte)
     target_link_libraries(libgromacs PRIVATE Heffte::Heffte)
 endif()
 
+if(GMX_GPU_FFT_VKFFT)
+    target_link_libraries(libgromacs PRIVATE VkFFT)
+endif()
 if(GMX_GPU_FFT_ROCFFT)
     target_link_libraries(libgromacs PRIVATE roc::rocfft)
 endif()
+
+if(GMX_GPU_FFT_ONEMATH)
+    target_link_libraries(libgromacs PRIVATE ONEMATH::onemath)
+endif()
+
+if (GMX_LIB_MPI)
+    # If GROMACS should link against an MPI library, the following
+    # MPI::MPI_CXX CMake target must be defined by the call to
+    # find_package(MPI). MPI::MPI_CXX might be defined also when
+    # GMXAPI wants one, but in that case libgromacs should not link to
+    # it.
+    target_link_libraries(libgromacs PRIVATE
+        $<$<LINK_LANGUAGE:CXX>:MPI::MPI_CXX>
+        $<$<LINK_LANGUAGE:CUDA>:MPI::MPI_CXX>
+        $<$<LINK_LANGUAGE:HIP>:MPI::MPI_CXX>
+        )
+endif ()
 
 target_link_libraries(libgromacs PRIVATE $<BUILD_INTERFACE:common>)
 # As long as the libgromacs target has source files that reference headers from
@@ -314,31 +344,14 @@ endif()
 # TODO Perhaps generalize this for all headers from src/external
 target_include_directories(libgromacs SYSTEM PRIVATE ${PROJECT_SOURCE_DIR}/src/external)
 
-if(SIMD_AVX_512_CXX_SUPPORTED AND NOT ("${GMX_SIMD_ACTIVE}" STREQUAL "AVX_512_KNL"))
+if(SIMD_AVX_512_CXX_SUPPORTED)
     # Since we might be overriding -march=core-avx2, add a flag so we don't warn for this specific file.
-    # On KNL this can cause illegal instruction because the compiler might use non KNL AVX instructions
-    # with the SIMD_AVX_512_CXX_FLAGS flags.
     set_source_files_properties(hardware/identifyavx512fmaunits.cpp PROPERTIES COMPILE_FLAGS "${SIMD_AVX_512_CXX_FLAGS} ${CXX_NO_UNUSED_OPTION_WARNING_FLAGS}")
 endif()
 
-# Do any special handling needed for .cpp files that use
-# CUDA runtime headers
-if (GMX_GPU_CUDA AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    foreach(_compile_flag ${NVCC_CLANG_SUPPRESSIONS_CXXFLAGS})
-        set(GMX_CUDA_CLANG_FLAGS "${GMX_CUDA_CLANG_FLAGS} ${_compile_flag}")
-    endforeach()
-    if (GMX_CLANG_CUDA)
-        foreach (_file ${LIBGROMACS_SOURCES})
-            get_filename_component(_ext ${_file} EXT)
-            get_source_file_property(_cuda_source_format ${_file} CUDA_SOURCE_PROPERTY_FORMAT)
-            if ("${_ext}" STREQUAL ".cu" OR _cuda_source_format)
-                gmx_compile_cuda_file_with_clang(${_file})
-            endif()
-        endforeach()
-    else()
-        get_property(CUDA_SOURCES GLOBAL PROPERTY CUDA_SOURCES)
-        set_source_files_properties(${CUDA_SOURCES} PROPERTIES COMPILE_FLAGS ${GMX_CUDA_CLANG_FLAGS})
-    endif()
+if (GMX_GPU_HIP)
+    get_property(HIP_SOURCES GLOBAL PROPERTY HIP_SOURCES)
+    set_source_files_properties(${HIP_SOURCES} PROPERTIES COMPILE_FLAGS "${HIP_CXX_FLAGS}")
 endif()
 
 # Only add the -fsycl flag to sources that really need it
@@ -349,18 +362,38 @@ endif()
 
 gmx_setup_tng_for_libgromacs()
 
-# We apply the SYCL flag explicitly just for libgromacs, since bugs in the beta versions of
-# icpx/dpcpp leads to crashes if we try to link an library without any SYCL code with the
-# -fsycl flag enabled. Once that bug is fixed, we should change it to simply add
-# SYCL_CXX_FLAGS to GMX_SHARED_LINKER_FLAGS.
+if (GMX_INTERNAL_XDR)
+    set (_xdr_dir ../external/rpc_xdr)
+    target_sources(libgromacs PRIVATE
+        $<TARGET_OBJECTS:internal_rpc_xdr>
+    )
+    # This need is local to fileio and should be moved there if we
+    # move it to a CMake object library or C++ module.
+    target_include_directories(libgromacs SYSTEM PRIVATE ${_xdr_dir})
+endif()
+
+# This can move to a suitable OBJECT target when one exists
+set_source_files_properties(hardware/simd_support.cpp PROPERTIES COMPILE_FLAGS
+    "-DGMX_SIMD_ENUM_VALUE=\"${GMX_SIMD_ENUM_VALUE}\""
+    )
+
+# Work around a crash in the Intel LLVM compiler (icpx, observed with oneAPI
+# 2026.0 and .1) while optimizing make_local_bondeds_excls().
+# Drop just this file to -O2 for the affected configuration. See #5636
+if (CMAKE_CXX_COMPILER_ID MATCHES "IntelLLVM" AND
+    CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL "2026.0" AND
+    CMAKE_CXX_COMPILER_VERSION VERSION_LESS "2027.0")
+    set_source_files_properties(domdec/localtopology.cpp PROPERTIES COMPILE_OPTIONS
+        "$<$<CONFIG:RelWithAssert>:-O2>"
+        )
+endif()
+
 target_link_libraries(libgromacs
                       PRIVATE
-                      ${EXTRAE_LIBRARIES}
                       ${GMX_EXTRA_LIBRARIES}
                       ${GMX_COMMON_LIBRARIES}
                       ${FFT_LIBRARIES} ${LINEAR_ALGEBRA_LIBRARIES}
-                      ${THREAD_LIB} ${GMX_SHARED_LINKER_FLAGS}
-                      ${SYCL_CXX_FLAGS}
+                      ${THREAD_LIB}
                       ${OpenCL_LIBRARIES}
                       $<$<PLATFORM_ID:SunOS>:socket>
                       PUBLIC
@@ -384,11 +417,13 @@ target_link_libraries(libgromacs PRIVATE
                       $<BUILD_INTERFACE:ewald>
                       $<BUILD_INTERFACE:fft>
                       $<BUILD_INTERFACE:fileio>
+                      $<BUILD_INTERFACE:fmm>
                       $<BUILD_INTERFACE:gmxana>
                       $<BUILD_INTERFACE:gmxlib>
                       $<BUILD_INTERFACE:gmxpreprocess>
                       $<BUILD_INTERFACE:gpu_utils>
                       $<BUILD_INTERFACE:hardware>
+                      $<BUILD_INTERFACE:h5md>
                       $<BUILD_INTERFACE:imd>
                       $<BUILD_INTERFACE:linearalgebra>
                       $<BUILD_INTERFACE:listed_forces>
@@ -408,6 +443,7 @@ target_link_libraries(libgromacs PRIVATE
                       $<BUILD_INTERFACE:random>
                       $<BUILD_INTERFACE:restraint>
                       $<BUILD_INTERFACE:selection>
+                      $<BUILD_INTERFACE:serialization>
                       $<BUILD_INTERFACE:simd>
                       $<BUILD_INTERFACE:statistics>
                       $<BUILD_INTERFACE:swap>
@@ -422,6 +458,10 @@ target_link_libraries(libgromacs PRIVATE
     )
 if (GMX_OPENMP)
     target_link_libraries(libgromacs PUBLIC OpenMP::OpenMP_CXX)
+    if (GMX_GPU_CUDA AND CMAKE_VERSION VERSION_GREATER_EQUAL 3.31)
+        # Since CMake 3.31, OpenMP::OpenMP_CUDA is needed for files with LANGUAGE CUDA
+        target_link_libraries(libgromacs PRIVATE OpenMP::OpenMP_CUDA)
+    endif()
 endif()
 set_target_properties(libgromacs PROPERTIES
                       OUTPUT_NAME "gromacs${GMX_LIBS_SUFFIX}"
@@ -431,9 +471,12 @@ set_target_properties(libgromacs PROPERTIES
 
 gmx_manage_lmfit()
 target_link_libraries(libgromacs PRIVATE lmfit)
-target_link_libraries(libgromacs PRIVATE muparser::muparser)
+if (HAVE_MUPARSER)
+    target_link_libraries(libgromacs PRIVATE muparser::muparser)
+endif()
 gmx_manage_colvars()
 target_link_libraries(libgromacs PRIVATE colvars)
+target_link_libraries(libgromacs PRIVATE plumedgmx)
 
 # Make sure we fix "everything" found by compilers that support that
 gmx_warn_on_everything(libgromacs)
@@ -464,6 +507,16 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
      /wd6246  #hides declaration
      >
    )
+endif()
+# Intel LLVM 2021.2 and later defaults to no-finite-math which isn't OK
+# for GROMACS and its dependencies (muParser and GTest).
+if(GMX_INTEL_LLVM)
+    if (WIN32)
+        set (_flag "/fp:precise")
+    else()
+        set(_flag "-fno-finite-math-only")
+    endif()
+    gmx_target_warning_suppression(libgromacs ${_flag} HAS_NO_FINITE_MATH_ONLY)
 endif()
 
 if (GMX_CLANG_TIDY)
@@ -496,26 +549,6 @@ if (BUILD_SHARED_LIBS)
     include(InstallLibInfo.cmake)
 endif()
 add_library(Gromacs::libgromacs ALIAS libgromacs)
-
-
-# Technically, the user could want to do this for an OpenCL build
-# using the CUDA runtime, but currently there's no reason to want to
-# do that.
-if (INSTALL_CUDART_LIB) #can be set manual by user
-    if (GMX_GPU_CUDA)
-        foreach(CUDA_LIB ${CUDA_LIBRARIES})
-            string(REGEX MATCH "cudart" IS_CUDART ${CUDA_LIB})
-            if(IS_CUDART) #libcuda should not be installed
-                #install also name-links (linker uses those)
-                file(GLOB CUDA_LIBS ${CUDA_LIB}*)
-                install(FILES ${CUDA_LIBS} DESTINATION
-                    ${CMAKE_INSTALL_LIBDIR} COMPONENT libraries)
-            endif()
-        endforeach()
-    else()
-        message(WARNING "INSTALL_CUDART_LIB only makes sense when configuring for CUDA support")
-    endif()
-endif()
 
 if(GMX_GPU_OPENCL)
     # Install the utility headers

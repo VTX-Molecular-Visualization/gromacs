@@ -45,9 +45,9 @@
 
 #include "config.h"
 
-#include "gromacs/math/vectypes.h"
 #include "gromacs/simd/simd.h"
 #include "gromacs/utility/real.h"
+#include "gromacs/utility/vectypes.h"
 
 namespace gmx
 {
@@ -59,7 +59,7 @@ namespace gmx
  * \returns the j-cluster index corresponding to \p iCluster
  */
 template<KernelLayoutClusterRatio clusterRatio>
-static inline int cjFromCi(const int iCluster)
+static gmx_inline int cjFromCi(const int iCluster)
 {
     if constexpr (clusterRatio == KernelLayoutClusterRatio::JSizeEqualsISize)
     {
@@ -78,33 +78,32 @@ static inline int cjFromCi(const int iCluster)
 
 //! Load a single real for an i-atom into \p iRegister
 template<KernelLayout kernelLayout>
-inline std::enable_if_t<kernelLayout == KernelLayout::r4xM, SimdReal> loadIAtomData(const real* ptr,
-                                                                                    const int offset,
-                                                                                    const int iRegister)
+gmx_inline std::enable_if_t<kernelLayout == KernelLayout::r4xM, SimdReal>
+           loadIAtomData(const real* ptr, const int offset, const int iRegister)
 {
     return SimdReal(ptr[offset + iRegister]);
 }
 
 //! Load a pair of consecutive reals for two i-atom into the respective halves of \p iRegister
 template<KernelLayout kernelLayout>
-inline std::enable_if_t<kernelLayout == KernelLayout::r2xMM, SimdReal>
-loadIAtomData(const real* ptr, const int offset, const int iRegister)
+gmx_inline std::enable_if_t<kernelLayout == KernelLayout::r2xMM, SimdReal>
+           loadIAtomData(const real* ptr, const int offset, const int iRegister)
 {
     return loadU1DualHsimd(ptr + offset + iRegister * 2);
 }
 
 //! Returns a SIMD register containing GMX_SIMD_REAL_WIDTH reals loaded from ptr + offset
 template<KernelLayout kernelLayout>
-inline std::enable_if_t<kernelLayout == KernelLayout::r4xM, SimdReal> loadJAtomData(const real* ptr,
-                                                                                    const int offset)
+gmx_inline std::enable_if_t<kernelLayout == KernelLayout::r4xM, SimdReal> loadJAtomData(const real* ptr,
+                                                                                        const int offset)
 {
     return load<SimdReal>(ptr + offset);
 }
 
 //! Returns a SIMD register containing a duplicate sequence of GMX_SIMD_REAL_WIDTH/2 reals loaded from ptr + offset
 template<KernelLayout kernelLayout>
-inline std::enable_if_t<kernelLayout == KernelLayout::r2xMM, SimdReal> loadJAtomData(const real* ptr,
-                                                                                     const int offset)
+gmx_inline std::enable_if_t<kernelLayout == KernelLayout::r2xMM, SimdReal> loadJAtomData(const real* ptr,
+                                                                                         const int offset)
 {
     return loadDuplicateHsimd(ptr + offset);
 }
@@ -119,8 +118,8 @@ typedef SimdReal SimdBitMask;
 
 //! Loads no interaction masks, returns an empty array
 template<bool loadMasks, KernelLayout kernelLayout>
-inline std::enable_if_t<!loadMasks, std::array<SimdBool, 0>>
-loadSimdPairInteractionMasks(const int excl, SimdBitMask* filterBitMasksV)
+gmx_inline std::enable_if_t<!loadMasks, std::array<SimdBool, 0>>
+           loadSimdPairInteractionMasks(const int excl, SimdBitMask* filterBitMasksV)
 {
     return std::array<SimdBool, 0>{};
 
@@ -130,17 +129,19 @@ loadSimdPairInteractionMasks(const int excl, SimdBitMask* filterBitMasksV)
 
 //! Loads interaction masks for a cluster pair for 4xM kernel layout
 template<bool loadMasks, KernelLayout kernelLayout>
-inline std::enable_if_t<loadMasks && kernelLayout == KernelLayout::r4xM, std::array<SimdBool, c_nbnxnCpuIClusterSize>>
+gmx_inline std::enable_if_t<loadMasks && kernelLayout == KernelLayout::r4xM, std::array<SimdBool, sc_iClusterSize(kernelLayout)>>
 loadSimdPairInteractionMasks(const int excl, SimdBitMask* filterBitMasksV)
 {
     using namespace gmx;
 
-    std::array<SimdBool, c_nbnxnCpuIClusterSize> interactionMasksV;
+    constexpr int c_iClusterSize = sc_iClusterSize(kernelLayout);
+
+    std::array<SimdBool, c_iClusterSize> interactionMasksV;
 
 #if GMX_SIMD_HAVE_INT32_LOGICAL
     /* Load integer interaction mask */
     SimdInt32 mask_pr_S(excl);
-    for (int i = 0; i < c_nbnxnCpuIClusterSize; i++)
+    for (int i = 0; i < c_iClusterSize; i++)
     {
         interactionMasksV[i] = cvtIB2B(testBits(mask_pr_S & filterBitMasksV[i]));
     }
@@ -153,13 +154,13 @@ loadSimdPairInteractionMasks(const int excl, SimdBitMask* filterBitMasksV)
 #    else
         std::int32_t i;
 #    endif
-        real         r;
+        real r;
     } conv;
 
     conv.i = excl;
     SimdReal mask_pr_S(conv.r);
 
-    for (int i = 0; i < c_nbnxnCpuIClusterSize; i++)
+    for (int i = 0; i < c_iClusterSize; i++)
     {
         interactionMasksV[i] = testBits(mask_pr_S & filterBitMasksV[i]);
     }
@@ -176,16 +177,19 @@ loadSimdPairInteractionMasks(const int excl, SimdBitMask* filterBitMasksV)
 
 //! Loads interaction masks for a cluster pair for 2xMM kernel layout
 template<bool loadMasks, KernelLayout kernelLayout>
-inline std::enable_if_t<loadMasks && kernelLayout == KernelLayout::r2xMM, std::array<SimdBool, c_nbnxnCpuIClusterSize / 2>>
-loadSimdPairInteractionMasks(const int excl, SimdBitMask* filterBitMasksV)
+gmx_inline std::enable_if_t<loadMasks && kernelLayout == KernelLayout::r2xMM,
+                            std::array<SimdBool, sc_iClusterSize(kernelLayout) / 2>>
+           loadSimdPairInteractionMasks(const int excl, SimdBitMask* filterBitMasksV)
 {
     using namespace gmx;
 
-    std::array<SimdBool, c_nbnxnCpuIClusterSize / 2> interactionMasksV;
+    constexpr int c_iClusterSize = sc_iClusterSize(kernelLayout);
+
+    std::array<SimdBool, c_iClusterSize / 2> interactionMasksV;
 
 #if GMX_SIMD_HAVE_INT32_LOGICAL
     SimdInt32 mask_pr_S(excl);
-    for (int i = 0; i < c_nbnxnCpuIClusterSize / 2; i++)
+    for (int i = 0; i < c_iClusterSize / 2; i++)
     {
         interactionMasksV[i] = cvtIB2B(testBits(mask_pr_S & filterBitMasksV[i]));
     }
@@ -197,13 +201,13 @@ loadSimdPairInteractionMasks(const int excl, SimdBitMask* filterBitMasksV)
 #    else
         std::int32_t i;
 #    endif
-        real         r;
+        real r;
     } conv;
 
     conv.i = excl;
     SimdReal mask_pr_S(conv.r);
 
-    for (int i = 0; i < c_nbnxnCpuIClusterSize / 2; i++)
+    for (int i = 0; i < c_iClusterSize / 2; i++)
     {
         interactionMasksV[i] = testBits(mask_pr_S & filterBitMasksV[i]);
     }
@@ -215,50 +219,9 @@ loadSimdPairInteractionMasks(const int excl, SimdBitMask* filterBitMasksV)
     return interactionMasksV;
 }
 
-//! Adds energies to temporary energy group pair buffers for the 4xM kernel layout
-template<KernelLayout kernelLayout, std::size_t offsetJJSize>
-inline void accumulateGroupPairEnergies4xM(SimdReal energies,
-                                           real*    groupPairEnergyBuffersPtr,
-                                           const std::array<int, offsetJJSize>& offsetJJ)
-{
-    using namespace gmx;
-
-    static_assert(offsetJJSize == GMX_SIMD_REAL_WIDTH / 2);
-
-    /* We need to balance the number of store operations with
-     * the rapidly increasing number of combinations of energy groups.
-     * We add to a temporary buffer for 1 i-group vs 2 j-groups.
-     */
-    for (int jj = 0; jj < GMX_SIMD_REAL_WIDTH / 2; jj++)
-    {
-        SimdReal groupPairEnergyBuffers =
-                load<SimdReal>(groupPairEnergyBuffersPtr + offsetJJ[jj] + jj * GMX_SIMD_REAL_WIDTH);
-
-        store(groupPairEnergyBuffersPtr + offsetJJ[jj] + jj * GMX_SIMD_REAL_WIDTH,
-              groupPairEnergyBuffers + energies);
-    }
-}
-
-//! Adds energies to temporary energy group pair buffers for the 2xMM kernel layout
-template<KernelLayout kernelLayout, std::size_t offsetJJSize>
-inline void accumulateGroupPairEnergies2xMM(SimdReal energies,
-                                            real*    groupPairEnergyBuffersPtr0,
-                                            real*    groupPairEnergyBuffersPtr1,
-                                            const std::array<int, offsetJJSize>& offsetJJ)
-{
-    static_assert(offsetJJSize == GMX_SIMD_REAL_WIDTH / 4);
-
-    for (int jj = 0; jj < GMX_SIMD_REAL_WIDTH / 4; jj++)
-    {
-        incrDualHsimd(groupPairEnergyBuffersPtr0 + offsetJJ[jj] + jj * GMX_SIMD_REAL_WIDTH / 2,
-                      groupPairEnergyBuffersPtr1 + offsetJJ[jj] + jj * GMX_SIMD_REAL_WIDTH / 2,
-                      energies);
-    }
-}
-
 //! Return the number of atoms pairs that are within the cut-off distance
 template<int nR>
-inline int pairCountWithinCutoff(SimdReal rSquaredV[nR], SimdReal cutoffSquared)
+gmx_inline int pairCountWithinCutoff(SimdReal rSquaredV[nR], SimdReal cutoffSquared)
 {
     alignas(GMX_SIMD_ALIGNMENT) real tmp[GMX_SIMD_REAL_WIDTH];
 

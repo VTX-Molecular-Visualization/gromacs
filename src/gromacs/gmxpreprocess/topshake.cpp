@@ -39,6 +39,9 @@
 #include <cctype>
 #include <cmath>
 
+#include <filesystem>
+#include <vector>
+
 #include "gromacs/gmxpreprocess/grompp_impl.h"
 #include "gromacs/gmxpreprocess/notset.h"
 #include "gromacs/gmxpreprocess/readir.h"
@@ -47,9 +50,12 @@
 #include "gromacs/gmxpreprocess/toputil.h"
 #include "gromacs/math/units.h"
 #include "gromacs/math/utilities.h"
+#include "gromacs/topology/atoms.h"
 #include "gromacs/topology/ifunc.h"
+#include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/logger.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
 
 static int count_hydrogens(char*** atomname, int nra, gmx::ArrayRef<const int> a)
@@ -64,7 +70,7 @@ static int count_hydrogens(char*** atomname, int nra, gmx::ArrayRef<const int> a
     nh = 0;
     for (int i = 0; (i < nra); i++)
     {
-        if (toupper(**(atomname[a[i]])) == 'H')
+        if (std::toupper(**(atomname[a[i]])) == 'H')
         {
             nh++;
         }
@@ -73,7 +79,10 @@ static int count_hydrogens(char*** atomname, int nra, gmx::ArrayRef<const int> a
     return nh;
 }
 
-void make_shake(gmx::ArrayRef<InteractionsOfType> plist, t_atoms* atoms, int nshake, const gmx::MDLogger& logger)
+void make_shake(gmx::EnumerationArray<InteractionFunction, InteractionsOfType>& plist,
+                t_atoms*                                                        atoms,
+                int                                                             nshake,
+                const gmx::MDLogger&                                            logger)
 {
     char*** info = atoms->atomname;
     real    b_ij, b_jk;
@@ -109,12 +118,12 @@ void make_shake(gmx::ArrayRef<InteractionsOfType> plist, t_atoms* atoms, int nsh
             /* Add all the angles with hydrogens to the shake list
              * and remove them from the bond list
              */
-            for (int ftype = 0; (ftype < F_NRE); ftype++)
+            for (const auto ftype : gmx::EnumerationWrapper<InteractionFunction>{})
             {
                 const InteractionsOfType* bonds = &(plist[ftype]);
                 if ((interaction_function[ftype].flags & IF_CHEMBOND) && (bonds->size() > 0))
                 {
-                    for (int ftype_a = 0; (ftype_a < F_NRE); ftype_a++)
+                    for (InteractionFunction ftype_a : gmx::EnumerationWrapper<InteractionFunction>{})
                     {
                         if (interaction_function[ftype_a].flags & IF_ATYPE)
                         {
@@ -132,7 +141,7 @@ void make_shake(gmx::ArrayRef<InteractionsOfType> plist, t_atoms* atoms, int nsh
 #endif
                                 int numhydrogens = count_hydrogens(info, 3, ang->atoms());
                                 if ((nshake == eshALLANGLES) || (numhydrogens > 1)
-                                    || (numhydrogens == 1 && toupper(**(info[ang->aj()])) == 'O'))
+                                    || (numhydrogens == 1 && std::toupper(**(info[ang->aj()])) == 'O'))
                                 {
                                     /* Can only add hydrogen angle shake, if the two bonds
                                      * are constrained.
@@ -161,14 +170,16 @@ void make_shake(gmx::ArrayRef<InteractionsOfType> plist, t_atoms* atoms, int nsh
                                     {
                                         real param = std::sqrt(
                                                 b_ij * b_ij + b_jk * b_jk
-                                                - 2.0 * b_ij * b_jk * cos(gmx::c_deg2Rad * ang->c0()));
+                                                - 2.0 * b_ij * b_jk * std::cos(gmx::c_deg2Rad * ang->c0()));
                                         std::vector<real> forceParm = { param, param };
-                                        if (ftype == F_CONNBONDS || ftype_a == F_CONNBONDS)
+                                        if (ftype == InteractionFunction::ConnectBonds
+                                            || ftype_a == InteractionFunction::ConnectBonds)
                                         {
                                             gmx_fatal(FARGS,
                                                       "Can not constrain all angles when they "
                                                       "involved bonds of type %s",
-                                                      interaction_function[F_CONNBONDS].longname);
+                                                      interaction_function[InteractionFunction::ConnectBonds]
+                                                              .longname);
                                         }
                                         /* apply law of cosines */
 #ifdef DEBUG
@@ -179,7 +190,7 @@ void make_shake(gmx::ArrayRef<InteractionsOfType> plist, t_atoms* atoms, int nsh
                                                                      atomNumbers[1],
                                                                      forceParm[0]);
 #endif
-                                        add_param_to_list(&(plist[F_CONSTR]),
+                                        add_param_to_list(&(plist[InteractionFunction::Constraints]),
                                                           InteractionOfType(atomNumbers, forceParm));
                                         /* move the last bond to this position */
                                         *parm = *(pr->interactionTypes.end() - 1);
@@ -192,15 +203,15 @@ void make_shake(gmx::ArrayRef<InteractionsOfType> plist, t_atoms* atoms, int nsh
                                 }
                             }
                         } /* if IF_ATYPE */
-                    }     /* for ftype_A */
-                }         /* if IF_BTYPE */
-            }             /* for ftype */
-        }                 /* if shake angles */
+                    } /* for ftype_A */
+                } /* if IF_BTYPE */
+            } /* for ftype */
+        } /* if shake angles */
 
         /* Add all the bonds with hydrogens to the shake list
          * and remove them from the bond list
          */
-        for (int ftype = 0; (ftype < F_NRE); ftype++)
+        for (const auto ftype : gmx::EnumerationWrapper<InteractionFunction>{})
         {
             if (interaction_function[ftype].flags & IF_BTYPE)
             {
@@ -212,7 +223,8 @@ void make_shake(gmx::ArrayRef<InteractionsOfType> plist, t_atoms* atoms, int nsh
                         /* append this bond to the shake list */
                         std::vector<int>  atomNumbers = { parm->ai(), parm->aj() };
                         std::vector<real> forceParm   = { parm->c0(), parm->c2() };
-                        add_param_to_list(&(plist[F_CONSTR]), InteractionOfType(atomNumbers, forceParm));
+                        add_param_to_list(&(plist[InteractionFunction::Constraints]),
+                                          InteractionOfType(atomNumbers, forceParm));
                         parm = pr->interactionTypes.erase(parm);
                     }
                     else

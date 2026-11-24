@@ -35,9 +35,11 @@
 
 #include "multipletimestepping.h"
 
+#include <memory>
 #include <optional>
 
 #include "gromacs/mdtypes/inputrec.h"
+#include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/mdtypes/pull_params.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/gmxassert.h"
@@ -68,7 +70,7 @@ std::vector<MtsLevel> setupMtsLevels(const GromppMtsOpts& mtsOpts, std::vector<s
     {
         if (errorMessages)
         {
-            errorMessages->push_back("Only mts-levels = 2 is supported");
+            errorMessages->emplace_back("Only mts-levels = 2 is supported");
         }
     }
     else
@@ -105,7 +107,7 @@ std::vector<MtsLevel> setupMtsLevels(const GromppMtsOpts& mtsOpts, std::vector<s
 
         if (errorMessages && mtsLevels[1].stepFactor <= 1)
         {
-            errorMessages->push_back("mts-factor should be larger than 1");
+            errorMessages->emplace_back("mts-factor should be larger than 1");
         }
     }
 

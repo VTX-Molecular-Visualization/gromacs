@@ -49,23 +49,31 @@
 #include <cstring>
 
 #include <algorithm>
+#include <filesystem>
+#include <memory>
+#include <string>
+#include <vector>
 
+#include "gromacs/commandline/filenm.h"
 #include "gromacs/commandline/pargs.h"
+#include "gromacs/fileio/filetypes.h"
 #include "gromacs/fileio/tpxio.h"
 #include "gromacs/fileio/xvgr.h"
 #include "gromacs/gmxana/gmx_ana.h"
 #include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/md_enums.h"
+#include "gromacs/mdtypes/pull_params.h"
 #include "gromacs/mdtypes/state.h"
 #include "gromacs/pulling/pull.h"
+#include "gromacs/random/seed.h"
 #include "gromacs/random/tabulatednormaldistribution.h"
 #include "gromacs/random/threefry.h"
 #include "gromacs/random/uniformintdistribution.h"
 #include "gromacs/random/uniformrealdistribution.h"
 #include "gromacs/utility/arraysize.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/exceptions.h"
 #include "gromacs/utility/fatalerror.h"
@@ -73,7 +81,13 @@
 #include "gromacs/utility/gmxomp.h"
 #include "gromacs/utility/path.h"
 #include "gromacs/utility/pleasecite.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
+#include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
+
+struct gmx_output_env_t;
 
 //! longest file names allowed in input files
 #define WHAM_MAXFILELEN 2048
@@ -167,8 +181,8 @@ typedef struct
     double*  k;     //!< force constants for the nPull coords
     double*  pos;   //!< umbrella positions for the nPull coords
     double* z; //!< z=(-Fi/kT) for the nPull coords. These values are iteratively computed during wham
-    int*    N;    //!< nr of data points in nPull histograms.
-    int*    Ntot; //!< also nr of data points. N and Ntot only differ if bHistEq==TRUE
+    int* N;    //!< nr of data points in nPull histograms.
+    int* Ntot; //!< also nr of data points. N and Ntot only differ if bHistEq==TRUE
 
     /*! \brief  g = 1 + 2*tau[int]/dt where tau is the integrated autocorrelation time.
      *
@@ -256,7 +270,7 @@ typedef struct UmbrellaOptions // NOLINT(clang-analyzer-optin.performance.Paddin
     gmx_bool bTauIntGiven, bCalcTauInt; //!< IACT given or should be calculated?
     real     sigSmoothIact;             //!< sigma of Gaussian to smooth ACTs
     gmx_bool bAllowReduceIact; //!< Allow to reduce ACTs during smoothing. Otherwise ACT are only increased during smoothing
-    real     acTrestart; //!< when computing ACT, time between restarting points
+    real acTrestart; //!< when computing ACT, time between restarting points
 
     /* \brief Enforce the same weight for each umbella window, that is
      *  calculate with the same number of data points for
@@ -313,7 +327,7 @@ typedef struct UmbrellaOptions // NOLINT(clang-analyzer-optin.performance.Paddin
     double * tabX, *tabY, tabMin, tabMax, tabDz;
     int      tabNbins;
     /*!\}*/
-    gmx::DefaultRandomEngine           rng;                //!< gromacs random number generator
+    gmx::DefaultRandomEngine rng;                          //!< gromacs random number generator
     gmx::TabulatedNormalDistribution<> normalDistribution; //!< Uses default: real output, 14-bit table
 } t_UmbrellaOptions;
 
@@ -436,18 +450,18 @@ static char* fgets3(FILE* fp, char ptr[], int* len)
     char* p;
     int   slen;
 
-    if (fgets(ptr, *len - 1, fp) == nullptr)
+    if (std::fgets(ptr, *len - 1, fp) == nullptr)
     {
         return nullptr;
     }
     p = ptr;
-    while ((std::strchr(ptr, '\n') == nullptr) && (!feof(fp)))
+    while ((std::strchr(ptr, '\n') == nullptr) && (!std::feof(fp)))
     {
         /* This line is longer than len characters, let's increase len! */
         *len += STRLEN;
         p += STRLEN;
         srenew(ptr, *len);
-        if (fgets(p - 1, STRLEN, fp) == nullptr)
+        if (std::fgets(p - 1, STRLEN, fp) == nullptr)
         {
             break;
         }
@@ -593,7 +607,7 @@ static void setup_acc_wham(const double* profile, t_UmbrellaWindow* window, int 
                 contrib2 = window[i].N[j]
                            * std::exp(-U / (gmx::c_boltz * opt->Temperature) + window[i].z[j]);
                 window[i].bContrib[j][k] = (contrib1 > wham_contrib_lim || contrib2 > wham_contrib_lim);
-                bAnyContrib              = bAnyContrib || window[i].bContrib[j][k];
+                bAnyContrib = bAnyContrib || window[i].bContrib[j][k];
                 if (window[i].bContrib[j][k])
                 {
                     nContrib++;
@@ -1007,7 +1021,7 @@ static void calc_cumulatives(t_UmbrellaWindow*  window,
             }
             fprintf(fp, "\n");
         }
-        printf("Wrote cumulative distribution functions to %s\n", fn.u8string().c_str());
+        printf("Wrote cumulative distribution functions to %s\n", fn.string().c_str());
         xvgrclose(fp);
     }
 }
@@ -1232,7 +1246,7 @@ static void print_histograms(const char*        fnhist,
     }
 
     xvgrclose(fp);
-    printf("Wrote %s\n", fn.u8string().c_str());
+    printf("Wrote %s\n", fn.string().c_str());
 }
 
 //! Make random weights for histograms for the Bayesian bootstrap of complete histograms)
@@ -1275,7 +1289,7 @@ static void do_bootstrapping(const char*        fnres,
                              const char*        fnprof,
                              const char*        fnhist,
                              const char*        xlabel,
-                             char*              ylabel,
+                             const char*        ylabel,
                              double*            profile,
                              t_UmbrellaWindow*  window,
                              int                nWindows,
@@ -1504,7 +1518,7 @@ static void read_wham_in(const char* fn, char*** filenamesRet, int* nfilesRet, t
     fp      = gmx_ffopen(fn, "r");
     nread   = 0;
     sizenow = 0;
-    while (fgets(tmp, sizeof(tmp), fp) != nullptr)
+    while (std::fgets(tmp, sizeof(tmp), fp) != nullptr)
     {
         if (std::strlen(tmp) >= WHAM_MAXFILELEN)
         {
@@ -1689,7 +1703,7 @@ static void read_tpr_header(const char* fn, t_UmbrellaHeader* header, t_Umbrella
         int maxlen = 0;
         for (int i = 0; i < ir->pull->ncoord; i++)
         {
-            int lentmp = strlen(enumValueToString(header->pcrd[i].geometry));
+            int lentmp = std::strlen(enumValueToString(header->pcrd[i].geometry));
             maxlen     = (lentmp > maxlen) ? lentmp : maxlen;
         }
         char fmt[STRLEN];
@@ -2149,7 +2163,7 @@ static void read_tpr_pullxf_files(char**             fnTprs,
         if (opt->bBoundsOnly)
         {
             printf("Found option -boundsonly, now exiting.\n");
-            exit(0);
+            std::exit(0);
         }
     }
     /* store stepsize in profile */
@@ -2305,7 +2319,7 @@ static void smoothIact(t_UmbrellaWindow* window, int nwins, t_UmbrellaOptions* o
 //! Stop integrating autoccorelation function when ACF drops under this value
 #define WHAM_AC_ZERO_LIMIT 0.05
 
-/*! \brief Try to compute the autocorrelation time for each umbrealla window
+/*! \brief Try to compute the autocorrelation time for each umbrella window
  */
 static void calcIntegratedAutocorrelationTimes(t_UmbrellaWindow*  window,
                                                int                nwins,
@@ -2313,10 +2327,11 @@ static void calcIntegratedAutocorrelationTimes(t_UmbrellaWindow*  window,
                                                const char*        fn,
                                                const char*        xlabel)
 {
-    int   i, ig, ncorr, ntot, j, k, *count, restart;
-    real *corr, c0, dt, tmp;
-    real *ztime, av, tausteps;
-    FILE *fp, *fpcorr = nullptr;
+    int i, ig, ncorr, ntot, j, k, restart;
+    /* Accumulators promoted to double to prevent catastrophic cancellation */
+    double c0, tmp, av, tausteps;
+    real*  ztime;
+    FILE * fp, *fpcorr = nullptr;
 
     if (opt->verbose)
     {
@@ -2333,7 +2348,7 @@ static void calcIntegratedAutocorrelationTimes(t_UmbrellaWindow*  window,
         fprintf(stdout,
                 "\rEstimating integrated autocorrelation times ... [%2.0f%%] ...",
                 100. * (i + 1) / nwins);
-        fflush(stdout);
+        std::fflush(stdout);
         ntot = window[i].Ntot[0];
 
         /* using half the maximum time as length of autocorrelation function */
@@ -2345,10 +2360,7 @@ static void calcIntegratedAutocorrelationTimes(t_UmbrellaWindow*  window,
                       " points. Provide more pull data!",
                       ntot);
         }
-        snew(corr, ncorr);
-        /* snew(corrSq,ncorr); */
-        snew(count, ncorr);
-        dt = window[i].dt;
+        const double dt = window[i].dt;
         snew(window[i].tau, window[i].nPull);
         restart = gmx::roundToInt(opt->acTrestart / dt);
         if (restart == 0)
@@ -2368,17 +2380,15 @@ static void calcIntegratedAutocorrelationTimes(t_UmbrellaWindow*  window,
             }
             ztime = window[i].ztime[ig];
 
+            std::vector<double> corr(ncorr, 0);
+            std::vector<int>    count(ncorr, 0);
+
             /* calc autocorrelation function C(t) = < [z(tau)-<z>]*[z(tau+t)-<z>]> */
             for (j = 0, av = 0; (j < ntot); j++)
             {
                 av += ztime[j];
             }
             av /= ntot;
-            for (k = 0; (k < ncorr); k++)
-            {
-                corr[k]  = 0.;
-                count[k] = 0;
-            }
             for (j = 0; (j < ntot); j += restart)
             {
                 for (k = 0; (k < ncorr) && (j + k < ntot); k++)
@@ -2415,7 +2425,7 @@ static void calcIntegratedAutocorrelationTimes(t_UmbrellaWindow*  window,
                 fprintf(fpcorr, "%s\n", output_env_get_print_xvgr_codes(opt->oenv) ? "&" : "");
             }
 
-            /* esimate integrated correlation time, fitting is too unstable */
+            /* estimate integrated correlation time, fitting is too unstable */
             tausteps = 0.5 * corr[0];
             /* consider corr below WHAM_AC_ZERO_LIMIT as noise */
             for (j = 1; (j < ncorr) && (corr[j] > WHAM_AC_ZERO_LIMIT); j++)
@@ -2429,8 +2439,6 @@ static void calcIntegratedAutocorrelationTimes(t_UmbrellaWindow*  window,
             window[i].g[ig]   = 1 + 2 * tausteps;
             /* printf("win %d, group %d, estimated correlation time = %g ps\n",i,ig,window[i].tau[ig]); */
         } /* ig loop */
-        sfree(corr);
-        sfree(count);
     }
     printf(" done\n");
     if (fpcorr)
@@ -2756,7 +2764,7 @@ static int wordcount(char* ptr)
     n = 1;
     for (i = 0; (ptr[i] != '\0'); i++)
     {
-        is[cur] = isspace(ptr[i]);
+        is[cur] = std::isspace(ptr[i]);
         if ((i > 0) && (is[cur] && !is[1 - cur]))
         {
             n++;
@@ -3002,7 +3010,7 @@ int gmx_wham(int argc, char* argv[])
         "the histograms."
     };
 
-    const char* en_unit[]       = { nullptr, "kJ", "kCal", "kT", nullptr };
+    const char* en_unit[] = { nullptr, "kJ", "kCal", "kT", nullptr };
     const char* en_unit_label[] = { "", "E (kJ mol\\S-1\\N)", "E (kcal mol\\S-1\\N)", "E (kT)", nullptr };
     const char* en_bsMethod[] = { nullptr, "b-hist", "hist", "traj", "traj-gauss", nullptr };
     static t_UmbrellaOptions opt;

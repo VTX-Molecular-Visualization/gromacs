@@ -42,14 +42,18 @@
 
 #include "gromacs/applied_forces/colvars/colvarspreprocessor.h"
 
+#include <cstddef>
+
+#include <filesystem>
 #include <iostream>
+#include <list>
+#include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
 
 #include "gromacs/fileio/confio.h"
 #include "gromacs/gmxpreprocess/grompp.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/topology/atoms.h"
 #include "gromacs/topology/mtop_lookup.h"
@@ -57,12 +61,17 @@
 #include "gromacs/topology/topology.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/path.h"
+#include "gromacs/utility/smalloc.h"
 #include "gromacs/utility/textwriter.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "testutils/cmdlinetest.h"
 #include "testutils/refdata.h"
 #include "testutils/testasserts.h"
 #include "testutils/testfilemanager.h"
+
+enum class PbcType : int;
 
 namespace gmx
 {
@@ -75,26 +84,22 @@ public:
      */
     void makeMtopFromFile(const std::string& fileName, const std::string& mdpContent)
     {
-        const std::string simData =
-                gmx::test::TestFileManager::getTestSimulationDatabaseDirectory().u8string();
+        const std::filesystem::path simData =
+                gmx::test::TestFileManager::getTestSimulationDatabaseDirectory();
 
         // Generate empty mdp file
         const std::string mdpInputFileName =
-                fileManager_.getTemporaryFilePath(fileName + ".mdp").u8string();
+                fileManager_.getTemporaryFilePath(fileName + ".mdp").string();
         gmx::TextWriter::writeFileFromString(mdpInputFileName, mdpContent);
 
         // Generate tpr file
-        const std::string tprName = fileManager_.getTemporaryFilePath(fileName + ".tpr").u8string();
+        const std::string tprName = fileManager_.getTemporaryFilePath(fileName + ".tpr").string();
         {
             gmx::test::CommandLine caller;
             caller.append("grompp");
             caller.addOption("-f", mdpInputFileName);
-            caller.addOption(
-                    "-p",
-                    std::filesystem::path(simData).append(fileName).replace_extension(".top").u8string());
-            caller.addOption(
-                    "-c",
-                    std::filesystem::path(simData).append(fileName).replace_extension(".gro").u8string());
+            caller.addOption("-p", (simData / fileName).replace_extension(".top").string());
+            caller.addOption("-c", (simData / fileName).replace_extension(".gro").string());
             caller.addOption("-o", tprName);
             ASSERT_EQ(0, gmx_grompp(caller.argc(), caller.argv()));
         }
@@ -120,6 +125,7 @@ protected:
     PbcType                    pbcType_;
     matrix                     box_;
     ArrayRef<const RVec>       x_;
+    MDLogger                   logger_;
 };
 
 TEST_F(ColvarsPreProcessorTest, CanConstructColvarsPreProcess)
@@ -127,7 +133,7 @@ TEST_F(ColvarsPreProcessorTest, CanConstructColvarsPreProcess)
     // Reference input 4x SPCE waters from database 4water.top
     makeMtopFromFile("4water", "");
 
-    EXPECT_NO_THROW(ColvarsPreProcessor colvarsPreProcess("", atoms_, pbcType_, nullptr, 0, -1, box_, x_));
+    EXPECT_NO_THROW(ColvarsPreProcessor colvarsPreProcess("", atoms_, pbcType_, logger_, 0, -1, box_, x_));
 }
 
 TEST_F(ColvarsPreProcessorTest, CheckValuesFourWaters)
@@ -154,7 +160,7 @@ TEST_F(ColvarsPreProcessorTest, CheckValuesFourWaters)
                   centers 0.3
               })";
 
-    ColvarsPreProcessor colvarsPreProcess(colvarsInput, atoms_, pbcType_, nullptr, 0, -1, box_, x_);
+    ColvarsPreProcessor colvarsPreProcess(colvarsInput, atoms_, pbcType_, logger_, 0, -1, box_, x_);
 
     gmx::test::TestReferenceData    data;
     gmx::test::TestReferenceChecker checker(data.rootChecker());
@@ -200,11 +206,11 @@ TEST_F(ColvarsPreProcessorTest, CheckNestedInputFiles)
               })";
 
     // Replace index.ndx by its absolute path so Colvars can parse it.
-    std::string pathIndex = gmx::test::TestFileManager::getInputFilePath("index.ndx").u8string();
+    std::string pathIndex = gmx::test::TestFileManager::getInputFilePath("index.ndx").string();
     size_t      index     = colvarsInput.find("<template_ndx>");
     colvarsInput.replace(index, std::string("<template_ndx>").length(), pathIndex);
 
-    ColvarsPreProcessor colvarsPreProcess(colvarsInput, atoms_, pbcType_, nullptr, 0, -1, box_, x_);
+    ColvarsPreProcessor colvarsPreProcess(colvarsInput, atoms_, pbcType_, logger_, 0, -1, box_, x_);
 
     // Make sure the index file inside colvarsInput was correctly read
     auto listInputStreams = colvarsPreProcess.list_input_stream_names();
@@ -239,7 +245,7 @@ TEST_F(ColvarsPreProcessorTest, WrongColvarsInput)
               })";
 
     EXPECT_ANY_THROW(ColvarsPreProcessor colvarsPreProcess(
-            colvarsInput, atoms_, pbcType_, nullptr, 0, -1, box_, x_));
+            colvarsInput, atoms_, pbcType_, logger_, 0, -1, box_, x_));
 }
 #    endif
 #endif

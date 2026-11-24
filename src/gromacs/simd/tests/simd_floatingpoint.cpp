@@ -36,11 +36,17 @@
 #include <cmath>
 
 #include <array>
+#include <limits>
+#include <string>
+#include <vector>
+
+#include <gtest/gtest.h>
 
 #include "gromacs/math/units.h"
 #include "gromacs/math/utilities.h"
 #include "gromacs/simd/simd.h"
 #include "gromacs/utility/basedefinitions.h"
+#include "gromacs/utility/real.h"
 
 #include "testutils/testasserts.h"
 
@@ -289,11 +295,13 @@ TEST_F(SimdFloatingpointTest, ldexp)
 {
     SimdReal one = setSimdRealFrom1R(1.0);
 
-    GMX_EXPECT_SIMD_REAL_EQ(setSimdRealFrom3R(pow(2.0, 60.0), pow(2.0, -41.0), pow(2.0, 54.0)),
-                            ldexp<MathOptimization::Unsafe>(one, setSimdIntFrom3I(60, -41, 54)));
+    GMX_EXPECT_SIMD_REAL_EQ(
+            setSimdRealFrom3R(std::pow(2.0, 60.0), std::pow(2.0, -41.0), std::pow(2.0, 54.0)),
+            ldexp<MathOptimization::Unsafe>(one, setSimdIntFrom3I(60, -41, 54)));
 #        if GMX_SIMD_HAVE_DOUBLE && GMX_DOUBLE
-    GMX_EXPECT_SIMD_REAL_EQ(setSimdRealFrom3R(pow(2.0, 587.0), pow(2.0, -462.0), pow(2.0, 672.0)),
-                            ldexp<MathOptimization::Unsafe>(one, setSimdIntFrom3I(587, -462, 672)));
+    GMX_EXPECT_SIMD_REAL_EQ(
+            setSimdRealFrom3R(std::pow(2.0, 587.0), std::pow(2.0, -462.0), std::pow(2.0, 672.0)),
+            ldexp<MathOptimization::Unsafe>(one, setSimdIntFrom3I(587, -462, 672)));
 #        endif
     // The default safe version must be able to handle very negative arguments too
     GMX_EXPECT_SIMD_REAL_EQ(setZero(), ldexp(one, setSimdIntFrom3I(-2000, -1000000, -1000000000)));
@@ -515,9 +523,9 @@ TEST_F(SimdFloatingpointTest, cvtDouble2Float)
 {
     alignas(GMX_SIMD_ALIGNMENT) float f[GMX_SIMD_FLOAT_WIDTH];
     alignas(GMX_SIMD_ALIGNMENT) double d[GMX_SIMD_FLOAT_WIDTH]; // Yes, double array length should be same as float
-    int                                i;
-    SimdFloat                          vf;
-    SimdDouble                         vd0;
+    int                    i;
+    SimdFloat              vf;
+    SimdDouble             vd0;
     FloatingPointTolerance tolerance(defaultRealTolerance());
 
     // This fills elements for pd1 too when double width is 2*single width
@@ -533,7 +541,7 @@ TEST_F(SimdFloatingpointTest, cvtDouble2Float)
     SimdDouble vd1 = load<SimdDouble>(d + GMX_SIMD_DOUBLE_WIDTH); // load upper half of data
     vf             = cvtDD2F(vd0, vd1);
 #        elif (GMX_SIMD_FLOAT_WIDTH == GMX_SIMD_DOUBLE_WIDTH)
-    vf  = cvtD2F(vd0);
+    vf = cvtD2F(vd0);
 #        else
 #            error Width of float SIMD must either be identical to double, or twice the width.
 #        endif

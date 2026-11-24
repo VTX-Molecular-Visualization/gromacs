@@ -35,7 +35,10 @@
 
 #include "trrio.h"
 
+#include <cstdio>
 #include <cstring>
+
+#include <string>
 
 #include "gromacs/fileio/gmxfio.h"
 #include "gromacs/fileio/gmxfio_xdr.h"
@@ -275,7 +278,7 @@ void gmx_trr_read_single_header(const std::filesystem::path& fn, gmx_trr_header_
     gmx_bool  bOK;
     if (!do_trr_frame_header(fio, true, header, &bOK))
     {
-        gmx_fatal(FARGS, "Empty file %s", fn.u8string().c_str());
+        gmx_fatal(FARGS, "Empty file %s", fn.string().c_str());
     }
     gmx_trr_close(fio);
 }

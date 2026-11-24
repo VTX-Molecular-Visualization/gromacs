@@ -43,10 +43,17 @@
 #include "gromacs/math/nrjac.h"
 
 #include <cmath>
+#include <cstdlib>
 
+#include <filesystem>
+
+#include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/gmxassert.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
+#include "gromacs/utility/vectypes.h"
 
 template<typename MatrixType>
 static inline void do_rotate(MatrixType a, int i, int j, int k, int l, double tau, double s)

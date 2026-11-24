@@ -45,27 +45,32 @@
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 
 #include <algorithm>
+#include <filesystem>
 
 #include "gromacs/math/arrayrefwithpadding.h"
 #include "gromacs/math/functions.h"
 #include "gromacs/math/invertmatrix.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/mdlib/constr.h"
+#include "gromacs/mdtypes/md_enums.h"
 #include "gromacs/pbcutil/ishift.h"
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/pbcutil/pbc_simd.h"
 #include "gromacs/simd/simd.h"
 #include "gromacs/simd/simd_math.h"
+#include "gromacs/topology/forcefieldparameters.h"
 #include "gromacs/topology/idef.h"
 #include "gromacs/topology/ifunc.h"
 #include "gromacs/topology/mtop_atomloops.h"
 #include "gromacs/topology/mtop_util.h"
 #include "gromacs/topology/topology.h"
 #include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/gmxassert.h"
+#include "gromacs/utility/vec.h"
 
 namespace gmx
 {
@@ -151,14 +156,14 @@ settleParameters(const real mO, const real mH, const real invmO, const real invm
 }
 
 SettleData::SettleData(const gmx_mtop_t& mtop) :
-    useSimd_(getenv("GMX_DISABLE_SIMD_KERNELS") == nullptr)
+    useSimd_(std::getenv("GMX_DISABLE_SIMD_KERNELS") == nullptr)
 {
     /* Check that we have only one settle type */
     int       settle_type = -1;
-    const int nral1       = 1 + NRAL(F_SETTLE);
+    const int nral1       = 1 + NRAL(InteractionFunction::SETTLE);
     for (const auto ilists : IListRange(mtop))
     {
-        const InteractionList& ilist = ilists.list()[F_SETTLE];
+        const InteractionList& ilist = ilists.list()[InteractionFunction::SETTLE];
         for (int i = 0; i < ilist.size(); i += nral1)
         {
             if (settle_type == -1)
@@ -203,7 +208,7 @@ void SettleData::setConstraints(const InteractionList&    il_settle,
     const int pack_size = 1;
 #endif
 
-    const int nral1   = 1 + NRAL(F_SETTLE);
+    const int nral1   = 1 + NRAL(InteractionFunction::SETTLE);
     int       nsettle = il_settle.size() / nral1;
     numSettles_       = nsettle;
 
@@ -224,7 +229,7 @@ void SettleData::setConstraints(const InteractionList&    il_settle,
                                                        parametersAllMasses1_.dHH);
         }
 
-        const int paddedSize = ((nsettle + pack_size - 1) / pack_size) * pack_size;
+        const int paddedSize = divideRoundUp(nsettle, pack_size) * pack_size;
         ow1_.resize(paddedSize);
         hw2_.resize(paddedSize);
         hw3_.resize(paddedSize);
@@ -295,7 +300,7 @@ void settle_proj(const SettleData&    settled,
     invdOH = p->invdOH;
     invdHH = p->invdHH;
 
-    const int nral1 = 1 + NRAL(F_SETTLE);
+    const int nral1 = 1 + NRAL(InteractionFunction::SETTLE);
 
     for (i = 0; i < nsettle; i++)
     {
@@ -711,10 +716,10 @@ static void settleTemplateWrapper(const SettleData& settled,
                                   bool*             bErrorHasOccurred)
 {
     /* We need to assign settles to threads in groups of pack_size */
-    int numSettlePacks = (settled.numSettles() + packSize - 1) / packSize;
+    int numSettlePacks = divideRoundUp(settled.numSettles(), packSize);
     /* Round the end value up to give thread 0 more work */
-    int settleStart = ((numSettlePacks * thread + nthread - 1) / nthread) * packSize;
-    int settleEnd   = ((numSettlePacks * (thread + 1) + nthread - 1) / nthread) * packSize;
+    int settleStart = divideRoundUp(numSettlePacks * thread, nthread) * packSize;
+    int settleEnd   = divideRoundUp(numSettlePacks * (thread + 1), nthread) * packSize;
 
     if (v != nullptr)
     {

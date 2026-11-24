@@ -42,6 +42,8 @@
 
 #include "helpformat.h"
 
+#include <cstddef>
+
 #include <algorithm>
 #include <string>
 #include <vector>
@@ -111,7 +113,7 @@ public:
             nextLineOffset_ = 0;
         }
         //! Whether there are lines remaining for textForNextLine().
-        bool hasLinesRemaining() const { return nextLineIndex_ < ssize(lines_); }
+        bool hasLinesRemaining() const { return nextLineIndex_ < gmx::ssize(lines_); }
         /*! \brief
          * Returns the text for the next line.
          *
@@ -181,7 +183,7 @@ public:
      */
     ColumnData& columnData(int index)
     {
-        GMX_ASSERT(index >= 0 && index < ssize(columns_), "Invalid column index");
+        GMX_ASSERT(index >= 0 && index < gmx::ssize(columns_), "Invalid column index");
         return columns_[index];
     }
     //! \copydoc columnData()

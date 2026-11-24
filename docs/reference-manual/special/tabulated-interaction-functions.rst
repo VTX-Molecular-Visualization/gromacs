@@ -20,14 +20,14 @@ where the table spacing :math:`h` and fraction :math:`\epsilon` are
 given by:
 
 .. math::  \begin{aligned}
-           h	&=&	x_{i+1} - x_i	\\
-           \epsilon&=&	(x - x_i)/h\end{aligned}
+           h        &=& x_{i+1} - x_i   \\
+           \epsilon &=& (x - x_i)/h     \end{aligned}
            :label: eqntablespaceing
 
 so that :math:`0 \le \epsilon < 1`. From this, we can calculate the
 derivative in order to determine the forces:
 
-.. math::  -V_s'(x) ~=~ 
+.. math::  -V_s'(x) ~=~
            -\frac{{\rm d}V_s(x)}{{\rm d}\epsilon}\frac{{\rm d}\epsilon}{{\rm d}x} ~=~
            -(A_1 + 2 A_2 \,\epsilon + 3 A_3 \,\epsilon^2)/h
            :label: eqntablederivative

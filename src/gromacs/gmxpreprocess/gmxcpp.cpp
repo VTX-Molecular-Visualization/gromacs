@@ -47,10 +47,12 @@
 #include <filesystem>
 #include <memory>
 #include <unordered_set>
+#include <vector>
 
 #include <sys/types.h>
 
 #include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/futil.h"
@@ -89,23 +91,23 @@ struct gmx_cpp
 
 static bool is_word_end(char c)
 {
-    return !((isalnum(c) != 0) || c == '_');
+    return !((std::isalnum(c) != 0) || c == '_');
 }
 
 static const char* strstrw(const char* buf, const char* word)
 {
     const char* ptr;
 
-    while ((ptr = strstr(buf, word)) != nullptr)
+    while ((ptr = std::strstr(buf, word)) != nullptr)
     {
         /* Check if we did not find part of a longer word */
-        if (ptr && is_word_end(ptr[strlen(word)])
+        if (ptr && is_word_end(ptr[std::strlen(word)])
             && (((ptr > buf) && is_word_end(ptr[-1])) || (ptr == buf)))
         {
             return ptr;
         }
 
-        buf = ptr + strlen(word);
+        buf = ptr + std::strlen(word);
     }
     return nullptr;
 }
@@ -117,7 +119,7 @@ static const char* strstrw(const char* buf, const char* word)
 static bool find_directive(const char* buf, std::string* name, std::string* val)
 {
     /* Skip initial whitespace */
-    while (isspace(*buf))
+    while (std::isspace(*buf))
     {
         ++buf;
     }
@@ -128,13 +130,13 @@ static bool find_directive(const char* buf, std::string* name, std::string* val)
     }
     /* Skip the hash and any space after it */
     ++buf;
-    while (isspace(*buf))
+    while (std::isspace(*buf))
     {
         ++buf;
     }
     /* Set the name pointer and find the next space */
     name->clear();
-    while (*buf != '\0' && !isspace(*buf))
+    while (*buf != '\0' && !std::isspace(*buf))
     {
         *name += *buf;
         ++buf;
@@ -143,7 +145,7 @@ static bool find_directive(const char* buf, std::string* name, std::string* val)
     if (*buf != '\0')
     {
         ++buf;
-        while (isspace(*buf))
+        while (std::isspace(*buf))
         {
             ++buf;
         }
@@ -153,7 +155,7 @@ static bool find_directive(const char* buf, std::string* name, std::string* val)
     {
         *val = buf;
         // Remove trailing whitespace
-        while (!val->empty() && isspace(val->back()))
+        while (!val->empty() && std::isspace(val->back()))
         {
             val->resize(val->size() - 1);
         }
@@ -241,14 +243,14 @@ static int cpp_open_file(const std::filesystem::path&                         fi
     {
         while (cppopts[i])
         {
-            if (strstr(cppopts[i], "-I") == cppopts[i])
+            if (std::strstr(cppopts[i], "-I") == cppopts[i])
             {
                 add_include(cpp->includes.get(), cppopts[i] + 2);
             }
-            if (strstr(cppopts[i], "-D") == cppopts[i])
+            if (std::strstr(cppopts[i], "-D") == cppopts[i])
             {
                 /* If the option contains a =, split it into name and value. */
-                char* ptr = strchr(cppopts[i], '=');
+                char* ptr = std::strchr(cppopts[i], '=');
                 if (ptr)
                 {
                     std::string buf = cppopts[i] + 2;
@@ -292,7 +294,7 @@ static int cpp_open_file(const std::filesystem::path&                         fi
     }
     if (cpp->fn.empty())
     {
-        gmx_fatal(FARGS, "Topology include file \"%s\" not found", filenm.u8string().c_str());
+        gmx_fatal(FARGS, "Topology include file \"%s\" not found", filenm.string().c_str());
     }
     /* If the file name has a path component, we need to change to that
      * directory.
@@ -311,7 +313,7 @@ static int cpp_open_file(const std::filesystem::path&                         fi
     cpp->parent = nullptr;
     if (cpp->fp == nullptr)
     {
-        cpp->fp = fopen(cpp->fn.u8string().c_str(), "r");
+        cpp->fp = std::fopen(cpp->fn.string().c_str(), "r");
     }
     if (cpp->fp == nullptr)
     {
@@ -484,13 +486,13 @@ static int process_directive(gmx_cpp_t* handlep, const std::string& dname, const
         }
         /* Split it into name and value. */
         const char* ptr = dval.c_str();
-        while ((*ptr != '\0') && !isspace(*ptr))
+        while ((*ptr != '\0') && !std::isspace(*ptr))
         {
             ptr++;
         }
         std::string name = dval.substr(0, ptr - dval.c_str());
 
-        while ((*ptr != '\0') && isspace(*ptr))
+        while ((*ptr != '\0') && std::isspace(*ptr))
         {
             ptr++;
         }
@@ -527,125 +529,125 @@ static int process_directive(gmx_cpp_t* handlep, const std::string& dname, const
 /* Return one whole line from the file into buf which holds at most n
    characters, for subsequent processing. Returns integer status. This
    routine also does all the "intelligent" work like processing cpp
-   directives and so on. Note that often the routine is called
-   recursively and no cpp directives are printed. */
+   directives and so on. Directives and ifdeffed-out lines are skipped. */
 int cpp_read_line(gmx_cpp_t* handlep, int n, char buf[])
 {
-    gmx_cpp_t handle = *handlep;
-    int       status;
-    bool      bEOF;
+    while (true)
+    {
+        gmx_cpp_t handle = *handlep;
 
-    if (!handle)
-    {
-        return eCPP_INVALID_HANDLE;
-    }
-    if (!handle->fp)
-    {
-        return eCPP_FILE_NOT_OPEN;
-    }
-
-    bEOF = (feof(handle->fp) != 0);
-    if (!bEOF)
-    {
-        /* Read the actual line now. */
-        if (fgets2(buf, n - 1, handle->fp) == nullptr)
+        if (!handle)
         {
-            /* Recheck EOF, since we could have been at the end before
-             * the fgets2 call, but we need to read past the end to know.
-             */
-            bEOF = (feof(handle->fp) != 0);
-            if (!bEOF)
+            return eCPP_INVALID_HANDLE;
+        }
+        if (!handle->fp)
+        {
+            return eCPP_FILE_NOT_OPEN;
+        }
+
+        bool bEOF = (std::feof(handle->fp) != 0);
+        if (!bEOF)
+        {
+            /* Read the actual line now. */
+            if (fgets2(buf, n - 1, handle->fp) == nullptr)
             {
-                /* Something strange happened, fgets returned NULL,
-                 * but we are not at EOF. Maybe wrong line endings?
+                /* Recheck EOF, since we could have been at the end before
+                 * the fgets2 call, but we need to read past the end to know.
                  */
-                return eCPP_UNKNOWN;
-            }
-        }
-    }
-
-    if (bEOF)
-    {
-        if (handle->parent == nullptr)
-        {
-            return eCPP_EOF;
-        }
-        cpp_close_file(handlep);
-        *handlep = handle->parent;
-        delete handle;
-        return cpp_read_line(handlep, n, buf);
-    }
-    else
-    {
-        handle->line = buf;
-        handle->line_nr++;
-    } /* Now we've read a line! */
-
-    /* Process directives if this line contains one */
-    std::string dname;
-    std::string dval;
-    if (find_directive(buf, &dname, &dval))
-    {
-        status = process_directive(handlep, dname, dval);
-        if (status != eCPP_OK)
-        {
-            return status;
-        }
-        /* Don't print lines with directives, go on to the next */
-        return cpp_read_line(handlep, n, buf);
-    }
-
-    /* Check whether we're not ifdeffed out. The order of this statement
-       is important. It has to come after #ifdef, #else and #endif, but
-       anything else should be ignored. */
-    if (is_ifdeffed_out(handle->ifdefs))
-    {
-        return cpp_read_line(handlep, n, buf);
-    }
-
-    /* Check whether we have any defines that need to be replaced. Note
-       that we have to use a best fit algorithm, rather than first come
-       first go. We do this by sorting the defines on length first, and
-       then on alphabetical order. */
-    for (t_define& define : *handle->defines)
-    {
-        if (!define.def.empty())
-        {
-            int         nn  = 0;
-            const char* ptr = buf;
-            while ((ptr = strstrw(ptr, define.name.c_str())) != nullptr)
-            {
-                nn++;
-                ptr += strlen(define.name.c_str());
-            }
-            if (nn > 0)
-            {
-                // Need to erase  unmatched define in original handle
-                gmx_cpp_t root = handle;
-                while (root->parent != nullptr)
+                bEOF = (std::feof(handle->fp) != 0);
+                if (!bEOF)
                 {
-                    root = root->parent;
+                    /* Something strange happened, fgets returned NULL,
+                     * but we are not at EOF. Maybe wrong line endings?
+                     */
+                    return eCPP_UNKNOWN;
                 }
-                root->unmatched_defines.erase(define.name);
+            }
+        }
 
-                std::string name;
+        if (bEOF)
+        {
+            if (handle->parent == nullptr)
+            {
+                return eCPP_EOF;
+            }
+            cpp_close_file(handlep);
+            *handlep = handle->parent;
+            delete handle;
+            continue;
+        }
+        else
+        {
+            handle->line = buf;
+            handle->line_nr++;
+        } /* Now we've read a line! */
+
+        /* Process directives if this line contains one */
+        std::string dname;
+        std::string dval;
+        if (find_directive(buf, &dname, &dval))
+        {
+            int status = process_directive(handlep, dname, dval);
+            if (status != eCPP_OK)
+            {
+                return status;
+            }
+            /* Don't print lines with directives, go on to the next */
+            continue;
+        }
+
+        /* Check whether we're not ifdeffed out. The order of this statement
+           is important. It has to come after #ifdef, #else and #endif, but
+           anything else should be ignored. */
+        if (is_ifdeffed_out(handle->ifdefs))
+        {
+            continue;
+        }
+
+        /* Check whether we have any defines that need to be replaced. Note
+           that we have to use a best fit algorithm, rather than first come
+           first go. We do this by sorting the defines on length first, and
+           then on alphabetical order. */
+        for (t_define& define : *handle->defines)
+        {
+            if (!define.def.empty())
+            {
+                int         nn  = 0;
                 const char* ptr = buf;
-                const char* ptr2;
-                while ((ptr2 = strstrw(ptr, define.name.c_str())) != nullptr)
+                while ((ptr = strstrw(ptr, define.name.c_str())) != nullptr)
                 {
-                    name.append(ptr, ptr2 - ptr);
-                    name += define.def;
-                    ptr = ptr2 + define.name.size();
+                    nn++;
+                    ptr += std::strlen(define.name.c_str());
                 }
-                name += ptr;
-                GMX_RELEASE_ASSERT(name.size() < static_cast<size_t>(n),
-                                   "The line should fit in buf");
-                strcpy(buf, name.c_str());
+                if (nn > 0)
+                {
+                    // Need to erase  unmatched define in original handle
+                    gmx_cpp_t root = handle;
+                    while (root->parent != nullptr)
+                    {
+                        root = root->parent;
+                    }
+                    root->unmatched_defines.erase(define.name);
+
+                    std::string name;
+                    const char* ptr1 = buf;
+                    const char* ptr2;
+                    while ((ptr2 = strstrw(ptr1, define.name.c_str())) != nullptr)
+                    {
+                        name.append(ptr1, ptr2 - ptr1);
+                        name += define.def;
+                        ptr1 = ptr2 + define.name.size();
+                    }
+                    name += ptr1;
+                    GMX_RELEASE_ASSERT(name.size() < static_cast<size_t>(n),
+                                       "The line should fit in buf");
+                    std::strcpy(buf, name.c_str());
+                }
             }
         }
-    }
 
-    return eCPP_OK;
+        return eCPP_OK;
+    }
 }
 
 std::filesystem::path cpp_cur_file(const gmx_cpp_t* handlep)
@@ -671,7 +673,7 @@ int cpp_close_file(gmx_cpp_t* handlep)
     {
         return eCPP_FILE_NOT_OPEN;
     }
-    fclose(handle->fp);
+    std::fclose(handle->fp);
 
     if (!handle->cwd.empty())
     {
@@ -738,7 +740,7 @@ char* cpp_error(gmx_cpp_t* handlep, int status)
     sprintf(buf,
             "%s - File %s, line %d\nLast line read:\n'%s'",
             ecpp[status],
-            (handle && !handle->fn.empty()) ? handle->fn.u8string().c_str() : "unknown",
+            (handle && !handle->fn.empty()) ? handle->fn.string().c_str() : "unknown",
             (handle) ? handle->line_nr : -1,
             !handle->line.empty() ? handle->line.c_str() : "");
 

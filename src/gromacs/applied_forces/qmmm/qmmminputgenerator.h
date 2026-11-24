@@ -42,11 +42,17 @@
 #define GMX_APPLIED_FORCES_QMMMINPUTGENERATOR_H
 
 #include <set>
+#include <string>
 
 #include "gromacs/pbcutil/pbc.h"
 #include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/basedefinitions.h"
+#include "gromacs/utility/real.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "qmmmtypes.h"
+
+enum class PbcType : int;
 
 namespace gmx
 {
@@ -137,7 +143,7 @@ private:
     ArrayRef<const RVec> x_;
 
     //! Scale of the generated QM box with respect to the QM-subsystem size
-    static constexpr real sc_qmBoxScale = 1.5;
+    static constexpr real sc_qmBoxScale = 1.2;
     //! Minimum length of the generated QM box vectors in nm
     static constexpr real sc_qmBoxMinLength = 1.0;
 };

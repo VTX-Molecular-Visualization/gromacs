@@ -48,20 +48,30 @@
 
 #include "gromacs/commandline/cmdlinehelpwriter.h"
 
+#include <string>
+#include <vector>
+
 #include <gtest/gtest.h>
 
 #include "gromacs/commandline/cmdlinehelpcontext.h"
-#include "gromacs/math/vectypes.h"
+#include "gromacs/onlinehelp/helpwritercontext.h"
 #include "gromacs/options/basicoptions.h"
 #include "gromacs/options/filenameoption.h"
+#include "gromacs/options/ioptionscontainer.h"
+#include "gromacs/options/optionfiletype.h"
 #include "gromacs/options/options.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/enumerationhelpers.h"
 #include "gromacs/utility/stringstream.h"
 #include "gromacs/utility/textwriter.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "testutils/stringtest.h"
 
+namespace gmx
+{
+namespace test
+{
 namespace
 {
 
@@ -359,3 +369,5 @@ TEST_F(CommandLineHelpWriterTest, HandlesKnownIssues)
 }
 
 } // namespace
+} // namespace test
+} // namespace gmx

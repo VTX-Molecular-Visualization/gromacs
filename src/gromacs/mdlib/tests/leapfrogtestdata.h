@@ -45,19 +45,22 @@
 #ifndef GMX_MDLIB_TESTS_LEAPFROGTESTDATA_H
 #define GMX_MDLIB_TESTS_LEAPFROGTESTDATA_H
 
+#include <memory>
 #include <vector>
 
 #include "gromacs/gpu_utils/gpu_utils.h"
 #include "gromacs/math/matrix.h"
-#include "gromacs/math/vec.h"
-#include "gromacs/math/vectypes.h"
+#include "gromacs/math/paddedvector.h"
 #include "gromacs/mdlib/update.h"
 #include "gromacs/mdtypes/fcdata.h"
 #include "gromacs/mdtypes/group.h"
 #include "gromacs/mdtypes/inputrec.h"
 #include "gromacs/mdtypes/mdatom.h"
 #include "gromacs/mdtypes/state.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/stringutil.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
 
 namespace gmx
 {

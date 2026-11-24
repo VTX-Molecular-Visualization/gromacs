@@ -37,20 +37,30 @@
 
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
+#include <algorithm>
+#include <filesystem>
+#include <iterator>
 #include <numeric>
+#include <string>
 #include <vector>
 
+#include "gromacs/commandline/filenm.h"
 #include "gromacs/commandline/pargs.h"
 #include "gromacs/fileio/confio.h"
+#include "gromacs/fileio/filetypes.h"
+#include "gromacs/fileio/oenv.h"
+#include "gromacs/math/functions.h"
 #include "gromacs/math/units.h"
-#include "gromacs/math/vec.h"
 #include "gromacs/mdlib/force.h"
 #include "gromacs/pbcutil/pbc.h"
+#include "gromacs/random/seed.h"
 #include "gromacs/random/threefry.h"
 #include "gromacs/random/uniformintdistribution.h"
+#include "gromacs/topology/atoms.h"
 #include "gromacs/topology/index.h"
 #include "gromacs/topology/topology.h"
 #include "gromacs/utility/arrayref.h"
@@ -59,7 +69,13 @@
 #include "gromacs/utility/cstringutil.h"
 #include "gromacs/utility/fatalerror.h"
 #include "gromacs/utility/futil.h"
+#include "gromacs/utility/real.h"
 #include "gromacs/utility/smalloc.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
+
+enum class PbcType : int;
+struct gmx_output_env_t;
 
 
 /*! \brief Return whether any atoms of two groups are below minimum distance.
@@ -297,7 +313,7 @@ static void update_topol(const char* topinout, int p_num, int n_num, const char*
     nmol_line  = 0;
     sol_line   = -1;
     nsol_last  = -1;
-    while (fgets(buf, STRLEN, fpin))
+    while (std::fgets(buf, STRLEN, fpin))
     {
         std::strcpy(buf2, buf);
         if ((temp = std::strchr(buf2, '\n')) != nullptr)
@@ -414,7 +430,7 @@ static std::vector<int> invertIndexGroup(int nrAtoms, std::vector<int> indexGrou
     indexGroup.push_back(nrAtoms);
     std::sort(indexGroup.begin(), indexGroup.end());
 
-    // construct the inverted index group by adding all indicies between two
+    // construct the inverted index group by adding all indices between two
     // indices of indexGroup
     std::vector<int> invertedGroup;
     for (auto indexGroupIt = std::begin(indexGroup); indexGroupIt != std::end(indexGroup) - 1; ++indexGroupIt)
@@ -468,18 +484,18 @@ int gmx_genion(int argc, char* argv[])
         { "-rmin", FALSE, etREAL, { &rmin }, "Minimum distance between ions and non-solvent" },
         { "-seed", FALSE, etINT, { &seed }, "Seed for random number generator (0 means generate)" },
         { "-conc",
-          FALSE,
-          etREAL,
-          { &conc },
-          "Specify salt concentration (mol/liter). This will add sufficient ions to reach up to "
-          "the specified concentration as computed from the volume of the cell in the input "
-          "[REF].tpr[ref] file. Overrides the [TT]-np[tt] and [TT]-nn[tt] options." },
+                  FALSE,
+                  etREAL,
+                  { &conc },
+                  "Specify salt concentration (mol/liter). This will add sufficient ions to reach up to "
+                          "the specified concentration as computed from the volume of the cell in the input "
+                          "[REF].tpr[ref] file. Overrides the [TT]-np[tt] and [TT]-nn[tt] options." },
         { "-neutral",
-          FALSE,
-          etBOOL,
-          { &bNeutral },
-          "This option will add enough ions to neutralize the system. These ions are added on top "
-          "of those specified with [TT]-np[tt]/[TT]-nn[tt] or [TT]-conc[tt]. " },
+                  FALSE,
+                  etBOOL,
+                  { &bNeutral },
+                  "This option will add enough ions to neutralize the system. These ions are added on top "
+                          "of those specified with [TT]-np[tt]/[TT]-nn[tt] or [TT]-conc[tt]. " },
         { "-group",
           FALSE,
           etSTR,
@@ -498,9 +514,9 @@ int gmx_genion(int argc, char* argv[])
     int               nw, nsa, nsalt, iqtot;
     gmx_output_env_t* oenv  = nullptr;
     t_filenm          fnm[] = { { efTPR, nullptr, nullptr, ffREAD },
-                       { efNDX, nullptr, nullptr, ffOPTRD },
-                       { efSTO, "-o", nullptr, ffWRITE },
-                       { efTOP, "-p", "topol", ffOPTRW } };
+                                { efNDX, nullptr, nullptr, ffOPTRD },
+                                { efSTO, "-o", nullptr, ffWRITE },
+                                { efTOP, "-p", "topol", ffOPTRW } };
 #define NFILE asize(fnm)
 
     if (!parse_common_args(
@@ -542,8 +558,8 @@ int gmx_genion(int argc, char* argv[])
         /* Compute number of ions to be added */
         vol   = det(box);
         nsalt = gmx::roundToInt(conc * vol * gmx::c_avogadro / 1e24);
-        p_num = abs(nsalt * n_q);
-        n_num = abs(nsalt * p_q);
+        p_num = std::abs(nsalt * n_q);
+        n_num = std::abs(nsalt * p_q);
     }
     if (bNeutral)
     {
@@ -612,7 +628,7 @@ int gmx_genion(int argc, char* argv[])
             printf("Select a continuous group of solvent molecules\n");
             int* index = nullptr;
             int  nwa;
-            get_index(&atoms, ftp2fn_null(efNDX, NFILE, fnm), 1, &nwa, &index, &grpname);
+            get_index(&atoms, ftp2path_optional(efNDX, NFILE, fnm), 1, &nwa, &index, &grpname);
             solventGroup.assign(index, index + nwa);
             sfree(index);
         }

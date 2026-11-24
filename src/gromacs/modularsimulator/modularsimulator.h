@@ -34,31 +34,36 @@
 /*! \libinternal \file
  * \brief Provides the modular simulator.
  *
- * Defines the ModularSimulator class. Provides checkUseModularSimulator() utility function
- * to determine whether the ModularSimulator should be used.
+ * Defines the ModularSimulator class. Provides ModularSimulator::isInputCompatible() utility
+ * function to determine whether the ModularSimulator should be used.
  *
  * \author Pascal Merz <pascal.merz@me.com>
  * \ingroup module_modularsimulator
  *
  * This header is currently the only part of the modular simulator module which is exposed.
  * Mdrunner creates an object of type ModularSimulator (via SimulatorBuilder), and calls its
- * run() method. Mdrunner also calls checkUseModularSimulator(...), which in turns calls a
- * static method of ModularSimulator. This could easily become a free function if this requires
- * more exposure than otherwise necessary.
+ * run() method. Mdrunner also calls isInputCompatible(...). This could easily become a
+ * free function if this requires more exposure than otherwise necessary.
  */
 #ifndef GROMACS_MODULARSIMULATOR_MODULARSIMULATOR_H
 #define GROMACS_MODULARSIMULATOR_MODULARSIMULATOR_H
 
-#include <cstdlib>
+#include <memory>
+#include <utility>
 
 #include "gromacs/mdrun/isimulator.h"
 
 struct CheckpointHeaderContents;
 struct t_fcdata;
 struct t_trxframe;
+struct ReplicaExchangeParameters;
+struct gmx_mtop_t;
+struct gmx_multisim_t;
+struct t_inputrec;
 
 namespace gmx
 {
+class MDLogger;
 class ModularSimulatorAlgorithmBuilder;
 class ReadCheckpointDataHolder;
 
@@ -75,11 +80,24 @@ class ReadCheckpointDataHolder;
 class ModularSimulator final : public ISimulator
 {
 public:
+    //! Destructor
+    ~ModularSimulator() override;
+
     //! Run the simulator
     void run() override;
 
-    //! Check for disabled functionality
-    static bool isInputCompatible(bool                             exitOnFailure,
+    /*! \brief Return whether the modular simulator can be used
+     *
+     * Enforces that the use of GMX_USE_MODULAR_SIMULATOR and
+     * GMX_DISABLE_MODULAR_SIMULATOR are consistent.
+     *
+     * Note that
+     * https://gitlab.com/gromacs/gromacs/-/tree/ptmerz-modularsimulator-feature-branch
+     * contains draft implementations for feature support that could
+     * be included here if there is interest.
+     *
+     * \returns Whether the modular simulator can be used for this input */
+    static bool isInputCompatible(const MDLogger&                  mdlog,
                                   const t_inputrec*                inputrec,
                                   bool                             doRerun,
                                   const gmx_mtop_t&                globalTopology,
@@ -114,24 +132,6 @@ private:
     //! Input checkpoint data
     std::unique_ptr<ReadCheckpointDataHolder> checkpointDataHolder_;
 };
-
-/*!
- * \brief Whether or not to use the ModularSimulator
- *
- * GMX_DISABLE_MODULAR_SIMULATOR environment variable allows to disable modular simulator for
- * all uses.
- *
- * See ModularSimulator::isInputCompatible() for function signature.
- *
- * \ingroup module_modularsimulator
- */
-template<typename... Ts>
-auto checkUseModularSimulator(Ts&&... args)
-        -> decltype(ModularSimulator::isInputCompatible(std::forward<Ts>(args)...))
-{
-    return ModularSimulator::isInputCompatible(std::forward<Ts>(args)...)
-           && getenv("GMX_DISABLE_MODULAR_SIMULATOR") == nullptr;
-}
 
 } // namespace gmx
 

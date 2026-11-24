@@ -45,6 +45,8 @@
 #include <gtest/gtest.h>
 
 #include "gromacs/tools/convert_tpr.h"
+#include "gromacs/utility/arrayref.h"
+#include "gromacs/utility/vectypes.h"
 
 #include "testutils/cmdlinetest.h"
 #include "testutils/simulationdatabase.h"
@@ -52,6 +54,7 @@
 #include "programs/mdrun/tests/moduletest.h"
 
 #include "nblib/gmxcalculatorcpu.h"
+#include "nblib/kerneloptions.h"
 
 #include "testhelpers.h"
 #include "testsystems.h"

@@ -50,12 +50,12 @@
 #include <memory>
 #include <vector>
 
-#include "gromacs/math/vec.h"
-#include "gromacs/math/vectypes.h"
 #include "gromacs/utility/arrayref.h"
 #include "gromacs/utility/basedefinitions.h"
 #include "gromacs/utility/gmxassert.h"
 #include "gromacs/utility/real.h"
+#include "gromacs/utility/vec.h"
+#include "gromacs/utility/vectypes.h"
 
 struct t_pbc;
 
@@ -123,7 +123,7 @@ public:
      * Initializes positions from a vector of position vectors.
      */
     AnalysisNeighborhoodPositions(const std::vector<RVec>& x) :
-        count_(ssize(x)), index_(-1), x_(as_rvec_array(x.data())), exclusionIds_(nullptr), indices_(nullptr)
+        count_(gmx::ssize(x)), index_(-1), x_(as_rvec_array(x.data())), exclusionIds_(nullptr), indices_(nullptr)
     {
     }
 
