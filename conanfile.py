@@ -8,7 +8,7 @@ from pathlib import Path
 
 class VtxGromacsRecipe(ConanFile):
     name = "gromacs"
-    version = "2026.1" # TODO : change version format to [gmx_year].[gmx_major].[vtx_edit]
+    version = "2026.4.0"
     package_type = "library"
     revision_mode = "hash"
 
